@@ -6,7 +6,7 @@
 
 import { app, BrowserWindow, ipcMain } from "electron";
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -350,6 +350,24 @@ app.whenReady().then(async () => {
     results = await selfTest(winA, winB);
   } catch (error) {
     results = [{ name: "Selbsttest abgebrochen", ok: false, detail: String(error?.stack ?? error) }];
+  }
+  // Screenshot-Modus (docs/agent-lessons-learned.md, Abschnitt 4): beide Fenster nach dem Selbsttest als PNG.
+  const shotIndex = process.argv.indexOf("--screenshot");
+  if (shotIndex > 0) {
+    // Ein Fehler hier darf das Aufräumen von PTY und tmux-Session darunter nicht verhindern.
+    try {
+      const dir = process.argv[shotIndex + 1];
+      if (!dir) throw new Error("--screenshot braucht ein Verzeichnis");
+      mkdirSync(dir, { recursive: true });
+      for (const [name, win] of [
+        ["poc-fenster-a", winA],
+        ["poc-fenster-b", winB],
+      ]) {
+        writeFileSync(path.join(dir, `${name}.png`), (await win.webContents.capturePage()).toPNG());
+      }
+    } catch (error) {
+      results.push({ name: "Screenshots", ok: false, detail: String(error?.stack ?? error) });
+    }
   }
   await stopPty();
   await tmux(["kill-session", "-t", SESSION]);

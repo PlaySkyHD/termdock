@@ -17,6 +17,7 @@ Antworte auf Deutsch. Prüfe zuerst den Diff, dann den betroffenen Code drumheru
 - Shell-Strings mit Nutzereingaben statt Argument-Arrays, IPC ohne Benutzerbeschränkung.
 - Unbegrenztes Wachstum: Verlauf über dem Limit, Puffer ohne Obergrenze, Listener ohne Abbau.
 - Fehlende Tests für neues Verhalten oder einen Bugfix.
+- Sichtbare UI-Änderung ohne Screenshots im PR (Kommentar von `scripts/attach-screenshots.sh`), oder Screenshots, die nicht zum Diff passen.
 - Verstöße gegen `typescript.instructions.md`, `security.instructions.md`, die ADRs in `docs/adr/` oder `docs/agent-lessons-learned.md`.
 
 Kein Befund: Stil, den Formatter oder Linter schon prüfen; Refactoring-Ideen ohne konkretes Risiko; spekulative Optimierungen.

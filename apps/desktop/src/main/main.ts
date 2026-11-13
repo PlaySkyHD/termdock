@@ -1,7 +1,7 @@
 // Electron main (ADR 0006): one process owns all windows, connects to the core or starts it, and serves the
 // bridge. Start: `npm start -w apps/desktop` (in agent shells first `unset ELECTRON_RUN_AS_NODE`).
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ import {
   QuietWatch,
   screenshotDir,
   screenshotProfileDir,
+  staleProfileDirs,
   stopIsolatedCore,
 } from "./screenshot.js";
 import type { IsolatedCore } from "./screenshot.js";
@@ -53,7 +54,15 @@ let isolated: IsolatedCore | undefined;
 if (shotDir !== undefined) {
   shotTemp = mkdtempSync(path.join(tmpdir(), "termdock-shot-"));
   isolated = isolatedCore(shotTemp, process.pid, randomBytes(4).toString("hex"));
-  app.setPath("userData", screenshotProfileDir(tmpdir()));
+  app.setPath("userData", screenshotProfileDir(tmpdir(), process.pid));
+  // Profiles of ended runs are free again; one that is still locked stays for the next run.
+  for (const dir of staleProfileDirs(tmpdir(), readdirSync(tmpdir()), process.pid, isAlive)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort.
+    }
+  }
 }
 const pipePath = isolated?.pipePath ?? defaultPipeName();
 
@@ -208,7 +217,7 @@ async function runScreenshot(
   const finish = (): Promise<void> =>
     (finishing ??= (async () => {
       clearTimeout(guard);
-      // Ends every session of this core (tmux kill-session on `termdock-test`) and the core itself.
+      // Ends every session of this core (tmux kill-session on the run's own socket) and the core itself.
       await client.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
         log(`core.shutdown: ${error instanceof Error ? error.message : String(error)}`);
         exitCode = 1;

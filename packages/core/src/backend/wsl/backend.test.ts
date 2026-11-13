@@ -116,6 +116,16 @@ describe("WslBackend", () => {
     expect(calls.filter((args) => args.join(" ") === "-l -v")).toHaveLength(1);
   });
 
+  it("resolves a missing distro to the configured one, else the WSL default, and keeps a given one", async () => {
+    expect(await setup().backend.resolveLaunch(spec)).toEqual({ ...spec, distro: "Ubuntu" });
+    expect(await setup({ distro: "Debian" }).backend.resolveLaunch(spec)).toEqual({
+      ...spec,
+      distro: "Debian",
+    });
+    const given: LaunchSpec = { ...spec, distro: "Alpine" };
+    expect(await setup().backend.resolveLaunch(given)).toBe(given);
+  });
+
   it("removes a leftover session whose program already ended before starting", async () => {
     const { backend, panes, calls } = setup({ distro: "Ubuntu" });
     panes.set("td-s1", "1 0 ");

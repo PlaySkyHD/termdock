@@ -1,6 +1,7 @@
 // IPC message types (ADR 0002). Headers are JSON; terminal bytes travel in the frame payload.
 
 import type {
+  BackendKind,
   ClientId,
   ErrorCode,
   LaunchProfileId,
@@ -87,6 +88,11 @@ export interface SessionAttachResult {
   writerViewId?: ViewId;
 }
 
+export interface CoreStatusResult {
+  /** Backends the core could not reach when it reconciled the stored sessions on start (ADR 0005). */
+  backendUnavailable: BackendKind[];
+}
+
 export interface CoreShutdownParams {
   /** true: end all running sessions before the core exits (ADR 0001). Default false: only the core ends. */
   stopSessions?: boolean;
@@ -104,6 +110,7 @@ export interface MethodMap {
   "session.resize": { params: { viewId: ViewId; size: TerminalSize }; result: Record<string, never> };
   "session.claimWriter": { params: { viewId: ViewId }; result: Record<string, never> };
   "session.kill": { params: { sessionId: SessionId }; result: Record<string, never> };
+  "core.status": { params: Record<string, never>; result: CoreStatusResult };
   "core.shutdown": { params: CoreShutdownParams; result: Record<string, never> };
 }
 
@@ -119,6 +126,7 @@ export const METHODS = [
   "session.resize",
   "session.claimWriter",
   "session.kill",
+  "core.status",
   "core.shutdown",
 ] as const satisfies readonly Method[];
 
@@ -157,6 +165,7 @@ export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
   "session.resize": "none",
   "session.claimWriter": "none",
   "session.kill": "none",
+  "core.status": "none",
   "core.shutdown": "none",
 };
 
@@ -170,6 +179,7 @@ export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
   "session.resize": "none",
   "session.claimWriter": "none",
   "session.kill": "none",
+  "core.status": "none",
   "core.shutdown": "none",
 };
 

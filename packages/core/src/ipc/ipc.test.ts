@@ -1,5 +1,6 @@
 // Integration tests over a real named pipe with FakeBackend (issue #5, spec core-ipc).
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, connect as netConnect } from "node:net";
 import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -494,14 +495,17 @@ describe("single instance", () => {
 
   it("starts a core through runCore and serves clients", async () => {
     const pipePath = uniquePipe();
+    const dataDir = mkdtempSync(join(tmpdir(), "termdock-ipc-"));
+    cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
     const outcome = await runCore({
       pipePath,
+      dataDir,
       backends: [new FakeBackend()],
       stderr: { write: () => {} },
       installSignalHandlers: false,
     });
     expect(outcome.exitCode).toBe(0);
-    cleanups.push(() => outcome.server?.close());
+    cleanups.push(() => outcome.close?.());
     const client = await newClient(pipePath);
     expect((await client.request("session.list", {})).result.sessions).toEqual([]);
   });

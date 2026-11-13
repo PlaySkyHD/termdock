@@ -35,7 +35,17 @@ export interface SessionRegistryOptions {
    * the next successful save of the session stores it. Defaults to `console.error`.
    */
   onPersistError?: (error: unknown, session: SessionInfo) => void;
+  /**
+   * Waits before each attempt to re-attach after a PTY ended without exit code; the length is the number of
+   * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
+   */
+  reattachDelaysMs?: readonly number[];
 }
+
+/** Three attempts to re-attach a lost backend client: at once, after 0.5 s and after 2 s. */
+export const DEFAULT_REATTACH_DELAYS_MS: readonly number[] = [0, 500, 2000];
+/** A re-attached PTY that lives this long gives the session a fresh re-attach budget. */
+const REATTACH_STABLE_MS = 30_000;
 
 export interface CreateSessionInput {
   name: string;
@@ -115,9 +125,11 @@ interface SessionEntry {
   /** Output collected for views whose backend snapshot is still being taken. */
   attachCollectors: Set<Uint8Array[]>;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile. */
-  busy: "start" | "kill" | "archive" | undefined;
+  busy: "start" | "kill" | "archive" | "reattach" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
   endedDuringOp: { exitCode?: number } | undefined;
+  /** Re-attach attempts used since the last stable PTY, and when the last re-attached PTY was bound. */
+  reattach: { attempts: number; boundAt: number };
 }
 
 class ListenerSet<T> {
@@ -139,8 +151,12 @@ export class SessionRegistry {
   private readonly now: () => Date;
   private readonly repository: SessionRepository | undefined;
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
+  private readonly reattachDelaysMs: readonly number[];
   private restored = false;
   private restoring = false;
+  private unavailableAtRestore: BackendKind[] = [];
+  private disposed = false;
+  private readonly timers = new Set<NodeJS.Timeout>();
   private readonly stateListeners = new ListenerSet<StateChangeEvent>();
   private readonly writerListeners = new ListenerSet<WriterChangedEvent>();
   private readonly resizedListeners = new ListenerSet<ResizedEvent>();
@@ -150,6 +166,7 @@ export class SessionRegistry {
     this.backends = options.backends;
     this.now = options.now ?? (() => new Date());
     this.repository = options.repository;
+    this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
@@ -177,6 +194,24 @@ export class SessionRegistry {
 
   get(sessionId: SessionId): SessionInfo {
     return snapshotInfo(this.entry(sessionId).info);
+  }
+
+  /** Backends `restore()` could not reach (empty before restore); the Core reports them via `core.status`. */
+  backendUnavailable(): BackendKind[] {
+    return [...this.unavailableAtRestore];
+  }
+
+  /**
+   * Releases all PTYs when the Core ends without stopping the sessions: states stay as they are (also in the
+   * repository), so the next Core reconciles them; nothing is reported. Running re-attaches are cancelled.
+   * Afterwards `create` and `restart` are rejected with `invalid_state`. Safe to call more than once.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    for (const entry of this.sessions.values()) this.releasePty(entry);
   }
 
   /** Registers a new session in `Starting` and starts its process. */
@@ -258,6 +293,7 @@ export class SessionRegistry {
       }
       this.sessions.set(info.id, entry);
     }
+    this.unavailableAtRestore = [...unavailable];
     return {
       sessions: reconciled.map(({ entry, from }) => ({
         sessionId: entry.info.id,
@@ -407,6 +443,7 @@ export class SessionRegistry {
 
   private assertNotRestoring(): void {
     if (this.restoring) throw new CoreError("invalid_state", "Sessions are being restored");
+    if (this.disposed) throw new CoreError("invalid_state", "The session registry is shut down");
   }
 
   private assertIdle(entry: SessionEntry): void {
@@ -461,6 +498,14 @@ export class SessionRegistry {
     let startSize: TerminalSize = { ...info.size };
     try {
       if (!backend) throw new Error(`No backend for kind ${info.launch.backend}`);
+      if (backend.resolveLaunch) {
+        // Stored before the start, so a later Core finds the session even if the backend default changes.
+        const resolved = await backend.resolveLaunch(info.launch);
+        if (resolved !== info.launch) {
+          info.launch = resolved;
+          this.persist(entry);
+        }
+      }
       const reuse = options.reuseExisting && (await backend.exists(info.id, info.launch));
       startSize = { ...info.size };
       pty = reuse
@@ -475,6 +520,11 @@ export class SessionRegistry {
       });
     }
     entry.busy = undefined;
+    if (this.disposed) {
+      // The Core ended while the backend was starting; the backend session stays for the next reconcile.
+      pty.dispose();
+      throw new CoreError("invalid_state", `Session ${info.id} started after the registry was shut down`);
+    }
     if (options.clearOutput) entry.output.clear();
     this.bindPty(entry, pty);
     // The writer may have resized while the backend was starting.
@@ -559,10 +609,74 @@ export class SessionRegistry {
           entry.endedDuringOp = exitCode === undefined ? {} : { exitCode };
           return;
         }
-        // Without an exit code the process or tmux client was lost unexpectedly (backend/types.ts).
-        this.setState(entry, exitCode === undefined ? "Interrupted" : "Exited");
+        // Without an exit code the backend cannot tell what ended (backend/types.ts): if only the client was
+        // lost (tmux detach), the session lives on and gets a new PTY.
+        if (exitCode === undefined) void this.reattach(entry);
+        else this.setState(entry, "Exited");
       }),
     ];
+  }
+
+  /**
+   * Re-attaches a session whose PTY ended without exit code: `exists` → `attach`, up to one attempt per entry
+   * of `reattachDelaysMs`. State, views and writer stay meanwhile; the session is busy. A PTY that is lost
+   * again within `REATTACH_STABLE_MS` uses the same attempts. Ends `Interrupted` when the backend session is
+   * gone or every attempt failed.
+   */
+  private async reattach(entry: SessionEntry): Promise<void> {
+    const { info } = entry;
+    const backend = this.backendFor(info.launch);
+    const budget = entry.reattach;
+    if (this.now().getTime() - budget.boundAt > REATTACH_STABLE_MS) budget.attempts = 0;
+    entry.busy = "reattach";
+    let pty: PtyHandle | undefined;
+    let size: TerminalSize = { ...info.size };
+    while (backend && !pty && budget.attempts < this.reattachDelaysMs.length) {
+      const wait = this.reattachDelaysMs[budget.attempts] ?? 0;
+      budget.attempts += 1;
+      if (wait > 0) await this.delay(wait);
+      if (this.disposed) return;
+      let exists: boolean;
+      try {
+        exists = await backend.exists(info.id, info.launch);
+      } catch {
+        continue;
+      }
+      if (this.disposed) return;
+      if (!exists) break;
+      try {
+        size = { ...info.size };
+        pty = await backend.attach(info.id, info.launch, size);
+      } catch {
+        continue;
+      }
+    }
+    if (this.disposed) {
+      pty?.dispose();
+      return;
+    }
+    entry.busy = undefined;
+    if (!pty) {
+      this.setState(entry, "Interrupted");
+      return;
+    }
+    budget.boundAt = this.now().getTime();
+    this.bindPty(entry, pty);
+    // The writer may have resized and views may have come or gone while the client was away.
+    if (info.size.cols !== size.cols || info.size.rows !== size.rows) pty.resize(info.size);
+    if (entry.views.size > 0 && info.state === "Detached") this.setState(entry, "Running");
+    else if (entry.views.size === 0 && info.state === "Running") this.setState(entry, "Detached");
+  }
+
+  /** A timer that `dispose()` cancels; the waiting operation then never continues. */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.timers.delete(timer);
+        resolve();
+      }, ms);
+      this.timers.add(timer);
+    });
   }
 
   private releasePty(entry: SessionEntry): void {
@@ -615,6 +729,10 @@ export class SessionRegistry {
     } catch {
       return settle("Interrupted");
     }
+    if (this.disposed) {
+      pty.dispose();
+      return info.state;
+    }
     // Bound and settled in one synchronous step, so no PTY end falls in between.
     this.bindPty(entry, pty);
     return settle("Detached");
@@ -643,6 +761,7 @@ function newEntry(info: SessionInfo): SessionEntry {
     attachCollectors: new Set(),
     busy: undefined,
     endedDuringOp: undefined,
+    reattach: { attempts: 0, boundAt: Number.NEGATIVE_INFINITY },
   };
 }
 

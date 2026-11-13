@@ -17,6 +17,7 @@ import type {
   PayloadRule,
 } from "./messages.js";
 import { ERROR_CODES, PROTOCOL_VERSION, SESSION_STATES } from "./model.js";
+import type { BackendKind } from "./model.js";
 
 export const MAX_TERMINAL_DIMENSION = 10_000;
 const MAX_CLIENT_KIND_LENGTH = 64;
@@ -105,9 +106,11 @@ const checkSize: Check = (value, path) => {
   dimension(obj, "rows", path);
 };
 
+const isBackendKind = oneOf(["wsl", "windows"] satisfies BackendKind[]);
+
 const checkLaunch: Check = (value, path) => {
   const obj = record(value, path);
-  oneOf(["wsl", "windows"])(present(obj, "backend", path), `${path}.backend`);
+  isBackendKind(present(obj, "backend", path), `${path}.backend`);
   string(obj, "cwd", path);
   const backend = obj["backend"];
   if (backend === "windows" && obj["distro"] !== undefined) {
@@ -191,6 +194,7 @@ const PARAMS_CHECK: Record<Method, Check> = {
   },
   "session.claimWriter": (value, path) => string(record(value, path), "viewId", path),
   "session.kill": (value, path) => string(record(value, path), "sessionId", path),
+  "core.status": checkEmpty,
   "core.shutdown": (value, path) => optional(record(value, path), "stopSessions", path, isBoolean),
 };
 
@@ -214,6 +218,11 @@ const RESULT_CHECK: Record<Method, Check> = {
   "session.resize": checkEmpty,
   "session.claimWriter": checkEmpty,
   "session.kill": checkEmpty,
+  "core.status": (value, path) => {
+    const kinds = present(record(value, path), "backendUnavailable", path);
+    if (!Array.isArray(kinds)) fail(`${path}.backendUnavailable must be an array`);
+    kinds.forEach((kind, index) => isBackendKind(kind, `${path}.backendUnavailable[${index}]`));
+  },
   "core.shutdown": checkEmpty,
 };
 

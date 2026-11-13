@@ -1,0 +1,64 @@
+name: OpenSpec
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openspec-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-open-changes:
+    name: OpenSpec archived and valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A change is archived in the same pull request that implements it, so that
+      # openspec/specs always describes what is on main.
+      - name: Reject changes that are not archived
+        run: |
+          open_changes=()
+          for dir in openspec/changes/*/; do
+            [[ -d "$dir" ]] || continue
+            name="$(basename "$dir")"
+            [[ "$name" == "archive" ]] && continue
+            open_changes+=("$name")
+          done
+
+          if (( ${#open_changes[@]} > 0 )); then
+            for name in "${open_changes[@]}"; do
+              echo "::error file=openspec/changes/${name}::OpenSpec change '${name}' is not archived. Run 'openspec archive ${name} -y' before merging."
+            done
+            exit 1
+          fi
+
+          echo "No open OpenSpec changes."
+
+      # The change validation does not fully check MODIFIED requirements (for
+      # example their length), so the merged specs are validated as well.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ !cancelled() }}
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/openspec/package-lock.json
+
+      # The CLI version is pinned in tools/openspec/package.json and its lockfile.
+      - name: Install OpenSpec CLI
+        if: ${{ !cancelled() }}
+        run: npm ci --ignore-scripts --prefix tools/openspec
+
+      - name: Validate merged specs
+        if: ${{ !cancelled() }}
+        run: tools/openspec/node_modules/.bin/openspec validate --specs --strict

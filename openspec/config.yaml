@@ -1,0 +1,56 @@
+schema: spec-driven
+
+context: |
+  Schreibe alle OpenSpec-Artefakte auf Deutsch.
+
+  Projekt: TermDock, ein persistenter Workspace- und Terminal-Manager für
+  Windows (WSL-first, CLI-native). Konzept: docs/concept/v1-konzept.txt.
+  Architekturentscheidungen: docs/adr/.
+
+  TermDock organisiert Projektkontexte und Terminal-Sessions. Claude Code,
+  Codex und andere Harnesses laufen als normale CLI-Programme in
+  Startprofilen. TermDock entwickelt keine eigene Agent-Laufzeit, keine
+  Prompt-Orchestrierung, kein SSH/Remote und keine Synchronisation.
+
+  Architektur: Ein eigener Core-Prozess (Node, packages/core) verwaltet
+  Session-Identitäten, Lifecycle, Eingabe-Lock, Backends und Storage.
+  Desktop-Fenster (Electron, React, xterm.js, apps/desktop) sind Clients über
+  eine lokale Named Pipe mit dem Vertrag aus packages/protocol.
+  WSL-Backend über tmux (eigener Socket -L termdock), Windows-Backend über
+  ConPTY (node-pty). Metadaten in SQLite (node:sqlite), Verlauf als
+  Ringpuffer-Segmente mit 10 MiB je Session.
+
+  Session-Zustände: Starting, Running, Detached, Exited, Interrupted, Archived.
+  Eine Session kann in mehreren Views sichtbar sein, genau eine View schreibt.
+
+  Lies AGENTS.md, docs/agent-lessons-learned.md, docs/adr/ und passende Regeln
+  aus .agents/instructions/ vor Änderungen. Halte den Scope auf V1 begrenzt
+  und erfinde keine bestehenden APIs oder Features.
+
+rules:
+  proposal:
+    - Nenne Non-Goals, Security-Auswirkungen und Breaking Changes.
+    - Nenne betroffene Pakete, IPC-Methoden und Datenmodelle.
+    - Ordne neue Funktionen einer Phase aus Kapitel 12 des Konzepts zu.
+  specs:
+    - Verwende Given/When/Then.
+    - Formuliere Anforderungen eindeutig und testbar.
+    - Beschreibe Lifecycle-Übergänge, Abbruch, Neustart von Core, UI und WSL und Fehlerfälle.
+    - Beschreibe bei Mehrfenster-Verhalten, welche View schreibt und wer die Größe bestimmt.
+  design:
+    - Halte Core, Protocol und Desktop getrennt; Abhängigkeiten nur desktop → protocol und core → protocol.
+    - Neue Prozesse, Dienste oder Dependencies müssen begründet werden.
+    - Weicht das Design von einem ADR ab, passe das ADR an.
+  tasks:
+    - Verknüpfe neues Verhalten mit Tests.
+    - Teste Backends über die Backend-Schnittstelle und echte WSL-Integrationstests hinter TERMDOCK_WSL_TESTS=1.
+    - Halte Typecheck, Lint und Tests nach jedem Task grün.
+    - Verwende Conventional Commits.
+
+operations:
+  apply:
+    guidance:
+      - Führe zuerst fokussierte Tests aus.
+  archive:
+    guidance:
+      - Halte die Abschlusszusammenfassung kurz.

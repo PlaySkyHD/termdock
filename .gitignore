@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+coverage/
+graphify-out/
+.claude/worktrees/
+.claude/settings.local.json
+.env
+.env.*

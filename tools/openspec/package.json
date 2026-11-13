@@ -1,0 +1,8 @@
+{
+  "name": "termdock-openspec-tooling",
+  "private": true,
+  "description": "Pinned OpenSpec CLI for CI (.github/workflows/openspec.yml) and local use (npx --prefix tools/openspec openspec). Update the version here and in package-lock.json.",
+  "dependencies": {
+    "@fission-ai/openspec": "1.14.2"
+  }
+}

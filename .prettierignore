@@ -1,0 +1,8 @@
+dist
+node_modules
+openspec
+docs/concept
+tools/openspec/node_modules
+graphify-out
+package-lock.json
+*.md

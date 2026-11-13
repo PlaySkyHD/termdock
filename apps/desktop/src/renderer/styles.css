@@ -80,12 +80,91 @@ input {
   visibility: hidden;
 }
 
-.terminal-view {
+/* --- Panes of a tab (#27): positioned by shares of the tab, dividers above them ---------------- */
+
+.pane-tree {
+  position: absolute;
+  inset: 0;
+}
+
+.pane {
+  position: absolute;
   box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* The active pane of a split tab; drawn above the terminal, which would cover an outline. */
+.pane--active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 1px solid var(--td-accent);
+  pointer-events: none;
+}
+
+.divider {
+  position: absolute;
+  z-index: 3;
+  background: var(--td-border);
+  background-clip: content-box;
+  touch-action: none;
+}
+
+.divider--row {
+  width: 1px;
+  margin-left: -3px;
+  padding: 0 3px;
+  cursor: col-resize;
+}
+
+.divider--column {
+  height: 1px;
+  margin-top: -3px;
+  padding: 3px 0;
+  cursor: row-resize;
+}
+
+.divider:hover,
+.divider--dragging {
+  background-color: var(--td-accent);
+}
+
+.terminal-pane {
+  position: relative;
   height: 100%;
+  overflow: hidden;
+}
+
+/* The fit addon reads the computed height of this element and ignores its padding: with `content-box` that
+   height is what is left for the rows, otherwise the last row would be cut off. */
+.terminal-view {
+  box-sizing: content-box;
+  height: calc(100% - 4px);
   padding: 4px 0 0 8px;
   /* A reader shows the writer's size; a smaller area clips it (ADR 0006, #27). */
   overflow: hidden;
+}
+
+/* A reader: the terminal keeps the writer's size; the frame lies on its screen and dims all around it. */
+.reader-frame {
+  position: absolute;
+  z-index: 1;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.reader-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--td-status-reader);
+  color: var(--td-status-foreground);
+  font-size: 12px;
+  pointer-events: none;
 }
 
 /* --- Sidebar --------------------------------------------------------------------------------- */
@@ -326,8 +405,13 @@ input {
   cursor: pointer;
 }
 
-.icon-button:hover {
+.icon-button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* --- Tab bar --------------------------------------------------------------------------------- */
@@ -349,9 +433,19 @@ input {
 
 .tab-bar__tabs {
   display: flex;
+  flex: 1;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.tab-bar__actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 2px;
+  margin: 0 6px;
+  color: var(--td-foreground);
 }
 
 .tab {

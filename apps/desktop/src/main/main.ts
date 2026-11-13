@@ -33,7 +33,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
 const RENDERER = path.join(here, "..", "renderer", "index.html");
 /** Upper bound of a whole screenshot run, including the start of the core and WSL. */
-const SCREENSHOT_TIMEOUT_MS = 180_000;
+const SCREENSHOT_TIMEOUT_MS = 360_000;
 
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
 

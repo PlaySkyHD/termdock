@@ -14,6 +14,10 @@ class FakeSurface implements TerminalSurface {
   rows = 24;
   area: TerminalSize = { cols: 120, rows: 40 };
   screen: string[] = [];
+  cursorShown = false;
+  showCursor(): void {
+    this.cursorShown = true;
+  }
   private listener: ((data: string) => void) | undefined;
 
   write(data: Uint8Array | string): void {
@@ -99,15 +103,30 @@ class FakeApi implements TermdockApi {
   }
 }
 
+/** Stand-in for the layout delay: what is planned runs only on `elapse()`. */
+class ManualDelay {
+  planned: Array<() => void> = [];
+  readonly schedule = (run: () => void): (() => void) => {
+    this.planned.push(run);
+    return () => (this.planned = this.planned.filter((each) => each !== run));
+  };
+  elapse(): void {
+    for (const run of this.planned.splice(0)) run();
+  }
+}
+
 async function opened(view: Partial<AttachedView>) {
   const api = new FakeApi();
   const surface = new FakeSurface();
   const statuses: ViewStatus[] = [];
-  const controller = new TerminalController(api, surface, (status) => statuses.push(status));
+  const delay = new ManualDelay();
+  const controller = new TerminalController(api, surface, (status) => statuses.push(status), {
+    scheduleLayout: delay.schedule,
+  });
   const opening = controller.open("s1");
   api.answerAttach(view);
   await opening;
-  return { api, surface, controller, statuses };
+  return { api, surface, controller, statuses, delay };
 }
 
 describe("TerminalController", () => {
@@ -196,6 +215,12 @@ describe("TerminalController", () => {
     expect(surface.screen).toEqual(["<reset>", "out\r\nuser@host:~$ \x1b[0m"]);
   });
 
+  it("shows the cursor of the snapshot also in a reader that never had the focus", async () => {
+    const { surface } = await opened({ writerViewId: "v0" });
+
+    expect(surface.cursorShown).toBe(true);
+  });
+
   it("keeps control sequences the core appended behind the blank rows, without the rows", async () => {
     const api = new FakeApi();
     const surface = new FakeSurface();
@@ -237,11 +262,13 @@ describe("TerminalController", () => {
   });
 
   it("as writer follows a smaller area and sends the new size once", async () => {
-    const { api, surface, controller } = await opened({ writerViewId: "v1" });
+    const { api, surface, controller, delay } = await opened({ writerViewId: "v1" });
 
     surface.area = { cols: 70, rows: 20 };
     controller.layoutChanged();
+    delay.elapse();
     controller.layoutChanged();
+    delay.elapse();
 
     expect(api.resizes).toEqual([
       ["v1", { cols: 120, rows: 40 }],
@@ -249,13 +276,50 @@ describe("TerminalController", () => {
     ]);
   });
 
+  it("as writer bundles area changes within the delay into one resize with the last size", async () => {
+    const { api, surface, controller, delay } = await opened({ writerViewId: "v1" });
+
+    for (const cols of [110, 100, 90]) {
+      surface.area = { cols, rows: 40 };
+      controller.layoutChanged();
+    }
+    expect(api.resizes).toHaveLength(1); // only the fit after the attach
+    expect(delay.planned).toHaveLength(1);
+    delay.elapse();
+
+    expect(api.resizes.slice(1)).toEqual([["v1", { cols: 90, rows: 40 }]]);
+    expect([surface.cols, surface.rows]).toEqual([90, 40]);
+  });
+
+  it("sends nothing for an area that cannot be measured", async () => {
+    const { api, surface, controller, delay } = await opened({ writerViewId: "v1" });
+    surface.proposeSize = () => undefined;
+
+    controller.layoutChanged();
+    delay.elapse();
+
+    expect(api.resizes).toHaveLength(1);
+  });
+
+  it("drops a planned layout when it is disposed", async () => {
+    const { api, surface, controller, delay } = await opened({ writerViewId: "v1" });
+    surface.area = { cols: 70, rows: 20 };
+
+    controller.layoutChanged();
+    await controller.dispose();
+    delay.elapse();
+
+    expect(api.resizes).toHaveLength(1);
+  });
+
   it("as reader drops input and automatic replies and shows the writer's size", async () => {
-    const { api, surface, controller, statuses } = await opened({ writerViewId: "v0" });
+    const { api, surface, controller, statuses, delay } = await opened({ writerViewId: "v0" });
 
     surface.emitData("typed");
     surface.emitData("\x1b[?1;2c");
     surface.area = { cols: 50, rows: 10 };
     controller.layoutChanged();
+    delay.elapse();
 
     expect(api.inputs).toEqual([]);
     expect(api.resizes).toEqual([]);
@@ -304,13 +368,14 @@ describe("TerminalController", () => {
   });
 
   it("stays closed after the core is gone: no role change, no input, no resize", async () => {
-    const { api, surface, controller, statuses } = await opened({ writerViewId: "v1" });
+    const { api, surface, controller, statuses, delay } = await opened({ writerViewId: "v1" });
     const resizesBefore = api.resizes.length;
 
     api.emit({ kind: "coreClosed" });
     api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
     surface.area = { cols: 60, rows: 20 };
     controller.layoutChanged();
+    delay.elapse();
     surface.emitData("x");
     await controller.claimWriter();
 

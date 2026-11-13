@@ -1,4 +1,5 @@
-// Tab bar: the sidebar toggle at the left, one tab per view, a close button on each.
+// Tab bar: the sidebar toggle at the left, one tab per pane tree with a close button on each, and at the right
+// the actions on the active pane (split right, split down, close pane).
 import type { LayoutTab, SessionInfo } from "@termdock/protocol";
 import { StateIcon } from "./StateIcon.js";
 import { tabSessionId } from "./ui-store.js";
@@ -11,6 +12,12 @@ export interface TabBarProps {
   onToggleSidebar: () => void;
   onFocus: (tabId: string) => void;
   onClose: (tabId: string) => void;
+  /** Panes of the active tab (0 without one) and the limit per tab. */
+  panes: number;
+  maxPanes: number;
+  /** Splits the active pane; the new pane shows the same session. */
+  onSplit: (direction: "row" | "column") => void;
+  onClosePane: () => void;
 }
 
 export function TabBar({
@@ -21,7 +28,13 @@ export function TabBar({
   onToggleSidebar,
   onFocus,
   onClose,
+  panes,
+  maxPanes,
+  onSplit,
+  onClosePane,
 }: TabBarProps) {
+  const full = panes >= maxPanes;
+  const splitTitle = (text: string): string => (full ? `Höchstens ${maxPanes} Panes je Tab` : text);
   return (
     <div className="tab-bar">
       <button
@@ -74,6 +87,53 @@ export function TabBar({
           );
         })}
       </div>
+      {panes > 0 && (
+        <div className="tab-bar__actions">
+          <button
+            className="icon-button"
+            type="button"
+            data-action="split-row"
+            disabled={full}
+            title={splitTitle("Rechts teilen")}
+            aria-label="Rechts teilen"
+            onClick={() => onSplit("row")}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" />
+              <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" />
+            </svg>
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            data-action="split-column"
+            disabled={full}
+            title={splitTitle("Unten teilen")}
+            aria-label="Unten teilen"
+            onClick={() => onSplit("column")}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" />
+              <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" />
+            </svg>
+          </button>
+          {panes > 1 && (
+            <button
+              className="icon-button"
+              type="button"
+              data-action="close-pane"
+              title="Pane schließen"
+              aria-label="Pane schließen"
+              onClick={onClosePane}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" />
+                <path d="M6 6l4 4M10 6l-4 4" stroke="currentColor" />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

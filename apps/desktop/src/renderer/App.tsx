@@ -1,20 +1,23 @@
-// Window content: sidebar, tab bar with one terminal view per tab, and the status bar (ADR 0006).
-// All tabs of the window stay mounted and attached; the inactive ones are only hidden (design add-sidebar-tabs).
+// Window content: sidebar, tab bar, the panes of every tab with one terminal view each, and the status bar
+// (ADR 0006). All tabs of the window stay mounted and attached; the inactive ones are only hidden.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { SessionId, SessionInfo } from "@termdock/protocol";
+import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { coreHints, endedNotice, isAttachable } from "./session-display.js";
+import { PaneTree } from "./PaneTree.js";
+import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
 import { Sidebar } from "./Sidebar.js";
+import type { OpenMode } from "./Sidebar.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabBar } from "./TabBar.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
-import { TerminalView } from "./TerminalView.js";
-import { activeTab, MAX_TABS, tabSessionId, UiStore } from "./ui-store.js";
+import { activeTab, MAX_PANES, MAX_TABS, paneCount, tabSessionId, UiStore } from "./ui-store.js";
+import type { SplitDirection } from "./ui-store.js";
 
 export function App({ api }: { api: TermdockApi }) {
   const store = useMemo(() => new UiStore({ newId: () => crypto.randomUUID() }), []);
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  // Views by pane id.
   const [statuses, setStatuses] = useState<Record<string, ViewStatus>>({});
   const controllers = useRef(new Map<string, TerminalController>());
   const [formOpen, setFormOpen] = useState(false);
@@ -35,13 +38,32 @@ export function App({ api }: { api: TermdockApi }) {
   const [focusSignal, setFocusSignal] = useState(0);
   const refocus = useCallback(() => setFocusSignal((signal) => signal + 1), []);
 
-  const open = useCallback(
-    (sessionId: SessionId, forceNew: boolean) => {
-      const tabId = store.openSession(sessionId, { forceNew });
-      setNotice(tabId === undefined ? `Höchstens ${MAX_TABS} Tabs je Fenster` : undefined);
+  /**
+   * Splits the active pane of the active tab; the new pane shows `sessionId`. With the same session the new view
+   * reads, so the writing pane stays active and keeps the focus (the store decides, `splitPane`).
+   */
+  const split = useCallback(
+    (direction: SplitDirection, sessionId: SessionId) => {
+      const tab = activeTab(store.getState());
+      if (!tab) return;
+      const paneId = store.splitPane(tab.id, tab.activePaneId, direction, sessionId);
+      setNotice(paneId === undefined ? `Höchstens ${MAX_PANES} Panes je Tab` : undefined);
       refocus();
     },
     [store, refocus],
+  );
+
+  const open = useCallback(
+    (sessionId: SessionId, mode: OpenMode) => {
+      if (mode === "split" && activeTab(store.getState())) {
+        split("row", sessionId);
+        return;
+      }
+      const tabId = store.openSession(sessionId, { forceNew: mode === "newTab" });
+      setNotice(tabId === undefined ? `Höchstens ${MAX_TABS} Tabs je Fenster` : undefined);
+      refocus();
+    },
+    [store, refocus, split],
   );
 
   const create = useCallback(
@@ -57,7 +79,7 @@ export function App({ api }: { api: TermdockApi }) {
             // The event of the main process may have added the session already; the store keeps what it has.
             store.sessionCreated(session);
             setFormOpen(false);
-            open(session.id, false);
+            open(session.id, "tab");
           },
           (failure: unknown) => setCreateError(failure instanceof Error ? failure.message : String(failure)),
         )
@@ -69,19 +91,25 @@ export function App({ api }: { api: TermdockApi }) {
     [api, store, open],
   );
 
-  const setStatus = useCallback((tabId: string, status: ViewStatus | undefined) => {
+  const setStatus = useCallback((paneId: string, status: ViewStatus | undefined) => {
     setStatuses((current) => {
       if (status === undefined) {
-        const { [tabId]: _gone, ...rest } = current;
+        const { [paneId]: _gone, ...rest } = current;
         return rest;
       }
-      return { ...current, [tabId]: status };
+      return { ...current, [paneId]: status };
     });
+  }, []);
+
+  const setController = useCallback((paneId: string, controller: TerminalController | undefined) => {
+    if (controller) controllers.current.set(paneId, controller);
+    else controllers.current.delete(paneId);
   }, []);
 
   const tab = activeTab(state);
   const activeSessionId = tab && tabSessionId(tab);
   const activeSession = state.sessions.find((session) => session.id === activeSessionId);
+  const activeView = tab ? statuses[tab.activePaneId] : undefined;
   const { sidebarVisible = true, tabs } = state.window;
 
   const showForm = (): void => {
@@ -112,42 +140,64 @@ export function App({ api }: { api: TermdockApi }) {
           activeTabId={state.window.activeTabId}
           sessions={state.sessions}
           sidebarVisible={sidebarVisible}
+          panes={tab ? paneCount(tab) : 0}
+          maxPanes={MAX_PANES}
           onToggleSidebar={() => store.toggleSidebar()}
           onFocus={(tabId) => {
             store.focusTab(tabId);
             refocus();
           }}
           onClose={(tabId) => store.closeTab(tabId)}
+          onSplit={(direction) => activeSessionId !== undefined && split(direction, activeSessionId)}
+          onClosePane={() => {
+            if (tab) store.closePane(tab.id, tab.activePaneId);
+            setNotice(undefined);
+            refocus();
+          }}
         />
         <div className="tab-panels">
           {tabs.length === 0 && (
             <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
           )}
-          {tabs.map((each) => (
-            <TabPanel
-              key={each.id}
-              api={api}
-              sessionId={tabSessionId(each)}
-              session={state.sessions.find((session) => session.id === tabSessionId(each))}
-              active={each.id === state.window.activeTabId}
-              focusSignal={focusSignal}
-              onStatus={(status) => setStatus(each.id, status)}
-              onController={(controller) =>
-                controller
-                  ? controllers.current.set(each.id, controller)
-                  : controllers.current.delete(each.id)
-              }
-            />
-          ))}
+          {tabs.map((each) => {
+            const active = each.id === state.window.activeTabId;
+            return (
+              <div
+                key={each.id}
+                className={`tab-panel${active ? "" : " tab-panel--hidden"}`}
+                data-active={active}
+              >
+                <PaneTree
+                  api={api}
+                  tab={each}
+                  sessions={state.sessions}
+                  active={active}
+                  focusSignal={focusSignal}
+                  onStatus={setStatus}
+                  onController={setController}
+                  onPanePress={(paneId) => store.focusPane(each.id, paneId)}
+                  onPaneClick={(paneId) => {
+                    // A real click into a reading pane takes the writer, selecting text does not;
+                    // claimWriter never rejects.
+                    if (statuses[paneId]?.role === "reader")
+                      void controllers.current.get(paneId)?.claimWriter();
+                  }}
+                  onMoveDivider={(splitId, index, delta, minShare) =>
+                    store.moveDivider(each.id, splitId, index, delta, minShare)
+                  }
+                />
+              </div>
+            );
+          })}
         </div>
       </main>
       <StatusBar
         session={activeSession}
-        view={tab ? statuses[tab.id] : undefined}
+        view={activeView}
         hints={coreHints(state.coreStatus, state.coreClosed)}
         notice={notice}
         // claimWriter never rejects; a refusal arrives as the error of the view status.
-        onClaimWriter={() => void (tab && controllers.current.get(tab.id)?.claimWriter())}
+        onClaimWriter={() => void (tab && controllers.current.get(tab.activePaneId)?.claimWriter())}
       />
     </div>
   );
@@ -174,49 +224,6 @@ function EmptyState({
       <button className="button button--primary" type="button" onClick={onNewSession}>
         Neue WSL-Session
       </button>
-    </div>
-  );
-}
-
-interface TabPanelProps {
-  api: TermdockApi;
-  sessionId: SessionId | undefined;
-  session: SessionInfo | undefined;
-  active: boolean;
-  focusSignal: number;
-  onStatus: (status: ViewStatus | undefined) => void;
-  onController: (controller: TerminalController | undefined) => void;
-}
-
-/**
- * One tab. A session that cannot be attached (starting, exited, interrupted) shows a notice instead of a view.
- * Once attached, the view stays when the session ends, so its last output remains readable.
- */
-function TabPanel({ api, sessionId, session, active, focusSignal, onStatus, onController }: TabPanelProps) {
-  const attachable = session !== undefined && isAttachable(session.state);
-  const [attached, setAttached] = useState(attachable);
-  useEffect(() => {
-    if (attachable) setAttached(true);
-  }, [attachable]);
-
-  const notice = session ? endedNotice(session) : undefined;
-  return (
-    <div className={`tab-panel${active ? "" : " tab-panel--hidden"}`} data-active={active}>
-      {(attached || attachable) && sessionId !== undefined ? (
-        <TerminalView
-          api={api}
-          sessionId={sessionId}
-          active={active}
-          focusSignal={focusSignal}
-          onStatus={onStatus}
-          onController={onController}
-        />
-      ) : (
-        <div className="empty-state" data-view="notice">
-          <h1 className="empty-state__title">{notice?.title ?? "Session nicht gefunden"}</h1>
-          <p>{notice?.detail ?? "Der Core kennt diese Session nicht (mehr)."}</p>
-        </div>
-      )}
     </div>
   );
 }

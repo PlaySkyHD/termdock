@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>TermDock PoC</title>
+    <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #1e1e1e;
+        color: #ddd;
+        font: 12px system-ui, sans-serif;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+      #bar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 4px 8px;
+        background: #2d2d2d;
+      }
+      #bar.writer {
+        background: #1f4d2b;
+      }
+      #status {
+        margin-left: auto;
+      }
+      #terminal {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <strong id="label"></strong>
+      <button id="claim">Schreibrecht übernehmen</button>
+      <button id="reattach">Detach/Reattach</button>
+      <button id="open">Neues Fenster</button>
+      <span id="status"></span>
+    </div>
+    <div id="terminal"></div>
+    <script type="module" src="renderer.mjs"></script>
+  </body>
+</html>

@@ -56,7 +56,13 @@ Der Header SHALL höchstens 1 MiB (1048576 Bytes) und die Nutzdaten höchstens 4
 
 ### Requirement: Fehler bei kaputtem Header
 
-Ein Header, der kein gültiges UTF-8-JSON-Objekt ist, SHALL einen Protokollfehler auslösen. Nach einem Protokollfehler SHALL der Decoder unbrauchbar bleiben und jede weitere Eingabe mit einem Fehler ablehnen.
+Ein Header, der kein gültiges UTF-8-JSON-Objekt ist, SHALL einen Protokollfehler auslösen. Nach einem Protokollfehler SHALL der Decoder unbrauchbar bleiben und jede weitere Eingabe mit einem Fehler ablehnen. Frames, die im selben Chunk vor dem fehlerhaften vollständig waren, SHALL der Decoder noch liefern; der Fehler SHALL beim nächsten `push` geworfen werden.
+
+#### Scenario: Gültiger Frame vor kaputtem Frame im selben Chunk
+
+- **GIVEN** ein Chunk mit zwei gültigen Frames, gefolgt von einem Frame mit kaputtem JSON
+- **WHEN** der Decoder den Chunk verarbeitet
+- **THEN** liefert er die zwei gültigen Frames und wirft den Protokollfehler erst beim nächsten `push`
 
 #### Scenario: Kaputtes JSON
 
@@ -154,9 +160,31 @@ Die erste Nachricht jedes Clients SHALL die Anfrage `hello { protocolVersion, cl
 
 #### Scenario: Ungültiges Versionsformat
 
-- **GIVEN** ein `hello` mit `protocolVersion: "abc"`
+- **GIVEN** ein `hello` mit `protocolVersion: "abc"` oder mit führenden Nullen wie `"01.0"`
 - **WHEN** es geparst wird
 - **THEN** ist das Ergebnis ein Fehler `bad_request`
+
+### Requirement: Eingabehärtung
+
+Ids (`id`, `clientId`, `sessionId`, `viewId`, `workspaceId`, `profileId`, `writerViewId`) SHALL höchstens 128 Zeichen lang sein. Fremde Werte in Fehlermeldungen SHALL auf 64 Zeichen gekürzt werden. In `LaunchSpec` SHALL `distro` nur bei Backend `wsl` und `shell` nur bei Backend `windows` erlaubt sein.
+
+#### Scenario: Zu lange Id
+
+- **GIVEN** eine Anfrage mit einer `sessionId` von 129 Zeichen
+- **WHEN** sie geparst wird
+- **THEN** ist das Ergebnis ein Fehler `bad_request`
+
+#### Scenario: Lange Methode in Fehlermeldung
+
+- **GIVEN** eine Anfrage mit einem Methodennamen von 10000 Zeichen
+- **WHEN** sie geparst wird
+- **THEN** ist die Fehlermeldung kürzer als 200 Zeichen
+
+#### Scenario: Backend-fremdes Startfeld
+
+- **GIVEN** ein `session.create` mit Backend `windows` und `distro`, oder Backend `wsl` und `shell`
+- **WHEN** es geparst wird
+- **THEN** ist das Ergebnis ein Fehler `bad_request`, der das Feld benennt
 
 ### Requirement: Keine Node-spezifischen APIs
 

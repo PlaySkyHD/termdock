@@ -131,6 +131,82 @@ describe("parseRequest", () => {
     expect(error.code).toBe("bad_request");
     expect(error.message).toContain("params.protocolVersion");
   });
+
+  it("rejects a version with leading zeros", () => {
+    const error = failure(
+      parseRequest(request("hello", { protocolVersion: "01.0", clientId: "c", clientKind: "desktop" })),
+    );
+    expect(error.code).toBe("bad_request");
+  });
+
+  it("rejects distro for backend windows and shell for backend wsl", () => {
+    const windows = failure(
+      parseRequest(
+        request("session.create", {
+          name: "x",
+          launch: { backend: "windows", cwd: "C:\\", distro: "Ubuntu" },
+        }),
+      ),
+    );
+    expect(windows.message).toContain("params.launch.distro");
+    const wsl = failure(
+      parseRequest(
+        request("session.create", { name: "x", launch: { backend: "wsl", cwd: "/", shell: "cmd" } }),
+      ),
+    );
+    expect(wsl.message).toContain("params.launch.shell");
+    expect(
+      parseRequest(
+        request("session.create", { name: "x", launch: { backend: "windows", cwd: "C:\\", shell: "cmd" } }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      parseRequest(
+        request("session.create", { name: "x", launch: { backend: "wsl", cwd: "/", distro: "Ubuntu" } }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("limits id length to 128 characters", () => {
+    expect(failure(parseRequest(request("session.kill", { sessionId: "s".repeat(129) }))).message).toContain(
+      "params.sessionId",
+    );
+    expect(parseRequest(request("session.kill", { sessionId: "s".repeat(128) })).ok).toBe(true);
+    expect(failure(parseRequest(request("session.claimWriter", { viewId: "v".repeat(129) }))).code).toBe(
+      "bad_request",
+    );
+    expect(
+      failure(
+        parseRequest(frame({ kind: "request", id: "i".repeat(129), method: "session.list", params: {} })),
+      ).id,
+    ).toBeUndefined();
+    expect(
+      failure(
+        parseRequest(
+          request("hello", { protocolVersion: "1.0", clientId: "c".repeat(129), clientKind: "desktop" }),
+        ),
+      ).message,
+    ).toContain("params.clientId");
+  });
+
+  it("truncates untrusted values in error messages", () => {
+    const long = "x".repeat(10_000);
+    expect(failure(parseRequest(request(long, {}))).message.length).toBeLessThan(200);
+    expect(failure(parseEvent(frame({ kind: "event", event: long, data: {} }))).message.length).toBeLessThan(
+      200,
+    );
+    const version = failure(
+      parseRequest(request("hello", { protocolVersion: long, clientId: "c", clientKind: "desktop" })),
+    );
+    expect(version.message.length).toBeLessThan(200);
+    expect(
+      failure(
+        parseRequest(
+          request("session.create", { name: "x", launch: { backend: "wsl", cwd: "/", env: { [long]: 1 } } }),
+        ),
+      ).message.length,
+    ).toBeLessThan(200);
+  });
 });
 
 describe("parseResponse", () => {
@@ -300,5 +376,9 @@ describe("negotiateHello", () => {
     expect(error.code).toBe("protocol_mismatch");
     expect(error.message).toContain("2.0");
     expect(error.message).toContain(PROTOCOL_VERSION);
+  });
+
+  it("does not treat a leading-zero major version as equal", () => {
+    expect(failure(negotiateHello(hello("01.0"))).code).toBe("bad_request");
   });
 });

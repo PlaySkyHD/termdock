@@ -80,6 +80,8 @@ export class FrameDecoder {
       }
     } catch (error) {
       this.failure = error instanceof ProtocolError ? error : new ProtocolError("Frame could not be decoded");
+      // Frames completed before the error are still delivered; the error surfaces on the next push().
+      if (frames.length > 0) return frames;
       throw this.failure;
     }
     return frames;

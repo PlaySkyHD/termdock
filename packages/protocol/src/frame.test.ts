@@ -133,6 +133,15 @@ describe("encodeFrame / FrameDecoder", () => {
     }
   });
 
+  it("delivers frames completed before a broken frame, then throws on the next push", () => {
+    const broken = text("{kaputt");
+    const chunk = concat(encodeFrame({ n: 1 }), encodeFrame({ n: 2 }), u32(broken.length), broken, u32(0));
+    const decoder = new FrameDecoder();
+    const frames = decoder.push(chunk);
+    expect(frames.map((f) => f.header)).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(() => decoder.push(new Uint8Array(0))).toThrow(ProtocolError);
+  });
+
   it("stays failed after a protocol error", () => {
     const decoder = new FrameDecoder();
     expect(() => decoder.push(u32(MAX_HEADER_BYTES + 1))).toThrow(ProtocolError);

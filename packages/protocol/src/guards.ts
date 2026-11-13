@@ -20,7 +20,15 @@ import { ERROR_CODES, PROTOCOL_VERSION, SESSION_STATES } from "./model.js";
 
 export const MAX_TERMINAL_DIMENSION = 10_000;
 const MAX_CLIENT_KIND_LENGTH = 64;
-const VERSION_FORMAT = /^\d+\.\d+$/;
+const MAX_ID_LENGTH = 128;
+const MAX_QUOTED_LENGTH = 64;
+/** No leading zeros, so "01.0" cannot pass as major version 1. */
+const VERSION_FORMAT = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+/** Untrusted values in error messages are cut so a peer cannot inflate them. */
+function quote(value: string): string {
+  return value.length > MAX_QUOTED_LENGTH ? `${value.slice(0, MAX_QUOTED_LENGTH)}...` : value;
+}
 
 /** Thrown inside the guards only; the public parsers turn it into a ParseFailure. */
 class Invalid extends Error {}
@@ -50,8 +58,16 @@ function present(obj: Rec, key: string, path: string): unknown {
 function string(obj: Rec, key: string, path: string): string {
   const value = present(obj, key, path);
   if (typeof value !== "string" || value.length === 0) fail(`${path}.${key} must be a non-empty string`);
+  if ((key === "id" || key.endsWith("Id")) && value.length > MAX_ID_LENGTH) {
+    fail(`${path}.${key} must be at most ${MAX_ID_LENGTH} characters`);
+  }
   return value;
 }
+
+const isId: Check = (value, path) => {
+  if (typeof value !== "string" || value.length === 0) fail(`${path} must be a non-empty string`);
+  if (value.length > MAX_ID_LENGTH) fail(`${path} must be at most ${MAX_ID_LENGTH} characters`);
+};
 
 function optional(obj: Rec, key: string, path: string, check: Check): void {
   if (obj[key] !== undefined) check(obj[key], `${path}.${key}`);
@@ -93,6 +109,13 @@ const checkLaunch: Check = (value, path) => {
   const obj = record(value, path);
   oneOf(["wsl", "windows"])(present(obj, "backend", path), `${path}.backend`);
   string(obj, "cwd", path);
+  const backend = obj["backend"];
+  if (backend === "windows" && obj["distro"] !== undefined) {
+    fail(`${path}.distro is only allowed for backend "wsl"`);
+  }
+  if (backend === "wsl" && obj["shell"] !== undefined) {
+    fail(`${path}.shell is only allowed for backend "windows"`);
+  }
   optional(obj, "distro", path, isNonEmptyString);
   optional(obj, "shell", path, oneOf(["pwsh", "powershell", "cmd"]));
   optional(obj, "command", path, (command, commandPath) => {
@@ -103,7 +126,7 @@ const checkLaunch: Check = (value, path) => {
   });
   optional(obj, "env", path, (env, envPath) => {
     for (const [name, entry] of Object.entries(record(env, envPath))) {
-      if (typeof entry !== "string") fail(`${envPath}.${name} must be a string`);
+      if (typeof entry !== "string") fail(`${envPath}.${quote(name)} must be a string`);
     }
   });
 };
@@ -118,7 +141,7 @@ const checkSessionInfo: Check = (value, path) => {
   isBoolean(present(obj, "loggingEnabled", path), `${path}.loggingEnabled`);
   string(obj, "createdAt", path);
   string(obj, "updatedAt", path);
-  for (const key of ["workspaceId", "profileId", "writerViewId"]) optional(obj, key, path, isNonEmptyString);
+  for (const key of ["workspaceId", "profileId", "writerViewId"]) optional(obj, key, path, isId);
   optional(obj, "lastExitCode", path, isInteger);
 };
 
@@ -128,7 +151,8 @@ const checkEmpty: Check = (value, path) => {
 
 function checkVersion(obj: Rec, path: string): void {
   const version = string(obj, "protocolVersion", path);
-  if (!VERSION_FORMAT.test(version)) fail(`${path}.protocolVersion must look like "1.0", got "${version}"`);
+  if (!VERSION_FORMAT.test(version))
+    fail(`${path}.protocolVersion must look like "1.0", got "${quote(version)}"`);
 }
 
 const checkHelloParams: Check = (value, path) => {
@@ -147,8 +171,8 @@ const PARAMS_CHECK: Record<Method, Check> = {
     const obj = record(value, path);
     string(obj, "name", path);
     checkLaunch(present(obj, "launch", path), `${path}.launch`);
-    optional(obj, "workspaceId", path, isNonEmptyString);
-    optional(obj, "profileId", path, isNonEmptyString);
+    optional(obj, "workspaceId", path, isId);
+    optional(obj, "profileId", path, isId);
     optional(obj, "size", path, checkSize);
     optional(obj, "loggingEnabled", path, isBoolean);
   },
@@ -183,7 +207,7 @@ const RESULT_CHECK: Record<Method, Check> = {
     const obj = record(value, path);
     string(obj, "viewId", path);
     checkSize(present(obj, "size", path), `${path}.size`);
-    optional(obj, "writerViewId", path, isNonEmptyString);
+    optional(obj, "writerViewId", path, isId);
   },
   "session.detach": checkEmpty,
   "session.input": checkEmpty,
@@ -209,7 +233,7 @@ const EVENT_CHECK: Record<EventName, Check> = {
   "view.writerChanged": (value, path) => {
     const obj = record(value, path);
     string(obj, "sessionId", path);
-    optional(obj, "writerViewId", path, isNonEmptyString);
+    optional(obj, "writerViewId", path, isId);
   },
 };
 
@@ -242,7 +266,7 @@ function badRequest(error: unknown, id?: string): ParseFailure {
 function readableId(header: unknown): string | undefined {
   if (!isRecord(header)) return undefined;
   const id = header["id"];
-  return typeof id === "string" && id.length > 0 ? id : undefined;
+  return typeof id === "string" && id.length > 0 && id.length <= MAX_ID_LENGTH ? id : undefined;
 }
 
 export function parseRequest(frame: Frame): ParseResult<ParsedRequest> {
@@ -252,7 +276,7 @@ export function parseRequest(frame: Frame): ParseResult<ParsedRequest> {
     checkKind(header, "request");
     const requestId = string(header, "id", "header");
     const method = string(header, "method", "header");
-    if (!isMethod(method)) fail(`Unknown method "${method}"`);
+    if (!isMethod(method)) fail(`Unknown method "${quote(method)}"`);
     PARAMS_CHECK[method](present(header, "params", "header"), "params");
     checkPayload(REQUEST_PAYLOAD[method], frame.payload, method);
     return {
@@ -304,7 +328,7 @@ export function parseEvent(frame: Frame): ParseResult<ParsedEvent> {
     checkKind(header, "event");
     if (header["id"] !== undefined) fail("event must not carry an id");
     const event = string(header, "event", "header");
-    if (!isEventName(event)) fail(`Unknown event "${event}"`);
+    if (!isEventName(event)) fail(`Unknown event "${quote(event)}"`);
     EVENT_CHECK[event](present(header, "data", "header"), "data");
     checkPayload(EVENT_PAYLOAD[event], frame.payload, event);
     return { ok: true, value: { event, data: header["data"], payload: frame.payload } as ParsedEvent };
@@ -319,12 +343,21 @@ function majorVersion(version: string): string {
 
 /** Compares the client's major version with PROTOCOL_VERSION. The server closes the connection on a mismatch. */
 export function negotiateHello(params: HelloParams): ParseResult<HelloResult> {
+  if (!VERSION_FORMAT.test(params.protocolVersion)) {
+    return {
+      ok: false,
+      error: {
+        code: "bad_request",
+        message: `protocolVersion must look like "1.0", got "${quote(params.protocolVersion)}"`,
+      },
+    };
+  }
   if (majorVersion(params.protocolVersion) !== majorVersion(PROTOCOL_VERSION)) {
     return {
       ok: false,
       error: {
         code: "protocol_mismatch",
-        message: `Client speaks protocol ${params.protocolVersion}, core speaks ${PROTOCOL_VERSION}; major versions differ`,
+        message: `Client speaks protocol ${quote(params.protocolVersion)}, core speaks ${PROTOCOL_VERSION}; major versions differ`,
       },
     };
   }

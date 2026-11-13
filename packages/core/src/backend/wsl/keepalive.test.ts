@@ -109,6 +109,75 @@ describe("DistroKeepalive", () => {
     keepalive.dispose();
   });
 
+  describe("backoff", () => {
+    function backoffSetup() {
+      vi.useFakeTimers();
+      let time = 0;
+      const spawned: FakeProcess[] = [];
+      const keepalive = new DistroKeepalive(
+        (distro) => {
+          const process = new FakeProcess(distro);
+          spawned.push(process);
+          return process;
+        },
+        1000,
+        { maxDelayMs: 8000, stableMs: 30_000, now: () => time },
+      );
+      return { keepalive, spawned, advance: (ms: number) => ((time += ms), vi.advanceTimersByTime(ms)) };
+    }
+
+    it("doubles the restart delay while the process keeps dying, up to the maximum", () => {
+      const { keepalive, spawned, advance } = backoffSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      for (const delay of [1000, 2000, 4000, 8000, 8000]) {
+        spawned.at(-1)!.crash();
+        const before = spawned.length;
+        advance(delay - 1);
+        expect(spawned).toHaveLength(before);
+        advance(1);
+        expect(spawned).toHaveLength(before + 1);
+      }
+      keepalive.dispose();
+    });
+
+    it("backs off when spawning throws", () => {
+      vi.useFakeTimers();
+      let attempts = 0;
+      const keepalive = new DistroKeepalive(
+        () => {
+          attempts++;
+          throw new Error("wsl.exe missing");
+        },
+        1000,
+        { maxDelayMs: 4000 },
+      );
+      keepalive.retain("Ubuntu", "td-a");
+      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(2000);
+      expect(attempts).toBe(3);
+      vi.advanceTimersByTime(3999);
+      expect(attempts).toBe(3);
+      vi.advanceTimersByTime(1);
+      expect(attempts).toBe(4);
+      keepalive.dispose();
+    });
+
+    it("resets the delay after the process ran longer than the stable time", () => {
+      const { keepalive, spawned, advance } = backoffSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      for (const delay of [1000, 2000]) {
+        spawned.at(-1)!.crash();
+        advance(delay);
+      }
+      advance(30_001);
+      spawned.at(-1)!.crash();
+      const before = spawned.length;
+      advance(1000);
+      expect(spawned).toHaveLength(before + 1);
+      keepalive.dispose();
+    });
+  });
+
   it("dispose stops every process and prevents restarts", () => {
     vi.useFakeTimers();
     const { keepalive, spawned, running } = setup(1000);

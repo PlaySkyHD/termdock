@@ -189,6 +189,22 @@ describe("WslBackend", () => {
     expect(running()).toEqual(["Ubuntu"]);
   });
 
+  it("releases the keepalive when the state after a lost client cannot be determined", async () => {
+    let broken = false;
+    const { backend, ptys, running } = setup({
+      distro: "Ubuntu",
+      respond: (args) => (broken && args.includes("display-message") ? distroMissing : undefined),
+    });
+    const pty = await backend.start("s1", spec, { cols: 80, rows: 24 });
+    const exits: unknown[] = [];
+    pty.onExit((event) => exits.push(event));
+    broken = true;
+    ptys[0]!.process.exit();
+    await flush();
+    expect(exits).toEqual([{}]);
+    expect(running()).toEqual([]);
+  });
+
   it("dispose of the PTY ends only the client", async () => {
     const { backend, ptys, calls, running } = setup({ distro: "Ubuntu" });
     const pty = await backend.start("s1", spec, { cols: 80, rows: 24 });

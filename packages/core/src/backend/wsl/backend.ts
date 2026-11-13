@@ -103,7 +103,7 @@ export class WslBackend implements Backend {
 
   async attach(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
     const target = await this.target(spec);
-    return this.open(target, id, attachArgs(target, id, spec.cwd), size, false);
+    return this.open(target, id, attachArgs(target, id), size, false);
   }
 
   async exists(id: SessionId, spec: LaunchSpec): Promise<boolean> {
@@ -169,7 +169,14 @@ export class WslBackend implements Backend {
    */
   private async resolveEnd(target: TmuxTarget, id: SessionId): Promise<{ exitCode?: number }> {
     const name = sessionName(id);
-    const status = await this.status(target, id);
+    let status: SessionStatus;
+    try {
+      status = await this.status(target, id);
+    } catch (error) {
+      // State unknown: the session stays, but this client no longer justifies a keepalive that restarts forever.
+      this.keepalive.release(target.distro, name);
+      throw error;
+    }
     if (status === "missing") {
       this.keepalive.release(target.distro, name);
       return {};

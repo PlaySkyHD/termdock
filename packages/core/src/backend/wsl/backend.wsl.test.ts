@@ -116,6 +116,29 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     expect(await backend.exists(id, spec())).toBe(false);
   }, 30_000);
 
+  it("passes arguments and environment values ending in ; literally without running tmux commands", async () => {
+    backend = new WslBackend({ socket: SOCKET });
+    const bystander = nextId();
+    track(await backend.start(bystander, spec({ command: ["sleep", "300"] }), size));
+    const id = nextId();
+    const args = ["a\\;", ";", "b;", "c;;", "kill-server", ";"];
+    const session = track(
+      await backend.start(
+        id,
+        spec({
+          env: { TD_X: "a;" },
+          command: ["sh", "-c", 'printf "<%s>\\n" "$TD_X" "$@"; exit 3', "sh", ...args],
+        }),
+        size,
+      ),
+    );
+    expect(await session.exit).toEqual({ exitCode: 3 });
+    const expected = ["a;", ...args].map((arg) => `<${arg}>`).join("\r\n");
+    expect(session.output()).toContain(expected);
+    // An injected kill-server would have taken the bystander down.
+    expect(await backend.exists(bystander, spec())).toBe(true);
+  }, 30_000);
+
   it("reports the exit code of a program that ends immediately", async () => {
     backend = new WslBackend({ socket: SOCKET });
     const id = nextId();

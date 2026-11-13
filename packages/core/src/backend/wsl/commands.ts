@@ -52,13 +52,21 @@ const sessionTarget = (name: string) => `=${name}`;
 /** Pane target in the session; set-option, set-hook, capture-pane and display-message need this form. */
 const paneTarget = (name: string) => `=${name}:`;
 
+/**
+ * tmux reads an argument ending in `;` as a command separator. It strips one backslash in front of that `;` and
+ * passes the rest on literally (checked against tmux 3.6), so exactly one backslash is inserted.
+ */
+function tmuxLiteral(arg: string): string {
+  return arg.endsWith(";") ? `${arg.slice(0, -1)}\\;` : arg;
+}
+
 function commandArgs(spec: LaunchSpec): string[] {
   const env: string[] = [];
   for (const [key, value] of Object.entries(spec.env ?? {})) {
     if (!ENV_NAME.test(key)) throw new Error(`Invalid environment variable name: ${JSON.stringify(key)}`);
-    env.push("-e", `${key}=${value}`);
+    env.push("-e", tmuxLiteral(`${key}=${value}`));
   }
-  const command = spec.command ?? [];
+  const command = (spec.command ?? []).map(tmuxLiteral);
   // tmux hands a single argument to `sh -c`; `env --` keeps it a plain program call.
   const program = command.length === 1 ? ["env", "--", ...command] : [...command];
   return [...env, ...program];
@@ -99,8 +107,9 @@ export function startArgs(target: TmuxTarget, id: SessionId, spec: LaunchSpec): 
 }
 
 /** PTY command that attaches a new client to an existing session. */
-export function attachArgs(target: TmuxTarget, id: SessionId, cwd: string): string[] {
-  return tmux(target, cwd, ["-T", "RGB", "attach-session", "-t", sessionTarget(sessionName(id))]);
+export function attachArgs(target: TmuxTarget, id: SessionId): string[] {
+  // From ~ like has-session and kill-session: a vanished working directory must not break re-attaching.
+  return tmux(target, "~", ["-T", "RGB", "attach-session", "-t", sessionTarget(sessionName(id))]);
 }
 
 export function hasSessionArgs(target: TmuxTarget, id: SessionId): string[] {

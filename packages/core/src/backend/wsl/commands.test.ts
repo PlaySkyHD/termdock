@@ -79,6 +79,41 @@ describe("startArgs", () => {
     ]);
   });
 
+  // tmux strips one backslash before a trailing ; (verified against tmux 3.6), so one is inserted.
+  it.each([
+    [";", "\\;"],
+    ["a;", "a\\;"],
+    [";;", ";\\;"],
+    ["a\\;", "a\\\\;"],
+    ["a;b", "a;b"],
+    ["a\\", "a\\"],
+  ])("escapes a trailing ; of the command argument %j so tmux passes it on literally", (arg, escaped) => {
+    const args = startArgs(target, "abc", spec({ command: ["prog", arg] }));
+    expect(args.slice(args.indexOf("td-abc"), args.indexOf(";"))).toEqual(["td-abc", "prog", escaped]);
+  });
+
+  it("leaves only the generated separators for command-injection arguments", () => {
+    for (const command of [
+      ["sh", "-c", "x", ";", "kill-server"],
+      ["find", ".", "-exec", "rm", "{}", ";"],
+    ]) {
+      const args = startArgs(target, "abc", spec({ command }));
+      expect(args.filter((arg) => arg.endsWith(";") && !arg.endsWith("\\;"))).toHaveLength(3);
+    }
+  });
+
+  it("escapes a single-element command and environment values ending in ;", () => {
+    const single = startArgs(target, "abc", spec({ command: ["a;"] }));
+    expect(single.slice(single.indexOf("td-abc"), single.indexOf(";"))).toEqual([
+      "td-abc",
+      "env",
+      "--",
+      "a\\;",
+    ]);
+    const env = startArgs(target, "abc", spec({ env: { X: "a;", Y: "b" } }));
+    expect(env.slice(env.indexOf("-e"), env.indexOf(";"))).toEqual(["-e", "X=a\\;", "-e", "Y=b"]);
+  });
+
   it("prefixes a single-element command with env -- so tmux does not hand it to sh -c", () => {
     const args = startArgs(target, "abc", spec({ command: ["htop"] }));
     expect(args.slice(args.indexOf("td-abc"), args.indexOf(";"))).toEqual(["td-abc", "env", "--", "htop"]);
@@ -119,11 +154,12 @@ describe("startArgs", () => {
 
 describe("other tmux commands", () => {
   it("attaches with -T RGB to the exact session", () => {
-    expect(attachArgs(target, "abc", "/srv")).toEqual([
+    // Always from ~: a missing working directory must not break re-attaching to a live session.
+    expect(attachArgs(target, "abc")).toEqual([
       "-d",
       "Ubuntu",
       "--cd",
-      "/srv",
+      "~",
       "--exec",
       "tmux",
       "-L",

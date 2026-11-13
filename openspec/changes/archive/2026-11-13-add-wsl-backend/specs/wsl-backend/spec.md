@@ -26,6 +26,12 @@ Alle Aufrufe von `wsl.exe` und `tmux` SHALL Argument-Arrays sein, ohne Login-She
 - **WHEN** die Session startet
 - **THEN** erhält das Programm das Argument unverändert
 
+#### Scenario: Argument endet auf Semikolon
+
+- **GIVEN** ein `command` oder ein Umgebungswert, dessen Argument auf `;` endet (auch ein einzelnes `;` oder `x;`)
+- **WHEN** die Session startet
+- **THEN** erhält das Programm das Argument unverändert und tmux führt keinen weiteren Befehl daraus aus
+
 #### Scenario: Ungültige Session-ID
 
 - **WHEN** eine Session mit einer ID gestartet werden soll, die andere Zeichen als Buchstaben, Ziffern, `-` und `_` enthält
@@ -61,6 +67,12 @@ Die PTY der Session SHALL Eingaben an das Programm weitergeben, seine Ausgabe li
 - **GIVEN** eine laufende Session, die einen Marker ausgegeben hat
 - **WHEN** die PTY mit `dispose()` geschlossen wird
 - **THEN** meldet `exists` `true`, `snapshot` enthält den Marker und `attach` liefert eine PTY, die Eingaben annimmt
+
+#### Scenario: Reattach trotz fehlendem Arbeitsverzeichnis
+
+- **GIVEN** eine laufende Session, deren `LaunchSpec.cwd` nicht mehr existiert
+- **WHEN** `attach` aufgerufen wird
+- **THEN** hängt es eine neue PTY an die Session (der Aufruf erfolgt aus `~`)
 
 ### Requirement: Beenden
 
@@ -106,13 +118,19 @@ Solange das Backend mindestens eine Session einer Distro kennt (gestartet, angeh
 
 ### Requirement: Keepalive-Neustart und Abbau
 
-Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten. Das Schließen des Backends MUST alle Keepalives beenden, die tmux-Sessions aber bestehen lassen.
+Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit exponentiell wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen des Backends MUST alle Keepalives beenden, die tmux-Sessions aber bestehen lassen.
 
 #### Scenario: Keepalive stirbt
 
 - **GIVEN** eine bekannte Session und ihr Keepalive
 - **WHEN** der Keepalive-Prozess unerwartet endet
 - **THEN** startet kurz danach ein neuer
+
+#### Scenario: Keepalive scheitert wiederholt
+
+- **GIVEN** ein Keepalive, der sofort nach dem Start endet
+- **WHEN** er mehrfach hintereinander neu gestartet wird
+- **THEN** verdoppelt sich die Wartezeit bis höchstens 60 s statt dauernd neu zu starten
 
 #### Scenario: Backend schließen
 

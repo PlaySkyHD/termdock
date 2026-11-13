@@ -4,5 +4,6 @@ openspec
 docs/concept
 tools/openspec/node_modules
 graphify-out
+poc
 package-lock.json
 *.md

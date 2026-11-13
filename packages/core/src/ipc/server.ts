@@ -34,6 +34,7 @@ export const DEFAULT_SHUTDOWN_START_TIMEOUT_MS = 5000;
 const SHUTDOWN_SETTLE_MS = 100;
 /** A connection that has not completed `hello` after this long is destroyed (spec core-ipc, pipe security). */
 export const DEFAULT_HELLO_TIMEOUT_MS = 5000;
+export const DEFAULT_MAX_PENDING_HANDSHAKES = 32;
 
 /** Another core already holds the pipe (ADR 0001). Not an IPC error code: no client sees it over the wire. */
 export class AlreadyRunningError extends Error {
@@ -59,6 +60,8 @@ export interface CoreServerOptions {
   onInternalError?: (error: unknown) => void;
   /** How long a new connection may stay without a completed `hello`; defaults to 5 s. */
   helloTimeoutMs?: number;
+  /** Connections without completed `hello` allowed at the same time; further ones are destroyed. Defaults to 32. */
+  maxPendingHandshakes?: number;
 }
 
 interface Connection {
@@ -102,6 +105,9 @@ export class CoreServer {
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
+  private readonly maxPendingHandshakes: number;
+  /** Connections that have not completed `hello` yet. */
+  private pendingHandshakes = 0;
   private readonly onInternalError: (error: unknown) => void;
   private readonly netServer: Server;
   private readonly connections = new Set<Connection>();
@@ -121,6 +127,14 @@ export class CoreServer {
     this.startWaitMs = options.shutdownStartTimeoutMs ?? DEFAULT_SHUTDOWN_START_TIMEOUT_MS;
     this.onShutdown = options.onShutdown;
     this.helloTimeoutMs = options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS;
+    // No "off" value: a timeout that is not a positive finite number would silently disable the protection.
+    if (!Number.isFinite(this.helloTimeoutMs) || this.helloTimeoutMs <= 0) {
+      throw new RangeError(`helloTimeoutMs must be a positive finite number, got ${this.helloTimeoutMs}`);
+    }
+    this.maxPendingHandshakes = options.maxPendingHandshakes ?? DEFAULT_MAX_PENDING_HANDSHAKES;
+    if (!Number.isInteger(this.maxPendingHandshakes) || this.maxPendingHandshakes < 1) {
+      throw new RangeError(`maxPendingHandshakes must be an integer >= 1, got ${this.maxPendingHandshakes}`);
+    }
     this.onInternalError = options.onInternalError ?? (() => {});
     this.netServer = createServer((socket) => this.accept(socket));
   }
@@ -201,6 +215,12 @@ export class CoreServer {
   }
 
   private accept(socket: Socket): void {
+    if (this.pendingHandshakes >= this.maxPendingHandshakes) {
+      socket.on("error", () => {});
+      socket.destroy();
+      return;
+    }
+    this.pendingHandshakes += 1;
     const conn: Connection = {
       socket,
       decoder: new FrameDecoder(),
@@ -239,6 +259,7 @@ export class CoreServer {
     conn.closed = true;
     clearTimeout(conn.closeTimer);
     clearTimeout(conn.helloTimer);
+    if (!conn.greeted) this.pendingHandshakes -= 1;
     this.connections.delete(conn);
     for (const viewId of [...conn.views]) this.releaseView(viewId);
   }
@@ -284,6 +305,7 @@ export class CoreServer {
       return;
     }
     conn.greeted = true;
+    this.pendingHandshakes -= 1;
     clearTimeout(conn.helloTimer);
     this.write(conn, encodeFrame({ kind: "response", id: request.id, result: negotiated.value }));
   }

@@ -33,13 +33,63 @@ describe("parseDacl", () => {
     ]);
   });
 
-  it("has no entries without a DACL", () => {
-    expect(parseDacl(`O:${OWN}G:${OWN}`)).toEqual([]);
+  it("reports a missing DACL and a NULL DACL as unrestricted instead of as empty", () => {
+    expect(() => parseDacl(`O:${OWN}G:${OWN}`)).toThrow(/unrestricted/);
+    expect(() => parseDacl(`O:${OWN}G:${OWN}D:NO_ACCESS_CONTROL`)).toThrow(/unrestricted/);
+    expect(() => foreignAllowEntries(`O:${OWN}D:NO_ACCESS_CONTROL`, OWN)).toThrow(/unrestricted/);
+  });
+
+  it("treats an empty DACL as no entries (nobody has access)", () => {
+    expect(parseDacl(`O:${OWN}D:`)).toEqual([]);
+    expect(parseDacl(`O:${OWN}D:P`)).toEqual([]);
+  });
+
+  it("accepts DACL flags before the ACEs", () => {
+    expect(parseDacl("D:PAIAR(A;;FR;;;WD)")).toHaveLength(1);
+    expect(parseDacl("D:AI(A;;FR;;;WD)")).toHaveLength(1);
+  });
+
+  it("throws on text between or after the ACEs and on unknown flags", () => {
+    expect(() => parseDacl("D:(A;;FR;;;WD)garbage")).toThrow(/Unreadable SDDL/);
+    expect(() => parseDacl("D:(A;;FR;;;WD)X(A;;FR;;;AN)")).toThrow(/Unreadable SDDL/);
+    expect(() => parseDacl("D:ZZ(A;;FR;;;WD)")).toThrow(/Unreadable SDDL/);
+  });
+
+  it("throws on callback, object and other ACE types it cannot judge", () => {
+    expect(() => parseDacl("D:(XA;;FA;;;WD;(Member_of{SID(BA)}))")).toThrow(/Unreadable SDDL/);
+    expect(() => parseDacl("D:(OA;;FA;guid;;WD)")).toThrow(/Unreadable SDDL ACE/);
   });
 
   it("throws on rights or ACEs it cannot read instead of skipping them", () => {
     expect(() => parseDacl("D:(A;;ZZ;;;WD)")).toThrow(/Unknown SDDL rights/);
     expect(() => parseDacl("D:(A;;FA;;SY)")).toThrow(/Unreadable SDDL ACE/);
+  });
+
+  it("maps the single-right codes to their bit values", () => {
+    const mask = (code: string) => parseDacl(`D:(A;;${code};;;WD)`)[0]?.rights;
+    const expected: Record<string, number> = {
+      CC: 0x1,
+      DC: 0x2,
+      LC: 0x4,
+      SW: 0x8,
+      RP: 0x10,
+      WP: 0x20,
+      DT: 0x40,
+      LO: 0x80,
+      CR: 0x100,
+      SD: 0x10000,
+      RC: 0x20000,
+      WD: 0x40000,
+      WO: 0x80000,
+      KA: 0xf003f,
+      KR: 0x20019,
+      KW: 0x20006,
+      KX: 0x20019,
+      NR: 0x1,
+      NW: 0x2,
+      NX: 0x4,
+    };
+    for (const [code, value] of Object.entries(expected)) expect(mask(code), code).toBe(value);
   });
 });
 
@@ -59,6 +109,17 @@ describe("foreignAllowEntries and grantsWrite", () => {
     for (const rights of ["FA", "FW", "GA", "GW", "0x2", "0x4", "WD", "WO"]) {
       const foreign = foreignAllowEntries(`D:(A;;FA;;;${OWN})(A;;${rights};;;${OTHER})`, OWN);
       expect(foreign.some(grantsWrite), rights).toBe(true);
+    }
+  });
+
+  it("assigns write rights correctly for single-right codes and hex masks", () => {
+    const writes = (rights: string) =>
+      foreignAllowEntries(`D:(A;;${rights};;;${OTHER})`, OWN).some(grantsWrite);
+    for (const rights of ["DC", "LC", "KA", "KW", "NW", "0x120196", "0x12019f", "0x6"]) {
+      expect(writes(rights), rights).toBe(true);
+    }
+    for (const rights of ["CC", "RP", "KR", "KX", "NR", "RC", "SD", "0x120089", "0x1200a0"]) {
+      expect(writes(rights), rights).toBe(false);
     }
   });
 

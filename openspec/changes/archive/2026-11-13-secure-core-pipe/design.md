@@ -55,11 +55,15 @@ Der Standard-Deskriptor gibt Fremden keinen Schreibzugriff (Messung oben); damit
 
 ### Hello-Frist
 
-`hello` muss innerhalb von 5 s abgeschlossen sein, sonst `socket.destroy()` ohne Antwort. 5 s sind großzügig gegenüber einem lokalen Client (Millisekunden) und kurz genug, dass lesend verbundene Fremde oder hängende Clients keine Verbindungen dauerhaft belegen. Der Timer läuft je Verbindung (`helloTimer`), endet beim erfolgreichen `hello` und in `onClose`. Konfigurierbar über `helloTimeoutMs`, damit Tests ohne Wartezeit auskommen.
+`hello` muss innerhalb von 5 s abgeschlossen sein, sonst `socket.destroy()` ohne Antwort. 5 s sind großzügig gegenüber einem lokalen Client (Millisekunden) und kurz genug, dass lesend verbundene Fremde oder hängende Clients keine Verbindungen dauerhaft belegen. Der Timer läuft je Verbindung (`helloTimer`), endet beim erfolgreichen `hello` und in `onClose`. Konfigurierbar über `helloTimeoutMs`, damit Tests ohne Wartezeit auskommen. Es gibt kein „aus“: Ein Wert, der keine positive endliche Zahl ist (0, negativ, NaN, Infinity), lässt den Start mit `RangeError` scheitern, damit ein Konfigurationsfehler den Schutz nicht still abschaltet.
+
+### Grenze für Verbindungen ohne hello
+
+Die Frist begrenzt nur die Dauer, nicht die Zahl. `maxPendingHandshakes` (Standard 32, ganzzahlig ≥ 1, sonst `RangeError`) begrenzt die gleichzeitigen Verbindungen ohne abgeschlossenes `hello`; weitere werden sofort zerstört. Ein Zähler wird bei Annahme erhöht und bei `hello` oder Schließen gesenkt. 32 liegt weit über dem Bedarf eines lokalen Benutzers (Fenster plus wenige Hilfsclients) und begrenzt die Last eines lesend verbundenen Fremden.
 
 ### SDDL-Auswertung als reine Logik
 
-`parseDacl`, `foreignAllowEntries`, `grantsWrite` arbeiten auf SDDL-Text und sind ohne Windows testbar. Unbekannte Rechtecodes oder unlesbare ACEs werfen einen Fehler, damit der Test nichts stillschweigend überspringt. Als Schreibrecht gelten `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE` und `GENERIC_ALL`. Nicht fremd sind der eigene SID, SYSTEM, Administratoren und Creator Owner.
+`parseDacl`, `foreignAllowEntries`, `grantsWrite` arbeiten auf SDDL-Text und sind ohne Windows testbar. Alles, was der Parser nicht sicher beurteilen kann, wirft einen Fehler, damit der Test nichts stillschweigend überspringt: unbekannte Rechtecodes (bekannt sind generische, Standard-, Verzeichnisdienst-, Datei-, Registry- und Label-Codes sowie Hex-Masken), Text außerhalb der ACEs, andere ACE-Typen als Allow/Deny (Objekt- und Callback-ACEs) und eine fehlende oder NULL-DACL (`NO_ACCESS_CONTROL`, Vollzugriff für alle). Eine leere DACL (`D:`) ist gültig. DACL-Flags (`P`, `AI`, `AR`) vor den ACEs sind erlaubt. Als Schreibrecht gelten `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE` und `GENERIC_ALL`. Nicht fremd sind der eigene SID, SYSTEM, Administratoren und Creator Owner.
 
 ## Risks / Trade-offs
 

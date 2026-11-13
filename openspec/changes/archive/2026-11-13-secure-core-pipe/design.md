@@ -26,7 +26,7 @@ Das entspricht der Dokumentation des Named Pipe Filesystems (Standard-DACL: Voll
 - Ein lesend verbundener Fremder kann keine Anfrage senden. Der Core sendet nur an Verbindungen mit View oder `session.list`-Abo, beides entsteht durch Anfragen. Es fließen also keine Events und keine Nutzdaten.
 - Rest: Ein Fremder kann Verbindungen offen halten (Ressourcen) und sieht, dass die Pipe existiert. Administratoren haben Vollzugriff; das ist nicht zu ändern und kein Gewinn an Schutz, da ein Administrator ohnehin auf Prozessspeicher zugreifen kann.
 
-Nicht getestet: ein zweites lokales Konto (es werden keine Benutzer angelegt) und ein erhöht gestarteter Core (dann kann sich Besitzer und Benutzer-ACE ändern). Die Aussagen über Fremde folgen aus den Masken; der manuelle Prüfschritt steht im Bericht.
+Erhöhter Token: Die CI (`windows-latest`) läuft als `runneradmin` mit erhöhtem Token, und dort scheiterte die Erwartung „Benutzer-ACE mit Vollzugriff“. Lokal ließ sich das nicht nachstellen (kein erhöhter Start ohne UAC-Dialog). Hergeleitet: libuv übergibt `NULL` als Sicherheitsattribute, die Pipe bekommt die Standard-DACL des Tokens. Beim gefilterten Benutzer-Token enthält sie SYSTEM, Administratoren und den Benutzer; beim erhöhten Token gehört der Standard-Besitzer zu Administratoren, und die Benutzer-ACE fehlt, es bleiben SYSTEM, Administratoren (`BA`) sowie die Lese-ACEs für Everyone und Anonymous. Damit bleibt die Sicherheitsaussage gleich (kein fremder Trustee mit Schreibrecht), nur der Halter des Vollzugriffs wechselt vom Benutzer zu `BA`. Der Test prüft deshalb die Aussage statt des genauen Aufbaus: Benutzer oder, bei erhöhtem Token, `BA` hat Vollzugriff; kein fremder Trustee schreibt. Jede Assertion nennt SID, Erhöhung und SDDL. Nicht getestet: ein zweites lokales Konto (es werden keine Benutzer angelegt). Die Aussagen über Fremde folgen aus den Masken; der manuelle Prüfschritt steht im Bericht.
 
 ## Goals / Non-Goals
 
@@ -69,4 +69,4 @@ Die Frist begrenzt nur die Dauer, nicht die Zahl. `maxPendingHandshakes` (Standa
 
 - [Fremdes Konto öffnet die Pipe lesend] → keine Daten, keine Anfragen möglich; Hello-Frist begrenzt die Dauer; Test hält die Rechte fest.
 - [Windows-Standard ändert sich] → Windows-Test in der CI (`windows-latest`) schlägt an.
-- [Core läuft erhöht] → nicht getestet; der Test prüft nur den Fall des normalen Benutzers.
+- [Core läuft erhöht] → Vollzugriff hält dann `BA` statt des Benutzers; der Test akzeptiert beides und prüft, dass kein fremder Trustee schreibt.

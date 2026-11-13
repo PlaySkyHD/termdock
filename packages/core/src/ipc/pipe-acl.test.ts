@@ -154,7 +154,9 @@ public static class PipeProbe {
   }
 }
 '@
-[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+$id.User.Value
+([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 [PipeProbe]::Sddl($env:TERMDOCK_TEST_PIPE)
 `;
 
@@ -165,7 +167,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== "win32")("ACL of the real core pipe (Windows)", () => {
-  it("gives no other user write access and no other trustee than the default read-only ones", async () => {
+  it("gives no other trustee write access; the user (or Administrators when elevated) has full control", async () => {
     const pipePath = `\\\\.\\pipe\\termdock-test-${randomUUID()}`;
     const registry = new SessionRegistry({ backends: [new FakeBackend()] });
     const server = await CoreServer.start({ registry, pipePath });
@@ -181,17 +183,22 @@ describe.skipIf(process.platform !== "win32")("ACL of the real core pipe (Window
       ],
       { env: { ...process.env, TERMDOCK_TEST_PIPE: pipePath }, windowsHide: true },
     );
-    const [ownSid, sddl] = stdout.trim().split(/\r?\n/);
-    expect(ownSid).toMatch(/^S-1-5-/);
-    expect(sddl).toBeTruthy();
+    const [ownSid, elevatedText, sddl] = stdout.trim().split(/\r?\n/);
+    const elevated = elevatedText?.trim() === "True";
+    // Every message carries the SDDL, so a CI failure can be read without rerunning.
+    const context = `own SID ${ownSid}, elevated ${elevated}, SDDL ${sddl}`;
+    expect(ownSid, context).toMatch(/^S-1-5-/);
+    expect(sddl, context).toBeTruthy();
 
     const entries = parseDacl(sddl!);
-    // The current user can use the pipe (explicit ACE with full control).
-    expect(entries.some((entry) => entry.sid === ownSid && grantsWrite(entry))).toBe(true);
-    // Everyone and Anonymous are the only foreign trustees and may not write (nor change the DACL).
-    const foreign = foreignAllowEntries(sddl!, ownSid!);
-    expect(foreign.length).toBeGreaterThan(0);
-    expect(foreign.filter(grantsWrite)).toEqual([]);
-    expect(foreign.every((entry) => entry.sid === "WD" || entry.sid === "AN")).toBe(true);
+    // Someone who is allowed to use the pipe has full control: the current user, or, with an elevated
+    // token (default DACL of an elevated token has Administrators instead of the user), Administrators.
+    const holders = entries.filter(
+      (entry) => grantsWrite(entry) && (entry.sid === ownSid || (elevated && entry.sid === "BA")),
+    );
+    expect(holders.length, context).toBeGreaterThan(0);
+    // The security statement: no trustee besides the user, SYSTEM, Administrators and Creator Owner may
+    // write (or change the DACL or owner). Read-only trustees (Everyone, Anonymous) are the Windows default.
+    expect(foreignAllowEntries(sddl!, ownSid!).filter(grantsWrite), context).toEqual([]);
   }, 30000);
 });

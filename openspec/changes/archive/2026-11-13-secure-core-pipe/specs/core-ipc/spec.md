@@ -10,7 +10,13 @@ Kein Konto außer dem Benutzer des Core, SYSTEM und den Administratoren SHALL Sc
 
 - **GIVEN** ein gestarteter Core auf einer Pipe (Windows)
 - **WHEN** die DACL der Pipe gelesen wird
-- **THEN** hat der aktuelle Benutzer Vollzugriff, und jeder andere Trustee außer SYSTEM und Administratoren ist Everyone oder Anonymous ohne Schreibrecht
+- **THEN** hat der aktuelle Benutzer Vollzugriff, und kein anderer Trustee außer SYSTEM und Administratoren hat Schreibrecht
+
+#### Scenario: Core mit erhöhtem Token
+
+- **GIVEN** ein Core, der mit erhöhtem Administrator-Token läuft (z. B. GitHub-Runner)
+- **WHEN** die DACL der Pipe gelesen wird
+- **THEN** hält statt des Benutzers die Gruppe Administratoren den Vollzugriff, und kein anderer Trustee hat Schreibrecht
 
 ### Requirement: Grenze für Verbindungen ohne Handshake
 

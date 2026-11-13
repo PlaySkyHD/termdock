@@ -27,6 +27,7 @@ async function call<M extends BridgeCall["method"]>(
 }
 
 const api: TermdockApi = {
+  coreStatus: () => call({ method: "coreStatus" }),
   listSessions: () => call({ method: "listSessions" }),
   createSession: (params) => call({ method: "createSession", params }),
   attach: (sessionId, size) => call({ method: "attach", sessionId, size }),

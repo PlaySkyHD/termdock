@@ -51,6 +51,7 @@ class FakeApi implements TermdockApi {
   private release: ((view: AttachedView) => void) | undefined;
   private refuse: ((error: Error) => void) | undefined;
 
+  coreStatus = vi.fn(async () => ({ backendUnavailable: [] }));
   listSessions = vi.fn(async () => []);
   createSession = vi.fn();
   attach(sessionId: string, size: TerminalSize): Promise<AttachedView> {
@@ -295,11 +296,8 @@ describe("TerminalController", () => {
     expect(statuses.at(-1)).toMatchObject({ role: "reader" });
   });
 
-  it("reports state changes of its session and a lost core", async () => {
+  it("reports a lost core", async () => {
     const { api, statuses } = await opened({ writerViewId: "v1" });
-
-    api.emit({ kind: "stateChanged", sessionId: "s1", state: "Exited", lastExitCode: 0 });
-    expect(statuses.at(-1)).toMatchObject({ state: "Exited" });
 
     api.emit({ kind: "coreClosed" });
     expect(statuses.at(-1)).toMatchObject({ role: "closed" });

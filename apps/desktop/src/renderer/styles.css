@@ -2,11 +2,25 @@
 :root {
   --td-background: #1e1e1e;
   --td-foreground: #cccccc;
+  --td-muted: #8b8b8b;
+  --td-sidebar: #252526;
+  --td-border: #3c3c3c;
+  --td-tab-inactive: #2d2d2d;
+  --td-hover: #2a2d2e;
+  --td-selected: #37373d;
+  --td-accent: #007acc;
+  --td-input: #3c3c3c;
   --td-status-writer: #007acc;
   --td-status-reader: #68217a;
   --td-status-neutral: #3c3c3c;
   --td-status-error: #c72e0f;
+  --td-status-warning: #cca700;
   --td-status-foreground: #ffffff;
+  --td-state-running: #23d18b;
+  --td-state-detached: #3b8eea;
+  --td-state-starting: #cca700;
+  --td-state-exited: #8b8b8b;
+  --td-state-interrupted: #e8912d;
   --td-font-ui: "Segoe UI", system-ui, sans-serif;
 }
 
@@ -21,27 +35,421 @@ body,
   font: 13px var(--td-font-ui);
 }
 
-.app-message {
-  padding: 16px;
+button,
+input {
+  font: inherit;
 }
 
-.app-message--error {
-  color: #f48771;
-}
+/* --- Layout of the window: sidebar | tabs and views, status bar below ------------------------ */
 
-.terminal-view {
-  display: flex;
-  flex-direction: column;
+.app {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 22px;
   height: 100%;
 }
 
-.terminal-view__screen {
+.app--sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app > .status-bar {
+  grid-column: 1 / -1;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tab-panels {
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+/* All tabs stay mounted and attached; an inactive one is hidden but keeps its size (design add-sidebar-tabs). */
+.tab-panel {
+  position: absolute;
+  inset: 0;
+}
+
+.tab-panel--hidden {
+  visibility: hidden;
+}
+
+.terminal-view {
+  box-sizing: border-box;
+  height: 100%;
   padding: 4px 0 0 8px;
   /* A reader shows the writer's size; a smaller area clips it (ADR 0006, #27). */
   overflow: hidden;
 }
+
+/* --- Sidebar --------------------------------------------------------------------------------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--td-sidebar);
+  border-right: 1px solid var(--td-border);
+  user-select: none;
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 35px;
+  padding: 0 8px 0 20px;
+  flex: none;
+}
+
+.sidebar__title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar__groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar__group-title {
+  margin: 0;
+  padding: 4px 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--td-muted);
+}
+
+.sidebar__list {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar__empty {
+  padding: 2px 20px;
+  color: var(--td-muted);
+  font-style: italic;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 24px;
+  padding: 0 12px 0 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-item:hover {
+  background: var(--td-hover);
+}
+
+.session-item--active {
+  background: var(--td-selected);
+}
+
+.session-item:focus-visible {
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.session-item__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item__state {
+  flex: none;
+  font-size: 11px;
+  color: var(--td-muted);
+}
+
+/* A session that does not run any more is dimmed, never shown like a running one (ADR 0005). */
+.session-item--ended .session-item__name {
+  color: var(--td-muted);
+}
+
+/* --- State icons: shape and colour, so they do not rely on colour alone ---------------------- */
+
+.state-icon {
+  flex: none;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+}
+
+.state-icon--starting {
+  border: 2px dotted var(--td-state-starting);
+  border-radius: 50%;
+}
+
+.state-icon--running {
+  background: var(--td-state-running);
+  border-radius: 50%;
+}
+
+.state-icon--detached {
+  border: 2px solid var(--td-state-detached);
+  border-radius: 50%;
+}
+
+.state-icon--exited,
+.state-icon--archived {
+  width: 9px;
+  height: 9px;
+  background: var(--td-state-exited);
+}
+
+.state-icon--interrupted {
+  width: 0;
+  height: 0;
+  border-right: 5px solid transparent;
+  border-bottom: 10px solid var(--td-state-interrupted);
+  border-left: 5px solid transparent;
+}
+
+/* --- New session ----------------------------------------------------------------------------- */
+
+.new-session {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px 20px;
+  flex: none;
+}
+
+.new-session__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--td-muted);
+}
+
+.new-session__field input {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--td-input);
+  color: var(--td-foreground);
+}
+
+.new-session__field input:focus {
+  border-color: var(--td-accent);
+  outline: none;
+}
+
+.new-session__note {
+  margin: 0;
+  color: var(--td-muted);
+}
+
+.new-session__error {
+  margin: 0;
+  color: #f48771;
+  overflow-wrap: anywhere;
+}
+
+.new-session__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 2px;
+  background: #3a3d41;
+  color: var(--td-status-foreground);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: #45494e;
+}
+
+.button--primary {
+  background: #0e639c;
+}
+
+.button--primary:hover:not(:disabled) {
+  background: #1177bb;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.button:focus-visible,
+.icon-button:focus-visible,
+.tab__main:focus-visible,
+.tab__close:focus-visible {
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* --- Tab bar --------------------------------------------------------------------------------- */
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  height: 35px;
+  flex: none;
+  background: var(--td-sidebar);
+  user-select: none;
+}
+
+.tab-bar__toggle {
+  align-self: center;
+  margin: 0 4px;
+  flex: none;
+}
+
+.tab-bar__tabs {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  max-width: 200px;
+  background: var(--td-tab-inactive);
+  border-right: 1px solid var(--td-sidebar);
+  border-top: 1px solid transparent;
+  color: var(--td-muted);
+}
+
+.tab:hover {
+  color: var(--td-foreground);
+}
+
+.tab--active {
+  background: var(--td-background);
+  border-top-color: var(--td-accent);
+  color: var(--td-foreground);
+}
+
+.tab__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tab__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab__close {
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.tab:hover .tab__close,
+.tab--active .tab__close,
+.tab__close:focus-visible {
+  visibility: visible;
+}
+
+.tab__close:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* --- Empty state ----------------------------------------------------------------------------- */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--td-muted);
+}
+
+.empty-state__title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--td-foreground);
+}
+
+.empty-state p {
+  margin: 0 0 12px;
+  max-width: 420px;
+}
+
+.empty-state__error {
+  color: #f48771;
+}
+
+/* --- Status bar ------------------------------------------------------------------------------ */
 
 .status-bar {
   display: flex;
@@ -53,6 +461,8 @@ body,
   color: var(--td-status-foreground);
   font-size: 12px;
   user-select: none;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .status-bar--writer {
@@ -75,6 +485,12 @@ body,
 .status-bar__item--error {
   border-radius: 2px;
   background: var(--td-status-error);
+}
+
+.status-bar__item--warning {
+  border-radius: 2px;
+  background: var(--td-status-warning);
+  color: #1e1e1e;
 }
 
 .status-bar__spacer {

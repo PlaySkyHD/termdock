@@ -1,14 +1,14 @@
 // Electron main (ADR 0006): one process owns all windows, connects to the core or starts it, and serves the
 // bridge. Start: `npm start -w apps/desktop` (in agent shells first `unset ELECTRON_RUN_AS_NODE`).
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { connect, defaultPipeName } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
 import {
@@ -27,12 +27,13 @@ import {
   stopIsolatedCore,
 } from "./screenshot.js";
 import type { IsolatedCore } from "./screenshot.js";
+import { runScenario } from "./screenshot-scenario.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
 const RENDERER = path.join(here, "..", "renderer", "index.html");
 /** Upper bound of a whole screenshot run, including the start of the core and WSL. */
-const SCREENSHOT_TIMEOUT_MS = 90_000;
+const SCREENSHOT_TIMEOUT_MS = 180_000;
 
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
 
@@ -145,6 +146,28 @@ async function main(): Promise<void> {
     return win;
   };
 
+  // The menu replaces the default one, also in the screenshot run (key bindings of #28 hang on it).
+  // "Neues Fenster" opens a window with its own tabs, like a second start.
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Datei",
+        submenu: [
+          { label: "Neues Fenster", accelerator: "CmdOrCtrl+Shift+N", click: () => void createWindow() },
+          { type: "separator" },
+          { label: "Beenden", role: "quit" },
+        ],
+      },
+      {
+        label: "Ansicht",
+        submenu: [
+          { label: "Neu laden", role: "reload" },
+          { label: "Entwicklerwerkzeuge", role: "toggleDevTools" },
+        ],
+      },
+    ]),
+  );
+
   if (shotDir !== undefined) {
     await runScreenshot(shotDir, client, bridge, createWindow);
     return;
@@ -166,10 +189,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/**
- * Opens a writing window and a smaller reading window on the same session, runs `ls --color` in the writer,
- * captures every window, then ends the isolated core and its sessions.
- */
+/** Plays the scenes of `screenshot-scenario.ts`, then ends the isolated core and its sessions. */
 async function runScreenshot(
   dir: string,
   client: CoreClient,
@@ -178,7 +198,6 @@ async function runScreenshot(
 ) {
   const watch = new QuietWatch();
   client.on("session.output", () => watch.saw());
-  const id = createWindow().webContents.id;
   let exitCode = 0;
   const guard = setTimeout(() => {
     log(`screenshot run took longer than ${SCREENSHOT_TIMEOUT_MS} ms`);
@@ -201,27 +220,9 @@ async function runScreenshot(
     })());
 
   try {
-    await watch.quiet(800, 45_000);
-    const viewId = bridge.viewsOf(id)[0];
-    if (viewId === undefined) throw new Error("The window has no view");
-    // The second window finds the living session and attaches as reader.
-    const readerId = createWindow(760, 420).webContents.id;
-    const deadline = Date.now() + 10_000;
-    while (bridge.viewsOf(readerId).length === 0) {
-      if (Date.now() > deadline) throw new Error("The reading window did not attach");
-      await sleep(100);
-    }
-    const typed = await bridge.call(id, { method: "input", viewId, data: "ls --color /\r" });
-    if (!typed.ok) throw new Error(`input: ${typed.error.message}`);
-    await watch.quiet(800, 15_000);
-    await sleep(300); // one more frame for xterm.js
-    mkdirSync(dir, { recursive: true });
-    const windows = BrowserWindow.getAllWindows();
-    for (const [index, window] of windows.entries()) {
-      const file = path.join(dir, `desktop-${index + 1}.png`);
-      writeFileSync(file, (await window.webContents.capturePage()).toPNG());
-      console.log(file);
-    }
+    const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
+    if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
+    await runScenario({ dir, bridge, watch, createWindow, log, tmuxSocket });
   } catch (error) {
     log(`screenshot failed: ${error instanceof Error ? error.message : String(error)}`);
     exitCode = 1;

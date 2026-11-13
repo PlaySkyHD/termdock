@@ -1,6 +1,7 @@
 // Contract between renderer, preload and main (ADR 0002, ADR 0006). Types only plus the channel names:
 // the sandboxed preload cannot load local modules, so it imports nothing at runtime from here.
 import type {
+  CoreStatusResult,
   ErrorCode,
   SessionCreateParams,
   SessionId,
@@ -17,6 +18,7 @@ export const EVENT_CHANNEL = "termdock:event";
 
 /** The only calls a renderer may make. Anything else is `bad_request`. */
 export type BridgeCall =
+  | { method: "coreStatus" }
   | { method: "listSessions" }
   | { method: "createSession"; params: SessionCreateParams }
   | { method: "attach"; sessionId: SessionId; size: TerminalSize }
@@ -38,6 +40,7 @@ export interface AttachedView {
 }
 
 export interface BridgeResults {
+  coreStatus: CoreStatusResult;
   listSessions: SessionInfo[];
   createSession: SessionInfo;
   attach: AttachedView;
@@ -64,6 +67,8 @@ export type BridgeEvent =
   | { kind: "resized"; sessionId: SessionId; size: TerminalSize }
   | { kind: "writerChanged"; sessionId: SessionId; writerViewId?: ViewId }
   | { kind: "stateChanged"; sessionId: SessionId; state: SessionState; lastExitCode?: number }
+  /** A session was created through this main process; the core has no event for it (ADR 0006). */
+  | { kind: "sessionCreated"; session: SessionInfo }
   | { kind: "coreClosed" };
 
 /**
@@ -71,6 +76,7 @@ export type BridgeEvent =
  * `[code] message`, because errors crossing `contextBridge` keep only their message.
  */
 export interface TermdockApi {
+  coreStatus(): Promise<CoreStatusResult>;
   listSessions(): Promise<SessionInfo[]>;
   createSession(params: SessionCreateParams): Promise<SessionInfo>;
   attach(sessionId: SessionId, size: TerminalSize): Promise<AttachedView>;

@@ -111,10 +111,16 @@ export class DesktopBridge {
   private async dispatch(windowId: number, call: BridgeCall): Promise<unknown> {
     const core = this.core;
     switch (call.method) {
+      case "coreStatus":
+        return (await core.request("core.status", {})).result;
       case "listSessions":
         return (await core.request("session.list", {})).result.sessions;
-      case "createSession":
-        return (await core.request("session.create", call.params)).result.session;
+      case "createSession": {
+        const { session } = (await core.request("session.create", call.params)).result;
+        // The core has no event for new sessions; every window's sidebar learns about it from here.
+        this.toAll({ kind: "sessionCreated", session });
+        return session;
+      }
       case "attach":
         return this.attach(windowId, call.sessionId, call.size);
       case "detach":
@@ -208,6 +214,8 @@ function errorBody(error: unknown): BridgeErrorBody {
 function parseCall(raw: unknown): BridgeCall {
   if (!isRecord(raw)) throw new BadRequest("A call must be an object");
   switch (raw["method"]) {
+    case "coreStatus":
+      return { method: "coreStatus" };
     case "listSessions":
       return { method: "listSessions" };
     case "createSession":

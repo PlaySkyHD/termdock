@@ -21,6 +21,12 @@ Der Core SHALL die Metadaten in der SQLite-Datei `termdock.db` im Datenverzeichn
 - **WHEN** der Core sie erneut öffnet
 - **THEN** wird keine Migration erneut angewendet und die Sessions sind unverändert
 
+#### Scenario: Gleichzeitiges Migrieren
+
+- **GIVEN** zwei Verbindungen auf dieselbe leere Datei, von denen die zweite migriert, nachdem die erste die Schema-Version gelesen hat
+- **WHEN** die erste Verbindung migriert
+- **THEN** überspringt sie die schon angewendeten Migrationen ohne Fehler und `schema_version` enthält jede Migration genau einmal
+
 #### Scenario: Datenverzeichnis aus der Umgebung
 
 - **GIVEN** `TERMDOCK_DATA_DIR` zeigt auf ein Verzeichnis
@@ -64,6 +70,22 @@ Ist ein Repository angebunden, SHALL der Core jede Änderung einer Session sofor
 - **GIVEN** eine laufende Session mit Schreiber
 - **WHEN** der Schreiber die Größe 120×40 setzt
 - **THEN** enthält das Repository die Größe 120×40
+
+### Requirement: Fehler beim Speichern
+
+Scheitert das Speichern einer Änderung einer bestehenden Session, SHALL der Core die Änderung trotzdem im Speicher übernehmen und melden und den Fehler an den Fehler-Handler der Registry geben (Standard: Konsole). Scheitert schon das Speichern einer neuen Session, MUST das Anlegen mit `internal` fehlschlagen, ohne die Session zu registrieren oder zu starten.
+
+#### Scenario: Zustandswechsel kann nicht gespeichert werden
+
+- **GIVEN** eine laufende Session und ein Repository, dessen Speichern fehlschlägt
+- **WHEN** die PTY mit Exit-Code 3 endet
+- **THEN** ist die Session `Exited` mit Exit-Code 3, der Zustandswechsel wird gemeldet, der Fehler geht an den Fehler-Handler und das PTY-Ende wirft keinen Fehler
+
+#### Scenario: Neue Session kann nicht gespeichert werden
+
+- **GIVEN** ein Repository, dessen Speichern fehlschlägt
+- **WHEN** eine Session angelegt wird
+- **THEN** schlägt der Aufruf mit `internal` fehl, die Registry enthält keine Session und das Backend hat keinen Start erhalten
 
 ### Requirement: Reconcile beim Core-Start
 
@@ -112,3 +134,25 @@ Sessions in `Exited`, `Interrupted` oder `Archived` SHALL der Core beim Start un
 - **GIVEN** gespeicherte Sessions in `Exited` (Exit-Code 0), `Interrupted` und `Archived`
 - **WHEN** der Core startet
 - **THEN** haben sie unverändert ihren gespeicherten Zustand und Exit-Code, und das Backend wurde für sie nicht gefragt
+
+### Requirement: Ablauf des Reconcile
+
+Das Ergebnis des Reconcile SHALL für jede abgeglichene Session den Zustand am Ende des Reconcile nennen. Endet eine wieder angebundene PTY, während das Reconcile noch läuft, MUST das wie jedes PTY-Ende behandelt werden. Während des Reconcile MUST Anlegen und Neustart mit `invalid_state` abgelehnt werden. Scheitert das Laden der gespeicherten Sessions, MUST das Reconcile wiederholbar bleiben.
+
+#### Scenario: PTY endet während des Reconcile
+
+- **GIVEN** eine wieder angebundene WSL-Session, deren PTY mit Exit-Code 0 endet, während weitere Sessions noch abgeglichen werden
+- **WHEN** das Reconcile endet
+- **THEN** meldet das Ergebnis für sie `Exited` und sie ist mit diesem Zustand gespeichert
+
+#### Scenario: Anlegen während des Reconcile
+
+- **GIVEN** ein laufendes Reconcile
+- **WHEN** eine Session angelegt oder eine gespeicherte Session neu gestartet werden soll
+- **THEN** schlägt der Aufruf mit `invalid_state` fehl
+
+#### Scenario: Laden scheitert
+
+- **GIVEN** ein Repository, dessen Lesen einmal fehlschlägt
+- **WHEN** das Reconcile fehlschlägt und erneut aufgerufen wird
+- **THEN** lädt der zweite Aufruf die gespeicherten Sessions

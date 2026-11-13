@@ -37,6 +37,73 @@ function stateOf(repository: InMemorySessionRepository, id: string): SessionStat
   return repository.list().find((session) => session.id === id)?.state;
 }
 
+/** Repository whose `save`/`list` fail while the test says so. */
+class FailingRepository extends InMemorySessionRepository {
+  failSave: ((session: SessionInfo) => boolean) | undefined;
+  failNextList: Error | undefined;
+
+  override save(session: SessionInfo): void {
+    if (this.failSave?.(session)) throw new Error("disk full");
+    super.save(session);
+  }
+
+  override list(): SessionInfo[] {
+    const error = this.failNextList;
+    if (error) {
+      this.failNextList = undefined;
+      throw error;
+    }
+    return super.list();
+  }
+}
+
+/** FakeBackend that runs a test hook (and may wait) before answering `exists`. */
+class HookedBackend extends FakeBackend {
+  beforeExists: ((id: string) => void | Promise<void>) | undefined;
+
+  override async exists(id: string, spec: LaunchSpec): Promise<boolean> {
+    await this.beforeExists?.(id);
+    return super.exists(id, spec);
+  }
+}
+
+describe("SessionRegistry: failing repository", () => {
+  it("keeps state and events consistent when saving a state change fails and reports the error", async () => {
+    const repository = new FailingRepository();
+    const backend = new FakeBackend();
+    const errors: Array<{ error: unknown; sessionId: string }> = [];
+    const registry = new SessionRegistry({
+      backends: [backend],
+      repository,
+      onPersistError: (error, session) => errors.push({ error, sessionId: session.id }),
+    });
+    const session = await registry.create({ name: "shell", launch: wsl });
+    const seen: string[] = [];
+    registry.onStateChange(({ from, to }) => seen.push(`${from}->${to}`));
+    repository.failSave = (s) => s.state === "Exited";
+
+    expect(() => backend.pty(session.id).emitExit(3)).not.toThrow();
+
+    expect(registry.get(session.id)).toMatchObject({ state: "Exited", lastExitCode: 3 });
+    expect(seen).toEqual(["Detached->Exited"]);
+    expect(errors).toEqual([
+      { error: expect.objectContaining({ message: "disk full" }), sessionId: session.id },
+    ]);
+  });
+
+  it("rejects create with internal and registers nothing when the first save fails", async () => {
+    const repository = new FailingRepository();
+    repository.failSave = () => true;
+    const backend = new FakeBackend();
+    const registry = new SessionRegistry({ backends: [backend], repository, onPersistError: () => {} });
+
+    await expect(registry.create({ name: "shell", launch: wsl })).rejects.toMatchObject({ code: "internal" });
+
+    expect(registry.list()).toEqual([]);
+    expect(backend.starts).toEqual([]);
+  });
+});
+
 describe("SessionRegistry: write-through", () => {
   it("stores a created session and every state change", async () => {
     const repository = new InMemorySessionRepository();
@@ -282,6 +349,73 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
     await registry.restore();
 
     await expect(registry.restore()).rejects.toMatchObject({ code: "invalid_state" });
+  });
+
+  it("reports the final state of a re-attached session whose PTY ends while restore is still running", async () => {
+    const backend = new HookedBackend();
+    backend.setExists("a", true);
+    backend.beforeExists = (id) => {
+      if (id === "b") backend.pty("a").emitExit(0);
+    };
+    const { registry, repository } = restoring(
+      [
+        stored({ id: "a", state: "Running" }),
+        stored({ id: "b", state: "Running", createdAt: "2026-11-13T11:00:00.000Z" }),
+      ],
+      [backend],
+    );
+
+    const result = await registry.restore();
+
+    expect(result.sessions).toEqual([
+      { sessionId: "a", from: "Running", to: "Exited" },
+      { sessionId: "b", from: "Running", to: "Interrupted" },
+    ]);
+    expect(registry.get("a")).toMatchObject({ state: "Exited", lastExitCode: 0 });
+    expect(stateOf(repository, "a")).toBe("Exited");
+  });
+
+  it("rejects create and restart with invalid_state while restore is running", async () => {
+    const backend = new HookedBackend();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let checking!: () => void;
+    const checkingStarted = new Promise<void>((resolve) => (checking = resolve));
+    backend.beforeExists = () => {
+      checking();
+      return gate;
+    };
+    const { registry } = restoring(
+      [
+        stored({ id: "old", state: "Exited" }),
+        stored({ id: "a", state: "Running", createdAt: "2026-11-13T11:00:00.000Z" }),
+      ],
+      [backend],
+    );
+
+    const restore = registry.restore();
+    await checkingStarted;
+    await expect(registry.create({ name: "new", launch: wsl })).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    await expect(registry.restart("old")).rejects.toMatchObject({ code: "invalid_state" });
+    release();
+    await restore;
+
+    expect(registry.list().map((s) => s.id)).toEqual(["old", "a"]);
+    expect(backend.starts).toEqual([]);
+  });
+
+  it("can be retried when loading the stored sessions fails", async () => {
+    const repository = new FailingRepository();
+    repository.save(stored({ id: "a", state: "Exited" }));
+    repository.failNextList = new Error("database locked");
+    const registry = new SessionRegistry({ backends: [new FakeBackend()], repository });
+
+    await expect(registry.restore()).rejects.toThrow("database locked");
+    await registry.restore();
+
+    expect(registry.list().map((s) => s.id)).toEqual(["a"]);
   });
 });
 

@@ -25,11 +25,11 @@ ADR 0004 schreibt `node:sqlite` vor. `DatabaseSync` ist synchron; das passt zur 
 
 ### Datenverzeichnis und Datei
 
-`resolveDataDir(env)` liefert `TERMDOCK_DATA_DIR` oder `%APPDATA%\TermDock` und wirft, wenn beides fehlt. `openDatabase(file)` öffnet die Datei (oder `:memory:`), setzt `journal_mode = WAL`, `foreign_keys = ON` und `busy_timeout` und wendet die Migrationen an. `openStorage({ dataDir })` legt das Verzeichnis an und öffnet `termdock.db`. Die Funktionen bekommen Umgebung und Pfade als Argument, damit Tests nie `%APPDATA%` berühren.
+`resolveDataDir(env)` liefert `TERMDOCK_DATA_DIR` oder `%APPDATA%\TermDock` und wirft, wenn beides fehlt. `openDatabase(file)` öffnet die Datei (oder `:memory:`), setzt `journal_mode = WAL`, `synchronous = NORMAL` (mit WAL sicher gegen Beschädigung, spart ein fsync je Schreibvorgang; ein Stromausfall kann nur die letzten Commits kosten), `foreign_keys = ON` und `busy_timeout` und wendet die Migrationen an. `openStorage({ dataDir })` legt das Verzeichnis an und öffnet `termdock.db`. Die Funktionen bekommen Umgebung und Pfade als Argument, damit Tests nie `%APPDATA%` berühren.
 
 ### Migrationen
 
-`MIGRATIONS` ist eine geordnete Liste `{ version, sql }`. `migrate(db)` legt `schema_version (version INTEGER PRIMARY KEY)` an (alle Tabellen als `STRICT`), liest die höchste Version und wendet jede neuere Migration in einer eigenen Transaktion zusammen mit dem Eintrag in `schema_version` an. Scheitert eine Migration, wird nur sie zurückgerollt und der Fehler weitergegeben. Ist die Datenbank neuer als der Code (höhere Version als bekannt), wird mit einem Fehler abgebrochen, statt ein fremdes Schema zu verändern.
+`MIGRATIONS` ist eine geordnete Liste `{ version, sql }`. `migrate(db)` legt `schema_version (version INTEGER PRIMARY KEY)` an (alle Tabellen als `STRICT`), liest die höchste Version und wendet jede neuere Migration in einer eigenen Transaktion (`BEGIN IMMEDIATE`) zusammen mit dem Eintrag in `schema_version` an. Unter der Schreibsperre wird die Version erneut gelesen; hat eine zweite Verbindung die Migration inzwischen angewendet, wird sie übersprungen. Scheitert eine Migration, wird nur sie zurückgerollt und der Fehler weitergegeben. Ist die Datenbank neuer als der Code (höhere Version als bekannt), wird mit einem Fehler abgebrochen, statt ein fremdes Schema zu verändern.
 
 ### Schema (Migration 1)
 
@@ -49,7 +49,9 @@ interface SessionRepository {
 
 ### Durchschreiben in der Registry
 
-Neue optionale Option `repository` in `SessionRegistryOptions`. Die Registry ruft `repository.save` an genau den Stellen, an denen sich `SessionInfo` ändert: nach dem Anlegen (vor dem Start, damit auch ein Absturz während `Starting` die Session hinterlässt), in `setState` vor dem Melden, bei `resize` und bei Schreiberwechseln (nur `updatedAt`). Fehler des Repositories werden nicht verschluckt: sie gehen an den Aufrufer bzw. den PTY-Event-Handler. Alternative asynchrone Warteschlange verworfen: Reihenfolge und „gespeichert vor gemeldet“ wären nicht mehr garantiert.
+Neue optionale Option `repository` in `SessionRegistryOptions`. Die Registry ruft `repository.save` an genau den Stellen, an denen sich `SessionInfo` ändert: nach dem Anlegen (vor dem Start, damit auch ein Absturz während `Starting` die Session hinterlässt), in `setState` vor dem Melden und bei `resize`. Schreiberwechsel werden nicht gespeichert, weil `writerViewId` Laufzeitzustand ist; ihr neues `updatedAt` geht mit dem nächsten Speichern mit. Alternative asynchrone Warteschlange verworfen: Reihenfolge und „gespeichert vor gemeldet“ wären nicht mehr garantiert.
+
+Fehler beim Speichern: Scheitert `save` für eine bestehende Session, bleibt der In-Memory-Zustand maßgeblich, Ereignisse werden trotzdem gemeldet und der Fehler geht an die optionale Option `onPersistError(error, session)` (Standard `console.error`). Eine Exception würde sonst aus dem PTY-Exit-Handler in den Emitter des Backends entweichen und Listener überspringen. Das nächste erfolgreiche Speichern der Session schreibt den vollständigen Stand. Scheitert dagegen das erste Speichern in `create`, wird die Session weder registriert noch gestartet und `create` lehnt mit `internal` ab; eine Session, die der Core nicht speichern kann, ginge beim Neustart verloren.
 
 ### Reconcile über `SessionRegistry.restore()`
 
@@ -60,6 +62,8 @@ Neue optionale Option `repository` in `SessionRegistryOptions`. Die Registry ruf
 - WSL (und jedes andere Backend mit Persistenz): Backend fehlt oder `available()` liefert `false`/wirft → `Interrupted`, Backend in `backendUnavailable`. `available()` wird pro Backend nur einmal gefragt. Sonst `exists()`: wirft → `Interrupted` und `backendUnavailable`; `false` → `Interrupted`; `true` → `attach()` mit der gespeicherten Größe, PTY anbinden, `Detached`. Scheitert `attach()`, wird die Session `Interrupted` (ohne `backendUnavailable`, weil das Backend erreichbar war).
 
 Das Reconcile setzt den Zustand einer geladenen Session und ist kein Übergang einer laufenden Session: `Starting → Detached` ist in ADR 0005 für laufende Sessions nicht erlaubt, beim Reconcile aber genau die Regel für eine lebende WSL-Session. Deshalb umgeht `restore()` die Übergangstabelle bewusst und meldet keine `onStateChange`-Ereignisse (beim Start ist noch kein Client verbunden). Geänderte Sessions werden mit neuem `updatedAt` gespeichert. Das Ergebnis `RestoreResult` listet je Session `from`/`to` und die nicht erreichbaren Backends; der Core zeigt daraus `backend_unavailable` in der Statusleiste an. Die Sessions werden nacheinander abgeglichen, damit ein langsames WSL nicht mit vielen parallelen `wsl.exe`-Aufrufen belastet wird.
+
+Endet eine wieder angebundene PTY, während `restore()` noch weitere Sessions abgleicht, läuft das normale PTY-Ende (`Exited`/`Interrupted`, gespeichert, `onStateChange`). Entschieden: Das Ergebnis wird erst am Ende aus den aktuellen Zuständen gebaut, statt Exit-Ereignisse zu puffern; so meldet es immer den Endzustand, ohne eine zweite Ereignislogik. Während `restore()` läuft, lehnen `create` und `restart` mit `invalid_state` ab, damit keine neuen Prozesse neben dem Abgleich entstehen. `restore()` gilt erst nach erfolgreichem `repository.list()` als ausgeführt; scheitert das Laden, kann es erneut aufgerufen werden.
 
 ### Tests
 

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SessionInfo } from "@termdock/protocol";
 import { DATABASE_FILE, openStorage, resolveDataDir } from "./database.js";
 import type { Storage } from "./database.js";
-import { MIGRATIONS } from "./migrations.js";
+import { MIGRATIONS, migrate, schemaVersion } from "./migrations.js";
 
 const opened: Array<{ close(): void }> = [];
 const tempDirs: string[] = [];
@@ -106,6 +106,35 @@ describe("openStorage", () => {
       .map((row) => row.version);
     expect(versions).toEqual(MIGRATIONS.map((m) => m.version));
     expect(second.sessions.list()).toEqual([session]);
+  });
+
+  it("skips migrations another connection applied after this one read the version", () => {
+    const dataDir = tempDir();
+    const file = join(dataDir, DATABASE_FILE);
+    const a = new DatabaseSync(file);
+    const b = new DatabaseSync(file);
+    opened.push(a, b);
+    // Connection B migrates the file right after A has read the (empty) schema version.
+    let raced = false;
+    const migrations = Object.assign([...MIGRATIONS], {
+      at(index: number) {
+        if (!raced) {
+          raced = true;
+          migrate(b);
+        }
+        return MIGRATIONS.at(index);
+      },
+    });
+
+    expect(() => migrate(a, migrations)).not.toThrow();
+
+    expect(raced).toBe(true);
+    expect(schemaVersion(a)).toBe(MIGRATIONS.at(-1)?.version);
+    const versions = a
+      .prepare("SELECT version FROM schema_version ORDER BY version")
+      .all()
+      .map((row) => row.version);
+    expect(versions).toEqual(MIGRATIONS.map((m) => m.version));
   });
 
   it("refuses a database whose schema is newer than the code", () => {

@@ -70,7 +70,8 @@ export function schemaVersion(db: DatabaseSync): number {
 
 /**
  * Applies every migration newer than the database, each in its own transaction together with its
- * `schema_version` entry. Refuses a database that is newer than this code.
+ * `schema_version` entry. The version is read again under the write lock, so a migration another
+ * connection applied meanwhile is skipped. Refuses a database that is newer than this code.
  */
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY) STRICT");
@@ -83,6 +84,11 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
     if (migration.version <= current) continue;
     db.exec("BEGIN IMMEDIATE");
     try {
+      // Another connection may have migrated between the first read and this lock.
+      if (schemaVersion(db) >= migration.version) {
+        db.exec("COMMIT");
+        continue;
+      }
       db.exec(migration.sql);
       db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(migration.version);
       db.exec("COMMIT");

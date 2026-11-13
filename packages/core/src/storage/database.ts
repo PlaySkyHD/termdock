@@ -28,6 +28,8 @@ export function openDatabase(file: string): DatabaseSync {
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     db.exec("PRAGMA journal_mode = WAL");
+    // Safe with WAL: a power loss can lose the last commits but never corrupts the file; saves no fsync per write.
+    db.exec("PRAGMA synchronous = NORMAL");
     db.exec("PRAGMA foreign_keys = ON");
     migrate(db);
   } catch (error) {

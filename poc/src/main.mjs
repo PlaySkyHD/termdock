@@ -354,13 +354,19 @@ app.whenReady().then(async () => {
   // Screenshot-Modus (docs/agent-lessons-learned.md, Abschnitt 4): beide Fenster nach dem Selbsttest als PNG.
   const shotIndex = process.argv.indexOf("--screenshot");
   if (shotIndex > 0) {
-    const dir = process.argv[shotIndex + 1];
-    mkdirSync(dir, { recursive: true });
-    for (const [name, win] of [
-      ["poc-fenster-a", winA],
-      ["poc-fenster-b", winB],
-    ]) {
-      writeFileSync(path.join(dir, `${name}.png`), (await win.webContents.capturePage()).toPNG());
+    // Ein Fehler hier darf das Aufräumen von PTY und tmux-Session darunter nicht verhindern.
+    try {
+      const dir = process.argv[shotIndex + 1];
+      if (!dir) throw new Error("--screenshot braucht ein Verzeichnis");
+      mkdirSync(dir, { recursive: true });
+      for (const [name, win] of [
+        ["poc-fenster-a", winA],
+        ["poc-fenster-b", winB],
+      ]) {
+        writeFileSync(path.join(dir, `${name}.png`), (await win.webContents.capturePage()).toPNG());
+      }
+    } catch (error) {
+      results.push({ name: "Screenshots", ok: false, detail: String(error?.stack ?? error) });
     }
   }
   await stopPty();

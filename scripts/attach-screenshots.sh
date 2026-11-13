@@ -15,7 +15,10 @@ shift 2
 title="Screenshots"
 if [[ "${1:-}" == "--title" ]]; then title="${2:?$usage}"; shift 2; fi
 [[ $# -gt 0 ]] || { echo "$usage" >&2; exit 2; }
-for f in "$@"; do [[ -f "$f" ]] || { echo "not a file: $f" >&2; exit 2; }; done
+for f in "$@"; do
+  [[ -f "$f" ]] || { echo "not a file: $f" >&2; exit 2; }
+  [[ "$(basename "$f")" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "use only A-Z a-z 0-9 . _ - in file names: $f" >&2; exit 2; }
+done
 
 root="$(git rev-parse --show-toplevel)"
 work="$(mktemp -d)"
@@ -42,8 +45,11 @@ for f in "$@"; do
   body+=$'\n'"**${name%.*}**"$'\n\n'"![${name%.*}](https://raw.githubusercontent.com/$repo/$branch/$dir/$name)"$'\n'
 done
 
-git -C "$work" -c user.name=PlaySkyHD commit -qm "assets: screenshots for $kind #$number"
-git -C "$work" push -q origin "HEAD:refs/heads/$branch"
+# Re-uploading identical files stages nothing; the comment is still posted.
+if ! git -C "$work" diff --cached --quiet; then
+  git -C "$work" -c user.name=PlaySkyHD commit -qm "assets: screenshots for $kind #$number"
+  git -C "$work" push -q origin "HEAD:refs/heads/$branch"
+fi
 
 if [[ "$kind" == "pr" ]]; then
   gh pr comment "$number" --repo "$repo" --body "$body"

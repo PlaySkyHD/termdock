@@ -23,6 +23,17 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **`wsl -l -v` gibt UTF-16 aus.** In Node `wsl.exe` mit `env: { WSL_UTF8: '1' }` aufrufen, sonst stehen Nullbytes zwischen den Zeichen.
 - **Eigener tmux-Socket:** Produktiv `-L termdock`, Tests `-L termdock-test`. Tests räumen ihre Sessions mit `kill-session` auf; nie `kill-server` auf dem Produktiv-Socket.
 - **WSL-Integrationstests** laufen nur mit `TERMDOCK_WSL_TESTS=1` und nur lokal; GitHub-Runner haben keine Distro.
+- **`wsl.exe -- <args>` geht durch die Login-Shell** (`$HOME` wird expandiert, `;` trennt Befehle). Für Argument-Arrays `wsl.exe -d Ubuntu --cd ~ --exec <programm> ...` nutzen.
+- **WSL beendet die Distro samt tmux-Server**, wenn ca. 8–20 s kein `wsl.exe`-Prozess läuft. Wer eine tmux-Session über eine Pause ohne PTY retten will, hält `wsl.exe -d Ubuntu --exec sleep infinity` offen (ADR 0003).
+- **tmux: `status off` und `-T RGB`.** Ohne `status off` meldet `stty size` eine Zeile weniger als die PTY; ohne `-T RGB` am Client rechnet tmux Truecolor auf 256 Farben herunter. `status off` im selben Aufruf setzen (`new-session ... ; set-option -t <s> status off`), ein separates `set-option` direkt nach dem Start verliert das Rennen.
+
+### node-pty und Electron (aus Phase 0, `docs/poc/phase-0-bericht.md`)
+
+- **node-pty 1.1.0 bringt N-API-Prebuilds für `win32-x64` mit**; sie laden unter Node 25 und Electron 45 (auch mit `ELECTRON_RUN_AS_NODE=1`). Kein `@electron/rebuild` nötig, und es scheitert hier ohnehin (siehe nächster Punkt).
+- **Bau aus dem Quelltext scheitert auf dem Host:** node-gyp 11 (npm-Bundle) kennt VS 2026 nicht (node-gyp ≥ 12 nötig), `GetCommitHash.bat` von winpty scheitert, solange `NoDefaultCurrentDirectoryInExePath=1` gesetzt ist, und MSBuild verlangt die Spectre-Bibliotheken (`MSB8040`). Prebuilds nicht mit `--build-from-source` entfernen.
+- **`useConptyDll: true` setzen.** Mit der System-ConPTY wirft `kill()` im Hilfsprozess `conpty_console_list_agent` „AttachConsole failed“ auf stderr. Die mitgelieferte ConPTY fragt beim Start DA1 (`ESC [ c`) ab und wartet bis zu 3 s; xterm.js antwortet selbst, Node-Skripte ohne xterm müssen `ESC [ ? 1 ; 2 c` zurückschreiben.
+- **Agent-Shells setzen `ELECTRON_RUN_AS_NODE=1`.** Electron startet dann als Node („does not provide an export named 'BrowserWindow'“). Vor `electron .` mit `unset ELECTRON_RUN_AS_NODE` starten.
+- **tmux läuft selbst im Alternate Screen von xterm.js.** Ob eine TUI im Pane den Alternate Screen nutzt, nur über `tmux display-message -p '#{alternate_on}'` prüfen.
 
 ## 3. Tests
 

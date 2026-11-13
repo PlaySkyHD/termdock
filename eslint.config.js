@@ -15,9 +15,4 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
-  {
-    // Hook-Skripte laufen als Node-Skripte
-    files: [".claude/hooks/**/*.mjs"],
-    languageOptions: { globals: { process: "readonly", console: "readonly" } },
-  },
 );

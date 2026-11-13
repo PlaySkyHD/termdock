@@ -65,6 +65,17 @@ describe("parseRequest", () => {
     if (parsed.ok) expect(Array.from(parsed.value.payload)).toEqual([3, 0, 255]);
   });
 
+  it("accepts core.shutdown with stopSessions and rejects a non-boolean value", () => {
+    const parsed = parseRequest(request("core.shutdown", { stopSessions: true }));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.value.method === "core.shutdown") {
+      expect(parsed.value.params.stopSessions).toBe(true);
+    }
+    const error = failure(parseRequest(request("core.shutdown", { stopSessions: "yes" })));
+    expect(error.code).toBe("bad_request");
+    expect(error.message).toMatch(/stopSessions/);
+  });
+
   it("rejects session.input without payload", () => {
     const error = failure(parseRequest(request("session.input", { viewId: "v1" })));
     expect(error.code).toBe("bad_request");

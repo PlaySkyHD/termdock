@@ -154,7 +154,7 @@ In both branches, never create the root as a side effect: do not run `openspec i
    After the sync writes each main spec, verify its structure against the canonical sync contract:
    - A new main spec starts with a `# <capability> Specification` title. An existing main spec keeps its title exactly as it is.
    - Preserve existing `## Purpose` sections completely untouched for established main specs.
-   - For a new main spec, copy the delta `## Purpose` verbatim. Warn only if the purpose text is shorter than standard validation expects. Do not regenerate or rewrite existing authored purpose. If no usable `## Purpose` is provided, use the existing TBD Purpose behavior and warning.
+   - For a new main spec, copy the delta `## Purpose` verbatim. Warn only if the purpose text is shorter than standard validation expects. Do not regenerate or rewrite existing authored purpose. If no usable `## Purpose` is provided, write one in the delta before archiving; a TBD Purpose fails `openspec validate --specs --strict`. In TermDock run `bash scripts/openspec-check.sh <change>` before archiving.
    - Verify that no delta-style section headers (`## ADDED Requirements`, `## MODIFIED Requirements`, `## REMOVED Requirements`, `## RENAMED Requirements`) remain in the main spec, adhering strictly to the sync workflow formatting rules.
    - Requirement blocks the sync wrote or changed use `### Requirement:` headings, and their scenarios use `#### Scenario:` headings, under the spec's `## Requirements` section. Leave content the delta does not mention exactly as it is.
 

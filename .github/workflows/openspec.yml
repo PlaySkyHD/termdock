@@ -61,4 +61,5 @@ jobs:
 
       - name: Validate merged specs
         if: ${{ !cancelled() }}
-        run: tools/openspec/node_modules/.bin/openspec validate --specs --strict
+        # Also checks Purpose and requirement length, which the CLI misses for MODIFIED requirements.
+        run: bash scripts/openspec-check.sh --specs

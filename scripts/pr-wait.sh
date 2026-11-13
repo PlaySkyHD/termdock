@@ -24,7 +24,7 @@ usage="usage: $0 [--timeout <min>] [--interval <s, >=1>] <pr> [<pr> ...]"
 [[ "$timeout_min" =~ ^[0-9]+$ && "$interval" =~ ^[0-9]+$ && "$interval" -ge 1 && ${#prs[@]} -gt 0 ]] \
   || { echo "$usage" >&2; exit 2; }
 
-declare -A done_pr=() errors=()
+declare -A done_pr=() errors=() dirty_sha=()
 attention=0
 deadline=$((SECONDS + timeout_min * 60))
 
@@ -42,7 +42,14 @@ check_pr() {
   IFS='|' read -r state merged mstate sha <<<"$pr"
   if [[ "$merged" = "true" ]]; then echo "#$n: merged"; done_pr[$n]=1; return; fi
   if [[ "$state" != "open" ]]; then echo "#$n: closed without merge"; attention=1; done_pr[$n]=1; return; fi
-  if [[ "$mstate" = "dirty" ]]; then echo "#$n: merge conflict with base"; attention=1; done_pr[$n]=1; return; fi
+  # Right after a push GitHub can still report the old "dirty" (PR #11); only a repeat for the same head counts.
+  if [[ "$mstate" = "dirty" ]]; then
+    if [[ "${dirty_sha[$n]:-}" = "$sha" ]]; then
+      echo "#$n: merge conflict with base"; attention=1; done_pr[$n]=1; return
+    fi
+    dirty_sha[$n]="$sha"; return
+  fi
+  dirty_sha[$n]=""
   # Suites exist before their runs do (late workflows, jobs behind needs:).
   suites=$(gh api "repos/$repo/commits/$sha/check-suites?per_page=100" \
     --jq '[.check_suites[] | select(.latest_check_runs_count > 0 or .app.slug == "github-actions") | select(.status != "completed")] | length' 2>/dev/null) || return 0

@@ -87,6 +87,11 @@ export interface SessionAttachResult {
   writerViewId?: ViewId;
 }
 
+export interface CoreShutdownParams {
+  /** true: end all running sessions before the core exits (ADR 0001). Default false: only the core ends. */
+  stopSessions?: boolean;
+}
+
 export interface MethodMap {
   hello: { params: HelloParams; result: HelloResult };
   "session.create": { params: SessionCreateParams; result: { session: SessionInfo } };
@@ -99,7 +104,7 @@ export interface MethodMap {
   "session.resize": { params: { viewId: ViewId; size: TerminalSize }; result: Record<string, never> };
   "session.claimWriter": { params: { viewId: ViewId }; result: Record<string, never> };
   "session.kill": { params: { sessionId: SessionId }; result: Record<string, never> };
-  "core.shutdown": { params: Record<string, never>; result: Record<string, never> };
+  "core.shutdown": { params: CoreShutdownParams; result: Record<string, never> };
 }
 
 export type Method = keyof MethodMap;

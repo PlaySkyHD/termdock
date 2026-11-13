@@ -38,7 +38,7 @@ Every prompt contains:
 - file edits through the Read, Edit and Write tools, not `sed -i`, heredocs or scripts that write files; formatters (`npm run format`) and generators may write,
 - "the repository is public: no secrets, personal data or content about other private projects",
 - the exact scope, the OpenSpec change name and capability, and which packages not to touch,
-- the OpenSpec flow: create the change (`openspec-propose` skill), `npx openspec validate <change> --strict`, implement test-first (`tdd` skill), archive in the same branch (`npx openspec archive <change> -y`, then `npx openspec validate --specs --strict`),
+- the OpenSpec flow: create the change (`openspec-propose` skill), `bash scripts/openspec-check.sh <change>` (validates `--strict` plus what the CLI misses: Purpose of new capabilities, MODIFIED requirements over 500 characters), implement test-first (`tdd` skill), before archiving run the check again, archive in the same branch (`tools/openspec/node_modules/.bin/openspec archive <change> -y`), then `bash scripts/openspec-check.sh --specs`,
 - the checks: `npm run typecheck`, `npm run lint`, `npm test -w <package>`; WSL integration tests with `TERMDOCK_WSL_TESTS=1` (see lessons section 2); never return unfiltered test output,
 - for a bug fix: show the new test fails without the fix and put the red line in the report,
 - for a visible UI change (`apps/desktop`, `poc/` UI): PNG screenshots of every changed state via the app's screenshot mode (`--screenshot <dir>`, `webContents.capturePage()`), before and after for changed behavior, saved outside the repo (`P:/Temp/td-shots/<branch>/`); list the paths in the report, do not commit them,

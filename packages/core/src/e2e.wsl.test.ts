@@ -132,6 +132,37 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect((await list(c3)).map((s) => s.state)).toEqual(["Interrupted"]);
   }, 120_000);
 
+  it("ends the attach snapshot with the cursor position of the pane (issue #32)", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const { session } = (
+      await c.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const { viewId } = (await c.request("session.attach", { sessionId: session.id })).result;
+    // The sleep keeps the shell from redrawing its prompt, which would move the cursor again.
+    await c.request("session.input", { viewId }, new TextEncoder().encode("printf '\\e[5;10H'; sleep 600\r"));
+    await waitFor(async () => {
+      const cursor = await tmux(distro, [
+        "display-message",
+        "-p",
+        "-t",
+        `=td-${session.id}:`,
+        "#{cursor_y};#{cursor_x}",
+      ]);
+      return cursor.stdout.trim() === "4;9";
+    }, "cursor at row 5, column 10");
+
+    const attached = await c.request("session.attach", { sessionId: session.id });
+
+    // tmux may redraw cursor visibility while the snapshot is taken; that output follows the positioning.
+    const tail = decoder.decode(attached.payload).split("\x1b[5;10H").at(-1);
+    expect(decoder.decode(attached.payload)).toContain("\x1b[5;10H");
+    expect(tail?.replaceAll(/\[\?(12|25)[hl]/g, "").replaceAll("\x1b", "")).toBe("");
+  }, 120_000);
+
   it("re-attaches when the tmux client is detached from outside and keeps delivering output", async () => {
     freshDataDir();
     await startCore();

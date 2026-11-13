@@ -130,7 +130,7 @@ Der Core SHALL jede Ausgabe der PTY einer Session genau einmal als Ereignis meld
 
 ### Requirement: Snapshot für neue Views
 
-Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser verwendet werden, ergänzt um Ausgabe, die während der Abfrage eintraf; dann entfällt die Cursorposition. Liefert das Backend nichts oder schlägt die Abfrage fehl, MUST der Inhalt des Rohdaten-Puffers verwendet werden. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
+Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser verwendet werden, ergänzt um Ausgabe, die während der Abfrage eintraf, dann entfällt das Feld `cursor`. Liefert das Backend nichts oder schlägt die Abfrage fehl, MUST der Inhalt des Rohdaten-Puffers verwendet werden. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
 
 #### Scenario: Fallback auf den Puffer
 
@@ -140,15 +140,15 @@ Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend eine
 
 #### Scenario: Snapshot des Backends
 
-- **GIVEN** ein Backend, das für die Session einen Bildschirminhalt liefert
+- **GIVEN** ein Backend, das für die Session einen Bildschirminhalt mit Cursor liefert
 - **WHEN** eine View angehängt wird
-- **THEN** enthält ihr Snapshot diesen Bildschirminhalt
+- **THEN** enthält ihr Snapshot diese Daten und das Feld `cursor`
 
 #### Scenario: Ausgabe während der Snapshot-Abfrage
 
 - **GIVEN** ein Backend, das Bildschirminhalt mit Cursorposition liefert
 - **WHEN** während der Abfrage weitere Ausgabe eintrifft
-- **THEN** enthält der Snapshot den Bildschirminhalt gefolgt von dieser Ausgabe und keine Cursorposition
+- **THEN** enthält der Snapshot den Bildschirminhalt gefolgt von dieser Ausgabe und kein Feld `cursor`
 
 #### Scenario: Snapshot-Abfrage schlägt fehl
 

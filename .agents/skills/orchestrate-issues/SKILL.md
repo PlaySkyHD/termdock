@@ -35,7 +35,7 @@ Every prompt contains:
 - `npm ci` once in the fresh worktree,
 - the graphify rule: if `graphify-out/graph.json` is missing run `graphify update .` in the worktree, then `graphify query "<question>"` before grep,
 - no `git restore`, `git stash`, `git reset --hard`; no pull request; no push to main; never touch the main checkout `P:/GitHub/termdock` except `fetch` and `worktree add`,
-- file edits through the Read, Edit and Write tools, not `sed -i`, heredocs or scripts that write files; formatters (`npm run format`) and generators may write,
+- file edits through Read, Edit and Write. A script that writes files is allowed only for a mechanical change across many lines (rename, conflict markers) and must be named with its exact command in the report under Umwege; never for logic changes. Formatters (`npm run format`) and generators may write. Commit messages via several `git commit -m`, not a heredoc,
 - "the repository is public: no secrets, personal data or content about other private projects",
 - the exact scope, the OpenSpec change name and capability, and which packages not to touch,
 - the OpenSpec flow: create the change (`openspec-propose` skill), `npx openspec validate <change> --strict`, implement test-first (`tdd` skill), archive in the same branch (`npx openspec archive <change> -y`, then `npx openspec validate --specs --strict`),
@@ -54,6 +54,7 @@ Start agents in the background. Do not touch their worktrees while they run.
 "Done" is not verified. For every branch:
 
 - `git diff origin/main origin/<branch> --stat` matches the scope; read the diff.
+- If the report names a writing script, read the full diff of every file it touched.
 - Run `npm run typecheck`, `npm run lint` and the package tests yourself in the agent's worktree.
 - `git merge-tree --write-tree origin/<a> origin/<b>` for every pair of branches touching the same file.
 - Fix small gaps yourself; send larger ones back via `SendMessage` to the same agent.

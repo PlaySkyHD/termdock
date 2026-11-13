@@ -29,7 +29,7 @@ Der Core SHALL für Sessions nur diese Übergänge zulassen: `Starting → Runni
 
 ### Requirement: Anlegen und Starten
 
-Beim Anlegen SHALL der Core eine neue Session mit einer UUID als stabiler ID im Zustand `Starting` registrieren und ihren Prozess über das zum `LaunchSpec` passende Backend starten. Nach erfolgreichem Start MUST die Session `Running` sein, wenn mindestens eine View angehängt ist, sonst `Detached`. Schlägt der Start fehl oder fehlt das Backend, MUST die Session `Interrupted` werden und der Aufruf mit `backend_unavailable` fehlschlagen.
+Beim Anlegen SHALL der Core eine neue Session mit einer UUID als stabiler ID im Zustand `Starting` registrieren und ihren Prozess über das zum `LaunchSpec` passende Backend starten. Nach erfolgreichem Start MUST die Session `Running` sein, wenn mindestens eine View angehängt ist, sonst `Detached`. Schlägt der Start fehl oder fehlt das Backend, MUST die Session `Interrupted` werden und der Aufruf mit `backend_unavailable` fehlschlagen. Der Fehler MUST die ID der neuen Session nennen.
 
 #### Scenario: Start ohne View
 
@@ -40,7 +40,7 @@ Beim Anlegen SHALL der Core eine neue Session mit einer UUID als stabiler ID im 
 
 - **GIVEN** ein Backend, dessen Start fehlschlägt
 - **WHEN** eine Session angelegt wird
-- **THEN** schlägt der Aufruf mit `backend_unavailable` fehl und die Session ist registriert und `Interrupted`
+- **THEN** schlägt der Aufruf mit `backend_unavailable` fehl, der Fehler nennt die neue Session-ID und die Session ist registriert und `Interrupted`
 
 ### Requirement: Views anhängen und trennen
 
@@ -112,6 +112,12 @@ Nur der Schreiber SHALL die Terminalgröße einer Session ändern. Der Core MUST
 - **WHEN** B eine neue Größe setzt
 - **THEN** schlägt der Aufruf mit `not_writer` fehl und die PTY-Größe bleibt unverändert
 
+#### Scenario: Resize während des Starts
+
+- **GIVEN** eine Session im Zustand `Starting` mit Schreiber A
+- **WHEN** A eine neue Größe setzt und der Start danach gelingt
+- **THEN** hat die neue PTY die von A gesetzte Größe
+
 ### Requirement: Ausgabeverteilung
 
 Der Core SHALL jede Ausgabe der PTY einer Session genau einmal als Ereignis melden, zusammen mit allen zu diesem Zeitpunkt angehängten Views. Ausgabe ohne angehängte View MUST trotzdem in den Rohdaten-Puffer der Session gehen.
@@ -124,7 +130,7 @@ Der Core SHALL jede Ausgabe der PTY einer Session genau einmal als Ereignis meld
 
 ### Requirement: Snapshot für neue Views
 
-Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser verwendet werden, sonst der Inhalt des Rohdaten-Puffers. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
+Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser verwendet werden, ergänzt um Ausgabe, die während der Abfrage eintraf; dann entfällt die Cursorposition. Liefert das Backend nichts oder schlägt die Abfrage fehl, MUST der Inhalt des Rohdaten-Puffers verwendet werden. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
 
 #### Scenario: Fallback auf den Puffer
 
@@ -137,6 +143,18 @@ Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend eine
 - **GIVEN** ein Backend, das für die Session einen Bildschirminhalt liefert
 - **WHEN** eine View angehängt wird
 - **THEN** enthält ihr Snapshot diesen Bildschirminhalt
+
+#### Scenario: Ausgabe während der Snapshot-Abfrage
+
+- **GIVEN** ein Backend, das Bildschirminhalt mit Cursorposition liefert
+- **WHEN** während der Abfrage weitere Ausgabe eintrifft
+- **THEN** enthält der Snapshot den Bildschirminhalt gefolgt von dieser Ausgabe und keine Cursorposition
+
+#### Scenario: Snapshot-Abfrage schlägt fehl
+
+- **GIVEN** ein Backend, dessen Snapshot-Abfrage fehlschlägt
+- **WHEN** eine View angehängt wird
+- **THEN** gelingt das Anhängen und der Snapshot enthält den Rohdaten-Puffer
 
 ### Requirement: Ende der PTY
 
@@ -156,7 +174,7 @@ Endet die PTY einer laufenden Session mit Exit-Code, SHALL die Session `Exited` 
 
 ### Requirement: Beenden
 
-`kill` SHALL eine Session in `Running` oder `Detached` über das Backend beenden und sie danach `Exited` setzen, auch wenn die PTY dabei ohne Exit-Code endet.
+`kill` SHALL eine Session in `Running` oder `Detached` über das Backend beenden und sie danach `Exited` setzen, auch wenn die PTY dabei ohne Exit-Code endet. Schlägt das Beenden im Backend fehl, MUST der Aufruf mit `backend_unavailable` fehlschlagen. Ist die PTY dann schon beendet, MUST die Session `Exited` (Exit-Code bekannt) oder `Interrupted` werden und nie ohne PTY in `Running` oder `Detached` bleiben. Das gilt auch für `archive`.
 
 #### Scenario: Laufende Session beenden
 
@@ -164,9 +182,21 @@ Endet die PTY einer laufenden Session mit Exit-Code, SHALL die Session `Exited` 
 - **WHEN** sie beendet wird
 - **THEN** hat das Backend die Session beendet und der Zustand ist `Exited`
 
+#### Scenario: Backend scheitert nach PTY-Ende
+
+- **GIVEN** eine laufende Session, deren PTY beim Beenden ohne Exit-Code endet, während das Backend einen Fehler meldet
+- **WHEN** sie beendet wird
+- **THEN** schlägt der Aufruf mit `backend_unavailable` fehl, die Session ist `Interrupted` und lässt sich neu starten
+
 ### Requirement: Neustart
 
-`restart` SHALL eine Session in `Exited` oder `Interrupted` unter derselben Session-ID über `Starting` neu starten. Besteht die Backend-Session noch, MUST der Core sich wieder anbinden statt einen zweiten Prozess zu starten. Angehängte Views und der Schreiber bleiben erhalten.
+`restart` SHALL eine Session in `Exited` oder `Interrupted` unter derselben Session-ID über `Starting` neu starten. Besteht die Backend-Session noch, MUST der Core sich wieder anbinden statt einen zweiten Prozess zu starten. Angehängte Views und der Schreiber bleiben erhalten. Der Rohdaten-Puffer MUST erst geleert werden, wenn die neue PTY angebunden ist.
+
+#### Scenario: Neustart schlägt fehl
+
+- **GIVEN** eine `Exited`-Session mit bisheriger Ausgabe und ein Backend, dessen Start fehlschlägt
+- **WHEN** sie neu gestartet wird und danach eine View angehängt wird
+- **THEN** ist die Session `Interrupted` und der Snapshot der View enthält die bisherige Ausgabe
 
 #### Scenario: Neustart nach Prozessende
 
@@ -182,7 +212,13 @@ Endet die PTY einer laufenden Session mit Exit-Code, SHALL die Session `Exited` 
 
 ### Requirement: Archivieren
 
-`archive` SHALL eine Session in `Running`, `Detached`, `Exited` oder `Interrupted` nach `Archived` bringen. Läuft der Prozess noch oder existiert die Backend-Session noch, MUST er zuerst über das Backend beendet werden. Alle Views werden getrennt. `Archived` ist endgültig.
+`archive` SHALL eine Session in `Running`, `Detached`, `Exited` oder `Interrupted` nach `Archived` bringen. Läuft der Prozess noch oder existiert die Backend-Session noch, MUST er zuerst über das Backend beendet werden. Scheitert die Existenzprüfung oder das Beenden im Backend, MUST der Aufruf mit `backend_unavailable` fehlschlagen und die Session nicht `Archived` werden. Alle Views werden getrennt. `Archived` ist endgültig.
+
+#### Scenario: Existenzprüfung scheitert
+
+- **GIVEN** eine `Interrupted`-Session und ein Backend, dessen Existenzprüfung fehlschlägt
+- **WHEN** sie archiviert wird
+- **THEN** schlägt der Aufruf mit `backend_unavailable` fehl und die Session bleibt `Interrupted`
 
 #### Scenario: Laufende Session archivieren
 

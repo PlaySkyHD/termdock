@@ -92,6 +92,12 @@ export class FakeBackend implements Backend {
   isAvailable = true;
   /** When set, the next `start` or `attach` rejects with this error. */
   failNextStart: Error | undefined;
+  /** When set, the next `kill` rejects with this error after the PTY reported its end. */
+  failNextKill: Error | undefined;
+  /** When set, the next `snapshot` rejects with this error. */
+  failNextSnapshot: Error | undefined;
+  /** When set, the next `exists` rejects with this error. */
+  failNextExists: Error | undefined;
   readonly starts: FakeBackendCall[] = [];
   readonly attaches: FakeBackendCall[] = [];
   readonly kills: SessionId[] = [];
@@ -143,6 +149,11 @@ export class FakeBackend implements Backend {
   }
 
   async exists(id: SessionId, _spec: LaunchSpec): Promise<boolean> {
+    const error = this.failNextExists;
+    if (error) {
+      this.failNextExists = undefined;
+      throw error;
+    }
     return this.existsOverride.get(id) ?? this.alive.has(id);
   }
 
@@ -152,9 +163,19 @@ export class FakeBackend implements Backend {
     const pty = this.ptys.get(id)?.at(-1);
     if (pty && !pty.ended && !pty.disposed) pty.emitExit(this.killExitCode);
     this.alive.delete(id);
+    const error = this.failNextKill;
+    if (error) {
+      this.failNextKill = undefined;
+      throw error;
+    }
   }
 
   async snapshot(id: SessionId, _spec: LaunchSpec): Promise<TerminalSnapshot | undefined> {
+    const error = this.failNextSnapshot;
+    if (error) {
+      this.failNextSnapshot = undefined;
+      throw error;
+    }
     return this.snapshots.get(id);
   }
 

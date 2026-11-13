@@ -87,6 +87,8 @@ interface SessionEntry {
   attachCollectors: Set<Uint8Array[]>;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile. */
   busy: "start" | "kill" | "archive" | undefined;
+  /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
+  endedDuringOp: { exitCode?: number } | undefined;
 }
 
 class ListenerSet<T> {
@@ -164,9 +166,10 @@ export class SessionRegistry {
       output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
       attachCollectors: new Set(),
       busy: undefined,
+      endedDuringOp: undefined,
     };
     this.sessions.set(info.id, entry);
-    await this.launch(entry, false);
+    await this.launch(entry, { reuseExisting: false, clearOutput: false });
     return snapshotInfo(entry.info);
   }
 
@@ -178,8 +181,8 @@ export class SessionRegistry {
     const entry = this.entry(sessionId);
     this.assertIdle(entry);
     this.setState(entry, "Starting");
-    entry.output.clear();
-    await this.launch(entry, true);
+    // The old output stays until the new PTY is bound, so a failed restart keeps it for the snapshot.
+    await this.launch(entry, { reuseExisting: true, clearOutput: true });
     return snapshotInfo(entry.info);
   }
 
@@ -193,12 +196,7 @@ export class SessionRegistry {
         `Session ${sessionId} in state ${entry.info.state} has no process to kill`,
       );
     }
-    entry.busy = "kill";
-    try {
-      await this.terminate(entry);
-    } finally {
-      entry.busy = undefined;
-    }
+    await this.endProcess(entry, "kill", () => this.terminate(entry));
     this.setState(entry, "Exited");
     return snapshotInfo(entry.info);
   }
@@ -212,19 +210,16 @@ export class SessionRegistry {
     this.assertIdle(entry);
     // Check before ending anything; the pure function throws invalid_state.
     transition(entry.info.state, "Archived");
-    entry.busy = "archive";
-    try {
+    await this.endProcess(entry, "archive", async () => {
       if (entry.pty) {
         await this.terminate(entry);
       } else if (entry.info.state === "Interrupted") {
         const backend = this.backendFor(entry.info.launch);
-        if (backend && (await backend.exists(entry.info.id, entry.info.launch))) {
+        if (backend && (await this.backendExists(entry, backend))) {
           await this.killBackend(entry, backend);
         }
       }
-    } finally {
-      entry.busy = undefined;
-    }
+    });
     if (entry.info.writerViewId !== undefined) this.setWriter(entry, undefined);
     entry.views.clear();
     entry.output.clear();
@@ -248,13 +243,19 @@ export class SessionRegistry {
       entry.attachCollectors.add(inFlight);
       try {
         snapshot = await backend?.snapshot(entry.info.id, entry.info.launch);
+      } catch {
+        // Fall back to the Core buffer below; a missing screen must not fail the attach.
+        snapshot = undefined;
       } finally {
         entry.attachCollectors.delete(inFlight);
       }
       // The session may have changed while the backend answered.
       this.assertAttachable(entry, viewId);
       if (entry.pty !== pty) snapshot = undefined;
-      else if (snapshot) snapshot = { ...snapshot, data: concat([snapshot.data, ...inFlight]) };
+      else if (snapshot && inFlight.length > 0) {
+        // The appended output moves the cursor, so the backend's cursor position is no longer valid.
+        snapshot = { data: concat([snapshot.data, ...inFlight]) };
+      }
     }
     // Copy the buffer in the same synchronous step as the view is registered, so no output falls in between.
     snapshot ??= { data: entry.output.contents() };
@@ -347,27 +348,77 @@ export class SessionRegistry {
    * Runs `Starting → Running | Detached`, or `Starting → Interrupted` on failure.
    * With `reuseExisting`, a backend session that still exists is re-attached instead of started.
    */
-  private async launch(entry: SessionEntry, reuseExisting: boolean): Promise<void> {
+  private async launch(
+    entry: SessionEntry,
+    options: { reuseExisting: boolean; clearOutput: boolean },
+  ): Promise<void> {
     const { info } = entry;
     const backend = this.backendFor(info.launch);
     let pty: PtyHandle;
     entry.busy = "start";
+    let startSize: TerminalSize = { ...info.size };
     try {
       if (!backend) throw new Error(`No backend for kind ${info.launch.backend}`);
-      const reuse = reuseExisting && (await backend.exists(info.id, info.launch));
+      const reuse = options.reuseExisting && (await backend.exists(info.id, info.launch));
+      startSize = { ...info.size };
       pty = reuse
-        ? await backend.attach(info.id, info.launch, info.size)
-        : await backend.start(info.id, info.launch, info.size);
+        ? await backend.attach(info.id, info.launch, startSize)
+        : await backend.start(info.id, info.launch, startSize);
     } catch (cause) {
       entry.busy = undefined;
       this.setState(entry, "Interrupted");
-      throw new CoreError("backend_unavailable", `Session ${info.id} could not be started`, { cause });
+      throw new CoreError("backend_unavailable", `Session ${info.id} could not be started`, {
+        cause,
+        sessionId: info.id,
+      });
     }
     entry.busy = undefined;
+    if (options.clearOutput) entry.output.clear();
     this.bindPty(entry, pty);
+    // The writer may have resized while the backend was starting.
+    if (info.size.cols !== startSize.cols || info.size.rows !== startSize.rows) pty.resize(info.size);
     this.setState(entry, "Running");
     // ADR 0005 has no Starting → Detached; without a view the session passes through Running.
     if (entry.views.size === 0) this.setState(entry, "Detached");
+  }
+
+  /**
+   * Runs kill/archive work. If it fails after the PTY is already gone, the session must not stay
+   * `Running`/`Detached` without a process: it becomes `Exited` (exit code known) or `Interrupted`.
+   */
+  private async endProcess(
+    entry: SessionEntry,
+    operation: "kill" | "archive",
+    work: () => Promise<void>,
+  ): Promise<void> {
+    entry.busy = operation;
+    entry.endedDuringOp = undefined;
+    try {
+      await work();
+    } catch (error) {
+      // Set by the PTY exit handler during `work`; the cast undoes TypeScript's narrowing to undefined.
+      const ended = entry.endedDuringOp as SessionEntry["endedDuringOp"];
+      entry.busy = undefined;
+      entry.endedDuringOp = undefined;
+      const { state } = entry.info;
+      if (!entry.pty && (state === "Running" || state === "Detached")) {
+        this.setState(entry, ended?.exitCode === undefined ? "Interrupted" : "Exited");
+      }
+      throw error;
+    }
+    entry.busy = undefined;
+    entry.endedDuringOp = undefined;
+  }
+
+  private async backendExists(entry: SessionEntry, backend: Backend): Promise<boolean> {
+    try {
+      return await backend.exists(entry.info.id, entry.info.launch);
+    } catch (cause) {
+      throw new CoreError("backend_unavailable", `Session ${entry.info.id} could not be checked`, {
+        cause,
+        sessionId: entry.info.id,
+      });
+    }
   }
 
   /** Ends the backend session and releases the PTY. An exit the PTY reports meanwhile only records its code. */
@@ -381,7 +432,10 @@ export class SessionRegistry {
     try {
       await backend.kill(entry.info.id, entry.info.launch);
     } catch (cause) {
-      throw new CoreError("backend_unavailable", `Session ${entry.info.id} could not be ended`, { cause });
+      throw new CoreError("backend_unavailable", `Session ${entry.info.id} could not be ended`, {
+        cause,
+        sessionId: entry.info.id,
+      });
     }
   }
 
@@ -398,8 +452,11 @@ export class SessionRegistry {
         if (entry.pty !== pty) return;
         this.releasePty(entry);
         if (exitCode !== undefined) entry.info.lastExitCode = exitCode;
-        // kill/archive set the final state themselves.
-        if (entry.busy === "kill" || entry.busy === "archive") return;
+        // kill/archive set the final state themselves; remember the end in case they fail.
+        if (entry.busy === "kill" || entry.busy === "archive") {
+          entry.endedDuringOp = exitCode === undefined ? {} : { exitCode };
+          return;
+        }
         // Without an exit code the process or tmux client was lost unexpectedly (backend/types.ts).
         this.setState(entry, exitCode === undefined ? "Interrupted" : "Exited");
       }),

@@ -489,3 +489,100 @@ describe("SessionRegistry: archive", () => {
     await created;
   });
 });
+
+describe("SessionRegistry: backend failures", () => {
+  const decode = (data: Uint8Array) => new TextDecoder().decode(data);
+
+  it("settles a session as Interrupted when kill fails after the PTY ended without exit code", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.failNextKill = new Error("wsl.exe failed");
+
+    await expect(registry.kill(id)).rejects.toMatchObject({ code: "backend_unavailable" });
+
+    expect(registry.get(id).state).toBe("Interrupted");
+    await registry.restart(id);
+    expect(registry.get(id).state).toBe("Detached");
+  });
+
+  it("settles a session as Exited when archive fails after the PTY reported an exit code", async () => {
+    const { registry, backend } = setup({}, new FakeBackend({ killExitCode: 143 }));
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.failNextKill = new Error("wsl.exe failed");
+
+    await expect(registry.archive(id)).rejects.toMatchObject({ code: "backend_unavailable" });
+
+    expect(registry.get(id)).toMatchObject({ state: "Exited", lastExitCode: 143 });
+  });
+
+  it("applies a resize made while Starting to the new PTY", async () => {
+    const { registry, backend } = setup();
+    const created = registry.create({ name: "shell", launch: spec });
+    const [starting] = registry.list();
+    // Without a PTY, attachView registers the view synchronously; stay in the same tick so the start is pending.
+    const attached = registry.attachView(starting!.id, "view-a");
+    registry.resize(starting!.id, "view-a", { cols: 132, rows: 43 });
+    expect(registry.get(starting!.id).state).toBe("Starting");
+    await Promise.all([attached, created]);
+
+    expect(backend.pty(starting!.id).size).toEqual({ cols: 132, rows: 43 });
+  });
+
+  it("falls back to the core buffer when the backend snapshot fails", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("buffered");
+    backend.failNextSnapshot = new Error("capture-pane failed");
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(decode(snapshot.data)).toBe("buffered");
+    expect(registry.get(id).writerViewId).toBe("view-a");
+  });
+
+  it("reports a failing exists check during archive as backend_unavailable", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitExit();
+    backend.failNextExists = new Error("wsl.exe failed");
+
+    await expect(registry.archive(id)).rejects.toMatchObject({ code: "backend_unavailable" });
+    expect(registry.get(id).state).toBe("Interrupted");
+  });
+
+  it("drops the cursor when output was appended to the backend snapshot", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, { data: new TextEncoder().encode("screen"), cursor: { x: 6, y: 0 } });
+
+    const attaching = registry.attachView(id, "view-a");
+    backend.pty(id).emitData("+live");
+    const { snapshot } = await attaching;
+
+    expect(decode(snapshot.data)).toBe("screen+live");
+    expect(snapshot.cursor).toBeUndefined();
+  });
+
+  it("names the new session id in the error when the first start fails", async () => {
+    const { registry, backend } = setup();
+    backend.failNextStart = new Error("distro not reachable");
+
+    const error = await registry.create({ name: "shell", launch: spec }).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ code: "backend_unavailable", sessionId: registry.list()[0]?.id });
+    expect((error as { sessionId?: string }).sessionId).toMatch(UUID);
+  });
+
+  it("keeps the last output when a restart fails", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("last words");
+    backend.pty(id).emitExit(1);
+    backend.failNextStart = new Error("gone");
+
+    await expect(registry.restart(id)).rejects.toMatchObject({ code: "backend_unavailable" });
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(decode(snapshot.data)).toBe("last words");
+  });
+});

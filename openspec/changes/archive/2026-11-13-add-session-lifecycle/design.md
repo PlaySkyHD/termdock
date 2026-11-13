@@ -41,7 +41,7 @@ Eine View wird nur dann automatisch Schreiber, wenn sie sich an eine Session ohn
 
 ### Ausgabepuffer
 
-Ein Ringpuffer aus Chunks mit Obergrenze 256 KiB je Session, immer befüllt. Beim Anhängen wird zuerst `Backend.snapshot` gefragt (nur wenn ein Prozess lebt). Ausgabe, die während dieser Abfrage eintrifft, wird gesammelt und an den Backend-Snapshot angehängt; endet oder wechselt die PTY währenddessen, wird der Backend-Snapshot verworfen. Liefert das Backend `undefined`, wird der Puffer kopiert und die View im selben synchronen Schritt registriert, so dass zwischen Snapshot und Live-Ausgabe nichts verloren geht. Beim Neustart wird der Puffer geleert.
+Ein Ringpuffer aus Chunks mit Obergrenze 256 KiB je Session, immer befüllt. Beim Anhängen wird zuerst `Backend.snapshot` gefragt (nur wenn ein Prozess lebt). Ausgabe, die während dieser Abfrage eintrifft, wird gesammelt und an den Backend-Snapshot angehängt; die Cursorposition entfällt dann, weil sie nicht mehr stimmt. Endet oder wechselt die PTY währenddessen, wird der Backend-Snapshot verworfen. Liefert das Backend `undefined` oder schlägt die Abfrage fehl, wird der Puffer kopiert und die View im selben synchronen Schritt registriert, so dass zwischen Snapshot und Live-Ausgabe nichts verloren geht. Beim Neustart wird der Puffer erst geleert, wenn die neue PTY angebunden ist; ein fehlgeschlagener Neustart behält die letzte Ausgabe.
 
 ### PTY-Ende, kill, archive
 

@@ -31,3 +31,12 @@ export { connect, CoreClient, IpcError } from "./ipc/client.js";
 export type { ConnectOptions, EventListener, RequestResult } from "./ipc/client.js";
 export { ALREADY_RUNNING_EXIT_CODE, runCore } from "./bin/run-core.js";
 export type { RunCoreOptions, RunCoreResult } from "./bin/run-core.js";
+
+// wsl backend
+export { DEFAULT_TMUX_SOCKET, WslBackend } from "./backend/wsl/backend.js";
+export type { PtySpawner, WslBackendOptions, WslRunner } from "./backend/wsl/backend.js";
+export type { RunResult } from "./backend/wsl/commands.js";
+export { DistroKeepalive } from "./backend/wsl/keepalive.js";
+export type { KeepaliveProcess, KeepaliveSpawner } from "./backend/wsl/keepalive.js";
+export type { PtyProcess } from "./backend/wsl/pty.js";
+export { wslPath } from "./backend/wsl/paths.js";

@@ -60,6 +60,11 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX sessions_workspace ON sessions (workspace_id);
     `,
   },
+  {
+    version: 2,
+    // Revision of the stored layout: 0 for a row without saves, +1 per save (layout.save, baseRevision).
+    sql: `ALTER TABLE layouts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 /** Highest applied migration; 0 for an empty database. */

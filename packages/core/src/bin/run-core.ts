@@ -1,6 +1,6 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
-import type { SessionInfo } from "@termdock/protocol";
+import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -9,6 +9,7 @@ import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
 import { openStorage } from "../storage/database.js";
 import type { Storage } from "../storage/database.js";
+import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
 
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
@@ -73,6 +74,24 @@ class StorageRepository implements SessionRepository {
   }
 }
 
+/** Same forwarding for the layout: requests wait for the reconcile, so the target is set before the first use. */
+class StorageLayoutRepository implements LayoutRepository {
+  target: LayoutRepository | undefined;
+
+  get(): StoredLayout {
+    return this.open().get();
+  }
+
+  save(layout: LayoutDocument, baseRevision?: number): number {
+    return this.open().save(layout, baseRevision);
+  }
+
+  private open(): LayoutRepository {
+    if (!this.target) throw new Error("The database is not open yet");
+    return this.target;
+  }
+}
+
 export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResult> {
   const stderr = options.stderr ?? process.stderr;
   // Only messages: stack traces stay out of logs, as they stay out of IPC answers.
@@ -81,6 +100,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     ? []
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const repository = new StorageRepository();
+  const layouts = new StorageLayoutRepository();
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
@@ -98,6 +118,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   try {
     server = await CoreServer.start({
       registry,
+      layouts,
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),
@@ -149,8 +170,12 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
   let restore: RestoreResult;
   try {
-    storage = openStorage(options.dataDir === undefined ? {} : { dataDir: options.dataDir });
+    storage = openStorage({
+      ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
+      onLayoutInvalid: log,
+    });
     repository.target = storage.sessions;
+    layouts.target = storage.layouts;
     const restoring = registry.restore();
     // After a close nothing waits for the reconcile any more; its outcome no longer matters.
     restoring.catch(() => {});

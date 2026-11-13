@@ -16,8 +16,19 @@ import type {
   ParseResult,
   PayloadRule,
 } from "./messages.js";
-import { ERROR_CODES, PROTOCOL_VERSION, SESSION_STATES } from "./model.js";
-import type { BackendKind } from "./model.js";
+import {
+  ERROR_CODES,
+  LAYOUT_VERSION,
+  MAX_LAYOUT_BYTES,
+  MAX_LAYOUT_ID_LENGTH,
+  MAX_LAYOUT_WINDOWS,
+  MAX_PANES_PER_TAB,
+  MAX_TAB_TITLE_LENGTH,
+  MAX_TABS_PER_WINDOW,
+  PROTOCOL_VERSION,
+  SESSION_STATES,
+} from "./model.js";
+import type { BackendKind, LayoutDocument } from "./model.js";
 
 export const MAX_TERMINAL_DIMENSION = 10_000;
 const MAX_CLIENT_KIND_LENGTH = 64;
@@ -148,6 +159,167 @@ const checkSessionInfo: Check = (value, path) => {
   optional(obj, "lastExitCode", path, isInteger);
 };
 
+// --- Layout document ------------------------------------------------------------------------
+
+/** `sizes` of a split may deviate from 1 by this much (rounding in the UI). */
+const SIZES_TOLERANCE = 0.01;
+
+const isPositiveInteger: Check = (value, path) => {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    fail(`${path} must be an integer of at least 1`);
+  }
+};
+
+const isNonNegativeInteger: Check = (value, path) => {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    fail(`${path} must be an integer of at least 0`);
+  }
+};
+
+const isPositiveNumber: Check = (value, path) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    fail(`${path} must be a number greater than 0`);
+  }
+};
+
+/** Rejects keys the layout does not define, so nothing unknown gets stored. */
+function onlyKeys(obj: Rec, allowed: readonly string[], path: string): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) fail(`${path}.${quote(key)} is not a known field`);
+  }
+}
+
+/** A layout id (document, window, tab, pane, session): non-empty, at most MAX_LAYOUT_ID_LENGTH characters. */
+function layoutId(obj: Rec, key: string, path: string): string {
+  const value = present(obj, key, path);
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_LAYOUT_ID_LENGTH) {
+    fail(`${path}.${key} must be a string of 1 to ${MAX_LAYOUT_ID_LENGTH} characters`);
+  }
+  return value;
+}
+
+/** An id that is unique in the whole layout document. */
+function claimId(obj: Rec, path: string, ids: Set<string>): string {
+  const id = layoutId(obj, "id", path);
+  if (ids.has(id)) fail(`${path}.id "${quote(id)}" is used more than once`);
+  ids.add(id);
+  return id;
+}
+
+interface PaneWalk {
+  readonly ids: Set<string>;
+  /** Ids of the leaves of the tab being checked. */
+  readonly leaves: Set<string>;
+}
+
+function checkPaneNode(value: unknown, path: string, depth: number, walk: PaneWalk): void {
+  const obj = record(value, path);
+  const kind = present(obj, "kind", path);
+  oneOf(["pane", "split"])(kind, `${path}.kind`);
+  const id = claimId(obj, path, walk.ids);
+  if (kind === "pane") {
+    onlyKeys(obj, ["kind", "id", "sessionId"], path);
+    layoutId(obj, "sessionId", path);
+    walk.leaves.add(id);
+    if (walk.leaves.size > MAX_PANES_PER_TAB) fail(`${path}: a tab has at most ${MAX_PANES_PER_TAB} panes`);
+    return;
+  }
+  onlyKeys(obj, ["kind", "id", "direction", "children", "sizes"], path);
+  oneOf(["row", "column"])(present(obj, "direction", path), `${path}.direction`);
+  const children = present(obj, "children", path);
+  if (!Array.isArray(children) || children.length < 2)
+    fail(`${path}.children must be an array of at least 2`);
+  const sizes = present(obj, "sizes", path);
+  if (!Array.isArray(sizes) || sizes.length !== children.length) {
+    fail(`${path}.sizes must be an array with one entry per child`);
+  }
+  let sum = 0;
+  sizes.forEach((size, index) => {
+    isPositiveNumber(size, `${path}.sizes[${index}]`);
+    sum += size as number;
+  });
+  if (Math.abs(sum - 1) > SIZES_TOLERANCE) fail(`${path}.sizes must add up to about 1`);
+  // Every split has at least 2 children, so this depth already means more panes than allowed.
+  if (depth >= MAX_PANES_PER_TAB - 1) fail(`${path}: a tab has at most ${MAX_PANES_PER_TAB} panes`);
+  children.forEach((child, index) => checkPaneNode(child, `${path}.children[${index}]`, depth + 1, walk));
+}
+
+function checkLayoutTab(value: unknown, path: string, ids: Set<string>): string {
+  const obj = record(value, path);
+  onlyKeys(obj, ["id", "title", "root", "activePaneId"], path);
+  const id = claimId(obj, path, ids);
+  optional(obj, "title", path, (title, titlePath) => {
+    if (typeof title !== "string" || title.length > MAX_TAB_TITLE_LENGTH) {
+      fail(`${titlePath} must be a string of at most ${MAX_TAB_TITLE_LENGTH} characters`);
+    }
+  });
+  const walk: PaneWalk = { ids, leaves: new Set() };
+  checkPaneNode(present(obj, "root", path), `${path}.root`, 0, walk);
+  const activePaneId = layoutId(obj, "activePaneId", path);
+  if (!walk.leaves.has(activePaneId)) {
+    fail(`${path}.activePaneId "${quote(activePaneId)}" is not a pane of this tab`);
+  }
+  return id;
+}
+
+function checkLayoutWindow(value: unknown, path: string, ids: Set<string>): void {
+  const obj = record(value, path);
+  onlyKeys(obj, ["id", "bounds", "maximized", "sidebarVisible", "sidebarWidth", "tabs", "activeTabId"], path);
+  claimId(obj, path, ids);
+  optional(obj, "bounds", path, (bounds, boundsPath) => {
+    const box = record(bounds, boundsPath);
+    onlyKeys(box, ["x", "y", "width", "height"], boundsPath);
+    isInteger(present(box, "x", boundsPath), `${boundsPath}.x`);
+    isInteger(present(box, "y", boundsPath), `${boundsPath}.y`);
+    isPositiveInteger(present(box, "width", boundsPath), `${boundsPath}.width`);
+    isPositiveInteger(present(box, "height", boundsPath), `${boundsPath}.height`);
+  });
+  optional(obj, "maximized", path, isBoolean);
+  optional(obj, "sidebarVisible", path, isBoolean);
+  optional(obj, "sidebarWidth", path, isPositiveNumber);
+  const tabs = present(obj, "tabs", path);
+  if (!Array.isArray(tabs) || tabs.length > MAX_TABS_PER_WINDOW) {
+    fail(`${path}.tabs must be an array of at most ${MAX_TABS_PER_WINDOW} tabs`);
+  }
+  const tabIds = tabs.map((tab, index) => checkLayoutTab(tab, `${path}.tabs[${index}]`, ids));
+  if (tabIds.length === 0) {
+    // An empty window shows only the sidebar and the empty state.
+    if (obj["activeTabId"] !== undefined) fail(`${path}.activeTabId must be omitted when tabs is empty`);
+    return;
+  }
+  const activeTabId = layoutId(obj, "activeTabId", path);
+  if (!tabIds.includes(activeTabId))
+    fail(`${path}.activeTabId "${quote(activeTabId)}" is not a tab of this window`);
+}
+
+const checkLayoutDocument: Check = (value, path) => {
+  const obj = record(value, path);
+  onlyKeys(obj, ["version", "windows"], path);
+  if (present(obj, "version", path) !== LAYOUT_VERSION) fail(`${path}.version must be ${LAYOUT_VERSION}`);
+  const windows = present(obj, "windows", path);
+  if (!Array.isArray(windows) || windows.length > MAX_LAYOUT_WINDOWS) {
+    fail(`${path}.windows must be an array of at most ${MAX_LAYOUT_WINDOWS} windows`);
+  }
+  const ids = new Set<string>();
+  windows.forEach((window, index) => checkLayoutWindow(window, `${path}.windows[${index}]`, ids));
+  // The structure is bounded by now, so serializing is cheap.
+  const bytes = new TextEncoder().encode(JSON.stringify(value)).length;
+  if (bytes > MAX_LAYOUT_BYTES) fail(`${path} is ${bytes} bytes, at most ${MAX_LAYOUT_BYTES} are allowed`);
+};
+
+/**
+ * Checks a layout document: unique ids, at most 4 panes per tab, active ids that exist, valid `sizes`.
+ * A `sessionId` without a session is fine (the app shows a placeholder). Never throws on bad input.
+ */
+export function validateLayoutDocument(value: unknown): ParseResult<LayoutDocument> {
+  try {
+    checkLayoutDocument(value, "layout");
+    return { ok: true, value: value as LayoutDocument };
+  } catch (error) {
+    return badRequest(error);
+  }
+}
+
 const checkEmpty: Check = (value, path) => {
   record(value, path);
 };
@@ -196,6 +368,12 @@ const PARAMS_CHECK: Record<Method, Check> = {
   "session.kill": (value, path) => string(record(value, path), "sessionId", path),
   "core.status": checkEmpty,
   "core.shutdown": (value, path) => optional(record(value, path), "stopSessions", path, isBoolean),
+  "layout.get": checkEmpty,
+  "layout.save": (value, path) => {
+    const obj = record(value, path);
+    checkLayoutDocument(present(obj, "layout", path), `${path}.layout`);
+    optional(obj, "baseRevision", path, isNonNegativeInteger);
+  },
 };
 
 const RESULT_CHECK: Record<Method, Check> = {
@@ -224,6 +402,13 @@ const RESULT_CHECK: Record<Method, Check> = {
     kinds.forEach((kind, index) => isBackendKind(kind, `${path}.backendUnavailable[${index}]`));
   },
   "core.shutdown": checkEmpty,
+  "layout.get": (value, path) => {
+    const obj = record(value, path);
+    isNonNegativeInteger(present(obj, "revision", path), `${path}.revision`);
+    optional(obj, "layout", path, checkLayoutDocument);
+  },
+  "layout.save": (value, path) =>
+    isNonNegativeInteger(present(record(value, path), "revision", path), `${path}.revision`),
 };
 
 const EVENT_CHECK: Record<EventName, Check> = {

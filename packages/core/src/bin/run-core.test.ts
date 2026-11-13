@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { LaunchSpec } from "@termdock/protocol";
+import { LAYOUT_VERSION } from "@termdock/protocol";
+import type { LaunchSpec, LayoutDocument } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { connect } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
@@ -151,6 +152,56 @@ describe("runCore", () => {
     release(false);
     expect((await starting).exitCode).toBe(0);
     expect((await listing).result.sessions.map((s) => s.state)).toEqual(["Interrupted"]);
+  });
+
+  it("keeps the layout and its revision across a restart and holds layout.get until the reconcile is done", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const first = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    const c1 = await client(pipePath);
+    const layout = {
+      version: LAYOUT_VERSION,
+      windows: [
+        {
+          id: "w1",
+          tabs: [{ id: "t1", root: { kind: "pane", id: "p1", sessionId: "gone" }, activePaneId: "p1" }],
+          activeTabId: "t1",
+        },
+      ],
+    } satisfies LayoutDocument;
+    // A stored session makes the reconcile ask the backend, which the test then holds back.
+    await c1.request("session.create", { name: "build", launch });
+    expect((await c1.request("layout.save", { layout })).result).toEqual({ revision: 1 });
+    expect((await c1.request("layout.save", { layout, baseRevision: 1 })).result).toEqual({ revision: 2 });
+    await c1.close();
+    await first.close?.();
+
+    let release: (available: boolean) => void = () => {};
+    const slow = new (class extends FakeBackend {
+      override available(): Promise<boolean> {
+        return new Promise((resolve) => (release = resolve));
+      }
+    })();
+    const starting = runCore({
+      pipePath,
+      dataDir,
+      backends: [slow],
+      installSignalHandlers: false,
+      stderr: stderrSink(),
+    });
+    cleanups.push(async () => (await starting).close?.());
+    const c2 = await clientWhenListening(pipePath);
+    let answered = false;
+    const loading = c2.request("layout.get", {}).then((answer) => {
+      answered = true;
+      return answer;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+
+    release(false);
+    expect((await starting).exitCode).toBe(0);
+    expect((await loading).result).toEqual({ layout, revision: 2 });
   });
 
   it("reports an unreachable backend on stderr and through core.status", async () => {

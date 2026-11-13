@@ -23,6 +23,7 @@ import type {
 import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput, SessionRegistry } from "../session/registry.js";
+import type { LayoutRepository } from "../storage/layout-repository.js";
 import { defaultPipeName } from "./pipe-name.js";
 
 /** Not-yet-written bytes per client above which the client is disconnected (16 MiB). */
@@ -48,6 +49,8 @@ export class AlreadyRunningError extends Error {
 
 export interface CoreServerOptions {
   registry: SessionRegistry;
+  /** Stored layout behind `layout.get` and `layout.save`. */
+  layouts: LayoutRepository;
   /** Pipe path; defaults to `\\.\pipe\termdock-core-<user>`. Tests pass a unique name. */
   pipePath?: string;
   /** Per-client limit for output the client has not read yet; defaults to 16 MiB. */
@@ -107,6 +110,7 @@ const EMPTY_RESULT: Outcome = { result: {} };
 export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
+  private readonly layouts: LayoutRepository;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -128,6 +132,7 @@ export class CoreServer {
 
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
+    this.layouts = options.layouts;
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -372,6 +377,12 @@ export class CoreServer {
         return EMPTY_RESULT;
       case "core.status":
         return { result: { backendUnavailable: registry.backendUnavailable() } };
+      case "layout.get":
+        return { result: this.layouts.get() };
+      case "layout.save":
+        return {
+          result: { revision: this.layouts.save(request.params.layout, request.params.baseRevision) },
+        };
       case "core.shutdown":
         return this.shutdown(request.params.stopSessions === true);
     }

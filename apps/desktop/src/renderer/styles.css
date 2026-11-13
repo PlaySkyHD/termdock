@@ -1,0 +1,102 @@
+/* VS Code Dark+ look without a UI library (ADR 0006). */
+:root {
+  --td-background: #1e1e1e;
+  --td-foreground: #cccccc;
+  --td-status-writer: #007acc;
+  --td-status-reader: #68217a;
+  --td-status-neutral: #3c3c3c;
+  --td-status-error: #c72e0f;
+  --td-status-foreground: #ffffff;
+  --td-font-ui: "Segoe UI", system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--td-background);
+  color: var(--td-foreground);
+  font: 13px var(--td-font-ui);
+}
+
+.app-message {
+  padding: 16px;
+}
+
+.app-message--error {
+  color: #f48771;
+}
+
+.terminal-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.terminal-view__screen {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 0 8px;
+  /* A reader shows the writer's size; a smaller area clips it (ADR 0006, #27). */
+  overflow: hidden;
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 8px;
+  background: var(--td-status-neutral);
+  color: var(--td-status-foreground);
+  font-size: 12px;
+  user-select: none;
+}
+
+.status-bar--writer {
+  background: var(--td-status-writer);
+}
+
+.status-bar--reader {
+  background: var(--td-status-reader);
+}
+
+.status-bar--closed,
+.status-bar--error {
+  background: var(--td-status-error);
+}
+
+.status-bar__item {
+  padding: 0 6px;
+}
+
+.status-bar__item--error {
+  border-radius: 2px;
+  background: var(--td-status-error);
+}
+
+.status-bar__spacer {
+  flex: 1;
+}
+
+.status-bar__button {
+  height: 18px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-bar__button:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.status-bar__button:focus-visible {
+  outline: 1px solid #ffffff;
+  outline-offset: -1px;
+}

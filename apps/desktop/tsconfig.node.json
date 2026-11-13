@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo/node.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/preload", "src/shared"],
+  "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/core" }]
+}

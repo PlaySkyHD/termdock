@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
 import { SessionRegistry } from "../session/registry.js";
+import { InMemoryLayoutRepository } from "../storage/layout-repository.js";
 import { foreignAllowEntries, grantsWrite, parseDacl } from "./pipe-acl.js";
 import { CoreServer } from "./server.js";
 
@@ -170,7 +171,7 @@ describe.skipIf(process.platform !== "win32")("ACL of the real core pipe (Window
   it("gives no other trustee write access; the user (or Administrators when elevated) has full control", async () => {
     const pipePath = `\\\\.\\pipe\\termdock-test-${randomUUID()}`;
     const registry = new SessionRegistry({ backends: [new FakeBackend()] });
-    const server = await CoreServer.start({ registry, pipePath });
+    const server = await CoreServer.start({ registry, layouts: new InMemoryLayoutRepository(), pipePath });
     closers.push(() => server.close());
 
     const { stdout } = await promisify(execFile)(

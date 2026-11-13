@@ -22,6 +22,8 @@ export { MIGRATIONS, migrate, schemaVersion } from "./storage/migrations.js";
 export type { Migration } from "./storage/migrations.js";
 export { InMemorySessionRepository, SqliteSessionRepository } from "./storage/session-repository.js";
 export type { SessionRepository } from "./storage/session-repository.js";
+export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
+export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
 
 // ipc
 export { defaultPipeName, sanitizePipeUser } from "./ipc/pipe-name.js";

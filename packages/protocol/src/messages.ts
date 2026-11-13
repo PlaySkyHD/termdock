@@ -5,6 +5,7 @@ import type {
   ClientId,
   ErrorCode,
   LaunchProfileId,
+  LayoutDocument,
   LaunchSpec,
   SessionId,
   SessionInfo,
@@ -98,6 +99,19 @@ export interface CoreShutdownParams {
   stopSessions?: boolean;
 }
 
+export interface LayoutGetResult {
+  /** Undefined while no layout has been saved. */
+  layout?: LayoutDocument;
+  /** 0 while nothing is saved; grows by 1 with every `layout.save`. */
+  revision: number;
+}
+
+export interface LayoutSaveParams {
+  layout: LayoutDocument;
+  /** When set and not the current revision, the save fails with `invalid_state`. Undefined overwrites. */
+  baseRevision?: number;
+}
+
 export interface MethodMap {
   hello: { params: HelloParams; result: HelloResult };
   "session.create": { params: SessionCreateParams; result: { session: SessionInfo } };
@@ -112,6 +126,8 @@ export interface MethodMap {
   "session.kill": { params: { sessionId: SessionId }; result: Record<string, never> };
   "core.status": { params: Record<string, never>; result: CoreStatusResult };
   "core.shutdown": { params: CoreShutdownParams; result: Record<string, never> };
+  "layout.get": { params: Record<string, never>; result: LayoutGetResult };
+  "layout.save": { params: LayoutSaveParams; result: { revision: number } };
 }
 
 export type Method = keyof MethodMap;
@@ -128,6 +144,8 @@ export const METHODS = [
   "session.kill",
   "core.status",
   "core.shutdown",
+  "layout.get",
+  "layout.save",
 ] as const satisfies readonly Method[];
 
 // --- Events ---------------------------------------------------------------------------------
@@ -167,6 +185,8 @@ export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
   "session.kill": "none",
   "core.status": "none",
   "core.shutdown": "none",
+  "layout.get": "none",
+  "layout.save": "none",
 };
 
 export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
@@ -181,6 +201,8 @@ export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
   "session.kill": "none",
   "core.status": "none",
   "core.shutdown": "none",
+  "layout.get": "none",
+  "layout.save": "none",
 };
 
 export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {

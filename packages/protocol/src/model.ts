@@ -59,6 +59,74 @@ export interface SessionInfo {
   updatedAt: string;
 }
 
+// --- Layout (ADR 0004, table `layouts`) -------------------------------------------------------
+
+/** Value of `LayoutDocument.version`. */
+export const LAYOUT_VERSION = 1 as const;
+/** A tab shows at most this many panes. */
+export const MAX_PANES_PER_TAB = 4;
+/** Limits that keep a stored document, and the `layout.get` answer around it, below the 1 MiB header limit. */
+export const MAX_LAYOUT_WINDOWS = 16;
+/** Ids and session ids in a layout. */
+export const MAX_LAYOUT_ID_LENGTH = 64;
+/** UTF-8 size of `JSON.stringify(layout)`. */
+export const MAX_LAYOUT_BYTES = 256 * 1024;
+export const MAX_TABS_PER_WINDOW = 64;
+export const MAX_TAB_TITLE_LENGTH = 128;
+
+/** Window position and size in screen pixels. */
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Leaf of a pane tree. `sessionId` may name a session that no longer exists; the app then shows a placeholder. */
+export interface LayoutPane {
+  kind: "pane";
+  id: string;
+  sessionId: SessionId;
+}
+
+/** Divides its area among `children` along `direction`; `sizes[i]` is the share of `children[i]` and they sum to about 1. */
+export interface LayoutSplit {
+  kind: "split";
+  id: string;
+  direction: "row" | "column";
+  /** At least 2. */
+  children: PaneNode[];
+  sizes: number[];
+}
+
+export type PaneNode = LayoutPane | LayoutSplit;
+
+export interface LayoutTab {
+  id: string;
+  title?: string;
+  root: PaneNode;
+  /** Id of a `LayoutPane` in `root`. */
+  activePaneId: string;
+}
+
+export interface LayoutWindow {
+  id: string;
+  bounds?: WindowBounds;
+  maximized?: boolean;
+  sidebarVisible?: boolean;
+  sidebarWidth?: number;
+  /** 0 to 64 tabs. A window without tabs shows only the sidebar and the empty state. */
+  tabs: LayoutTab[];
+  /** Id of a tab in `tabs`. Required when there are tabs, omitted when there are none. */
+  activeTabId?: string;
+}
+
+/** The one global layout of all windows. Ids are unique in the whole document; a tab has at most 4 panes. */
+export interface LayoutDocument {
+  version: typeof LAYOUT_VERSION;
+  windows: LayoutWindow[];
+}
+
 /** Stable error codes on the IPC boundary (ADR 0002). */
 export const ERROR_CODES = [
   "protocol_mismatch",

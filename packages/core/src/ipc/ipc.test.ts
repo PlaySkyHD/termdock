@@ -5,11 +5,12 @@ import { createServer, connect as netConnect } from "node:net";
 import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { encodeFrame, FrameDecoder, MAX_PAYLOAD_BYTES } from "@termdock/protocol";
-import type { Frame, SessionInfo } from "@termdock/protocol";
+import { encodeFrame, FrameDecoder, LAYOUT_VERSION, MAX_PAYLOAD_BYTES } from "@termdock/protocol";
+import type { Frame, LayoutDocument, SessionInfo } from "@termdock/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
 import { SessionRegistry } from "../session/registry.js";
+import { InMemoryLayoutRepository } from "../storage/layout-repository.js";
 import { runCore } from "../bin/run-core.js";
 import { connect, IpcError } from "./client.js";
 import type { CoreClient } from "./client.js";
@@ -43,7 +44,12 @@ async function startCore(options: Partial<CoreServerOptions> = {}) {
   const backend = new FakeBackend();
   const registry = new SessionRegistry({ backends: [backend] });
   const pipePath = uniquePipe();
-  const server = await CoreServer.start({ registry, pipePath, ...options });
+  const server = await CoreServer.start({
+    registry,
+    layouts: new InMemoryLayoutRepository(),
+    pipePath,
+    ...options,
+  });
   cleanups.push(() => server.close());
   return { backend, registry, pipePath, server };
 }
@@ -489,7 +495,11 @@ describe("single instance", () => {
 
   it("rejects CoreServer.start with already_running", async () => {
     const { pipePath, registry } = await startCore();
-    const error = await CoreServer.start({ registry, pipePath }).catch((e: unknown) => e);
+    const error = await CoreServer.start({
+      registry,
+      layouts: new InMemoryLayoutRepository(),
+      pipePath,
+    }).catch((e: unknown) => e);
     expect((error as { code?: string }).code).toBe("already_running");
   });
 
@@ -758,5 +768,53 @@ describe("client library", () => {
     const other = collectOutput(client);
     await waitFor(() => other.length === 1, "second output on a fresh listener");
     expect(seen).toEqual(["one"]);
+  });
+});
+
+describe("layout", () => {
+  const pane = (id: string) => ({ kind: "pane", id, sessionId: `session-${id}` }) as const;
+  const layout = (title: string): LayoutDocument => ({
+    version: LAYOUT_VERSION,
+    windows: [
+      {
+        id: "w1",
+        tabs: [{ id: "t1", title, root: pane("p1"), activePaneId: "p1" }],
+        activeTabId: "t1",
+      },
+    ],
+  });
+
+  it("saves and loads the layout, counting revisions", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    expect((await client.request("layout.get", {})).result).toEqual({ revision: 0 });
+    expect((await client.request("layout.save", { layout: layout("one") })).result).toEqual({ revision: 1 });
+    expect((await client.request("layout.get", {})).result).toEqual({ layout: layout("one"), revision: 1 });
+    const other = await newClient(pipePath);
+    expect((await other.request("layout.save", { layout: layout("two"), baseRevision: 1 })).result).toEqual({
+      revision: 2,
+    });
+    expect((await client.request("layout.get", {})).result).toEqual({ layout: layout("two"), revision: 2 });
+  });
+
+  it("answers a stale baseRevision with invalid_state and keeps the stored layout", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    await client.request("layout.save", { layout: layout("one") });
+    await client.request("layout.save", { layout: layout("two") });
+    expect(await errorCode(client.request("layout.save", { layout: layout("three"), baseRevision: 1 }))).toBe(
+      "invalid_state",
+    );
+    expect((await client.request("layout.get", {})).result).toEqual({ layout: layout("two"), revision: 2 });
+  });
+
+  it("answers an invalid layout with bad_request", async () => {
+    const { pipePath } = await startCore();
+    const raw = await rawConnect(pipePath);
+    raw.send(hello);
+    const duplicate = { ...layout("one"), windows: [{ ...layout("one").windows[0], id: "p1" }] };
+    raw.send({ kind: "request", id: "bad", method: "layout.save", params: { layout: duplicate } });
+    await waitFor(() => raw.frames.length === 2, "two responses");
+    expect(raw.frames[1]?.header).toMatchObject({ id: "bad", error: { code: "bad_request" } });
   });
 });

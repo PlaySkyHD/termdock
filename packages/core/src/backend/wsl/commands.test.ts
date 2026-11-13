@@ -205,7 +205,7 @@ describe("other tmux commands", () => {
       "-p",
       "-t",
       "=td-abc:",
-      "#{cursor_x} #{cursor_y}",
+      "#{cursor_x} #{cursor_y} #{cursor_flag}",
     ]);
     expect(versionArgs("Ubuntu")).toEqual(["-d", "Ubuntu", "--cd", "~", "--exec", "tmux", "-V"]);
   });
@@ -247,10 +247,15 @@ describe("parsers", () => {
     expect(parsePaneStatus("1  \n")).toEqual({ dead: true });
   });
 
-  it("splits a snapshot into screen and cursor, with CRLF line ends", () => {
-    const snapshot = parseSnapshot("\x1b[31mred\x1b[39m\nline 2\n\n0 3\n");
-    expect(decoder.decode(snapshot.data)).toBe("\x1b[31mred\x1b[39m\r\nline 2\r\n");
+  it("splits a snapshot into screen and cursor, with CRLF line ends and the cursor positioned in the data", () => {
+    const snapshot = parseSnapshot("\x1b[31mred\x1b[39m\nline 2\n\n0 3 1\n");
+    expect(decoder.decode(snapshot.data)).toBe("\x1b[31mred\x1b[39m\r\nline 2\r\n\x1b[0m\x1b[4;1H\x1b[?25h");
     expect(snapshot.cursor).toEqual({ x: 0, y: 3 });
+  });
+
+  it("hides the cursor after positioning it when tmux reports it hidden", () => {
+    const snapshot = parseSnapshot("screen\n9 4 0\n");
+    expect(decoder.decode(snapshot.data)).toBe("screen\x1b[0m\x1b[5;10H\x1b[?25l");
   });
 
   it("omits the cursor when the last line is not a position", () => {

@@ -26,7 +26,7 @@ export interface DistroList {
 const WORD = /^[A-Za-z0-9_-]+$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PANE_STATUS_FORMAT = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}";
-const CURSOR_FORMAT = "#{cursor_x} #{cursor_y}";
+const CURSOR_FORMAT = "#{cursor_x} #{cursor_y} #{cursor_flag}";
 const encoder = new TextEncoder();
 
 /** tmux session name of a TermDock session. Only letters, digits, `-` and `_`, so no tmux target syntax gets in. */
@@ -189,10 +189,16 @@ export function parsePaneStatus(stdout: string): PaneStatus {
 /** Splits `capture-pane` output plus cursor line into a snapshot with CRLF line ends. */
 export function parseSnapshot(stdout: string): TerminalSnapshot {
   const lines = stdout.replace(/\r?\n$/, "").split("\n");
-  const position = /^(\d+) (\d+)$/.exec(lines.at(-1) ?? "");
+  const position = /^(\d+) (\d+) ([01])$/.exec(lines.at(-1) ?? "");
   if (position) lines.pop();
-  const data = encoder.encode(lines.join("\r\n"));
-  return position ? { data, cursor: { x: Number(position[1]), y: Number(position[2]) } } : { data };
+  const screen = lines.join("\r\n");
+  if (!position) return { data: encoder.encode(screen) };
+  const x = Number(position[1]);
+  const y = Number(position[2]);
+  // Reset attributes so the colour of the last cell does not leak into later output, position the cursor
+  // and restore its visibility (tmux reports a hidden cursor, e.g. htop).
+  const visibility = position[3] === "1" ? "\x1b[?25h" : "\x1b[?25l";
+  return { data: encoder.encode(`${screen}\x1b[0m\x1b[${y + 1};${x + 1}H${visibility}`), cursor: { x, y } };
 }
 
 /** Parses `wsl.exe -l -v`: header first, the default distro is marked with `*`. */

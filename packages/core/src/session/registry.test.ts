@@ -583,7 +583,7 @@ describe("SessionRegistry: backend failures", () => {
     expect(registry.get(id).state).toBe("Interrupted");
   });
 
-  it("drops the cursor when output was appended to the backend snapshot", async () => {
+  it("drops the cursor field when output was appended to the backend snapshot", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     backend.setSnapshot(id, { data: new TextEncoder().encode("screen"), cursor: { x: 6, y: 0 } });

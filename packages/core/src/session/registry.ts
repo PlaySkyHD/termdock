@@ -413,7 +413,8 @@ export class SessionRegistry {
       this.assertAttachable(entry, viewId);
       if (entry.pty !== pty) snapshot = undefined;
       else if (snapshot && inFlight.length > 0) {
-        // The appended output moves the cursor, so the backend's cursor position is no longer valid.
+        // The appended output moves the cursor, so the `cursor` field is no longer valid. The backend's
+        // positioning inside the data stays before the appended output (ADR 0003).
         snapshot = { data: concat([snapshot.data, ...inFlight]) };
       }
     }

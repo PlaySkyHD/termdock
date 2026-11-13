@@ -235,10 +235,10 @@ describe("WslBackend", () => {
   it("returns screen and cursor as snapshot", async () => {
     const { backend } = setup({
       distro: "Ubuntu",
-      respond: (args) => (args.includes("capture-pane") ? ok("a\nb\n2 1\n") : undefined),
+      respond: (args) => (args.includes("capture-pane") ? ok("a\nb\n2 1 1\n") : undefined),
     });
     const snapshot = await backend.snapshot("s1", spec);
-    expect(new TextDecoder().decode(snapshot?.data)).toBe("a\r\nb");
+    expect(new TextDecoder().decode(snapshot?.data)).toBe("a\r\nb\x1b[0m\x1b[2;3H\x1b[?25h");
     expect(snapshot?.cursor).toEqual({ x: 2, y: 1 });
   });
 

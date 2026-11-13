@@ -12,6 +12,7 @@ import {
 } from "@termdock/protocol";
 import type {
   ErrorBody,
+  ErrorCode,
   EventMap,
   EventName,
   Frame,
@@ -28,6 +29,9 @@ import { defaultPipeName } from "./pipe-name.js";
 export const DEFAULT_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 /** How long a closing connection may take to flush before it is destroyed. */
 const CLOSE_GRACE_MS = 1000;
+export const DEFAULT_SHUTDOWN_START_TIMEOUT_MS = 5000;
+/** After the last shutdown answer the server waits this long for further shutdown requests before it closes. */
+const SHUTDOWN_SETTLE_MS = 100;
 
 /** Another core already holds the pipe (ADR 0001). Not an IPC error code: no client sees it over the wire. */
 export class AlreadyRunningError extends Error {
@@ -45,6 +49,8 @@ export interface CoreServerOptions {
   pipePath?: string;
   /** Per-client limit for output the client has not read yet; defaults to 16 MiB. */
   maxBufferedBytes?: number;
+  /** How long `core.shutdown { stopSessions }` waits for sessions in `Starting`; defaults to 5 s. */
+  shutdownStartTimeoutMs?: number;
   /** Called once after `core.shutdown` has closed the server. The entry point ends the process here. */
   onShutdown?: () => void;
   /** Receives the cause of every error that is answered with `internal`. */
@@ -63,18 +69,21 @@ interface Connection {
   /** Requests of one connection run one after the other. */
   chain: Promise<void>;
   closeTimer: NodeJS.Timeout | undefined;
+  /** `session.attach` requests in progress. While > 0, events for this connection wait in `held`. */
+  pendingAttaches: number;
+  held: Uint8Array[];
 }
 
 interface ViewRecord {
   readonly sessionId: SessionId;
   readonly conn: Connection;
-  /** Events held back until the attach response is written; undefined once the view is ready. */
-  queue: Uint8Array[] | undefined;
 }
 
 interface Outcome {
   result: unknown;
   payload?: Uint8Array;
+  /** Answers with this error instead of `result`. */
+  error?: ErrorBody;
   /** Runs after the response is written. */
   after?: () => void;
 }
@@ -92,12 +101,17 @@ export class CoreServer {
   private readonly views = new Map<ViewId, ViewRecord>();
   private subscriptions: Disposable[] = [];
   private closePromise: Promise<void> | undefined;
-  private stopWork: Promise<void> | undefined;
+  private readonly startWaitMs: number;
+  private stopWork: Promise<{ failed: SessionId[]; code: ErrorCode }> | undefined;
+  private shuttingDown = false;
+  private pendingShutdownReplies = 0;
+  private settleTimer: NodeJS.Timeout | undefined;
 
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.pipePath = options.pipePath ?? defaultPipeName();
     this.maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    this.startWaitMs = options.shutdownStartTimeoutMs ?? DEFAULT_SHUTDOWN_START_TIMEOUT_MS;
     this.onShutdown = options.onShutdown;
     this.onInternalError = options.onInternalError ?? (() => {});
     this.netServer = createServer((socket) => this.accept(socket));
@@ -158,19 +172,24 @@ export class CoreServer {
 
   /** Sends one event to each connection that owns one of the views or is in `extra`, at most once. */
   private route(viewIds: readonly ViewId[], extra: readonly Connection[], bytes: Uint8Array): void {
-    const targets = new Map<Connection, ViewRecord | undefined>();
+    const targets = new Set<Connection>(extra);
     for (const viewId of viewIds) {
       const view = this.views.get(viewId);
-      if (!view) continue;
-      const current = targets.get(view.conn);
-      // A view still waiting for its attach response holds the event back for the whole connection.
-      if (!targets.has(view.conn) || (view.queue && !current?.queue)) targets.set(view.conn, view);
+      if (view) targets.add(view.conn);
     }
-    for (const conn of extra) if (!targets.has(conn)) targets.set(conn, undefined);
-    for (const [conn, view] of targets) {
-      if (view?.queue) view.queue.push(bytes);
+    for (const conn of targets) {
+      // While an attach of this connection runs, its response must come first; the order of events stays.
+      if (conn.pendingAttaches > 0) conn.held.push(bytes);
       else this.write(conn, bytes);
     }
+  }
+
+  /** Ends one attach of the connection; the last one releases the held events, also after a failure. */
+  private endAttach(conn: Connection): void {
+    conn.pendingAttaches -= 1;
+    if (conn.pendingAttaches > 0) return;
+    const held = conn.held.splice(0);
+    for (const bytes of held) this.write(conn, bytes);
   }
 
   private accept(socket: Socket): void {
@@ -184,6 +203,8 @@ export class CoreServer {
       listSubscriber: false,
       chain: Promise.resolve(),
       closeTimer: undefined,
+      pendingAttaches: 0,
+      held: [],
     };
     this.connections.add(conn);
     // 'close' always follows an error and cleans up.
@@ -226,10 +247,13 @@ export class CoreServer {
     }
     try {
       const outcome = await this.dispatch(conn, request);
-      this.write(
-        conn,
-        encodeFrame({ kind: "response", id: request.id, result: outcome.result }, outcome.payload),
-      );
+      if (outcome.error) this.sendError(conn, request.id, outcome.error);
+      else {
+        this.write(
+          conn,
+          encodeFrame({ kind: "response", id: request.id, result: outcome.result }, outcome.payload),
+        );
+      }
       outcome.after?.();
     } catch (error) {
       this.sendError(conn, request.id, this.toErrorBody(error));
@@ -254,6 +278,9 @@ export class CoreServer {
 
   private async dispatch(conn: Connection, request: ParsedRequest): Promise<Outcome> {
     const { registry } = this;
+    if (this.shuttingDown && request.method !== "core.shutdown") {
+      throw new CoreError("invalid_state", "Core is shutting down");
+    }
     switch (request.method) {
       case "hello":
         throw new CoreError("bad_request", "hello was already sent");
@@ -299,37 +326,28 @@ export class CoreServer {
       case "session.kill":
         await registry.kill(request.params.sessionId);
         return EMPTY_RESULT;
-      case "core.shutdown": {
-        const stopSessions = request.params.stopSessions === true;
-        // Concurrent requests share one stop run; a later request with stopSessions still stops the sessions.
-        if (stopSessions) {
-          this.stopWork ??= this.stopSessions();
-          await this.stopWork;
-        }
-        return {
-          result: {},
-          after: () => {
-            void this.close().then(() => this.onShutdown?.());
-          },
-        };
-      }
+      case "core.shutdown":
+        return this.shutdown(request.params.stopSessions === true);
     }
   }
 
   private async attach(conn: Connection, sessionId: SessionId): Promise<Outcome> {
     const viewId = randomUUID();
-    this.views.set(viewId, { sessionId, conn, queue: [] });
+    this.views.set(viewId, { sessionId, conn });
     conn.views.add(viewId);
+    conn.pendingAttaches += 1;
     let attached;
     try {
       attached = await this.registry.attachView(sessionId, viewId);
     } catch (error) {
       this.forgetView(viewId);
+      this.endAttach(conn);
       throw error;
     }
     if (conn.closed) {
       // The client left while the registry was working; nobody could use this view.
       this.releaseView(viewId);
+      this.endAttach(conn);
       throw new CoreError("invalid_state", "Connection closed during attach");
     }
     const { session, snapshot } = attached;
@@ -346,12 +364,7 @@ export class CoreServer {
     return {
       result,
       payload: data,
-      after: () => {
-        const view = this.views.get(viewId);
-        const queued = view?.queue ?? [];
-        if (view) view.queue = undefined;
-        for (const bytes of queued) this.write(conn, bytes);
-      },
+      after: () => this.endAttach(conn),
     };
   }
 
@@ -378,10 +391,56 @@ export class CoreServer {
     }
   }
 
-  private async stopSessions(): Promise<void> {
-    const running = this.registry.list().filter((s) => s.state === "Running" || s.state === "Detached");
-    const results = await Promise.allSettled(running.map((s) => this.registry.kill(s.id)));
-    for (const result of results) if (result.status === "rejected") this.onInternalError(result.reason);
+  /**
+   * Handles one `core.shutdown`. From the first request on, all other requests are refused. Requests that
+   * arrive while another one is running or shortly after its answer are merged: stopSessions of any of them
+   * applies (OR), each one is answered, and the server closes only after the last answer plus a settle time.
+   */
+  private async shutdown(stopSessions: boolean): Promise<Outcome> {
+    this.shuttingDown = true;
+    this.pendingShutdownReplies += 1;
+    clearTimeout(this.settleTimer);
+    const after = (): void => {
+      this.pendingShutdownReplies -= 1;
+      if (this.pendingShutdownReplies > 0) return;
+      this.settleTimer = setTimeout(() => {
+        void this.close().then(() => this.onShutdown?.());
+      }, SHUTDOWN_SETTLE_MS);
+    };
+    if (stopSessions) this.stopWork ??= this.stopAllSessions();
+    const stopped = this.stopWork ? await this.stopWork : undefined;
+    if (stopped && stopped.failed.length > 0) {
+      return {
+        result: {},
+        error: { code: stopped.code, message: `Could not stop sessions: ${stopped.failed.join(", ")}` },
+        after,
+      };
+    }
+    return { result: {}, after };
+  }
+
+  /**
+   * Ends all sessions that run or are still starting. Sessions in `Starting` are awaited for up to
+   * `startWaitMs` first; those still starting after that count as not stopped.
+   */
+  private async stopAllSessions(): Promise<{ failed: SessionId[]; code: ErrorCode }> {
+    const deadline = Date.now() + this.startWaitMs;
+    while (this.registry.list().some((s) => s.state === "Starting") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const targets = this.registry
+      .list()
+      .filter((s) => s.state === "Starting" || s.state === "Running" || s.state === "Detached");
+    const results = await Promise.allSettled(targets.map((s) => this.registry.kill(s.id)));
+    const failed: SessionId[] = [];
+    let code: ErrorCode = "internal";
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") return;
+      failed.push(targets[index]!.id);
+      if (failed.length === 1 && result.reason instanceof CoreError) code = result.reason.code;
+      else if (!(result.reason instanceof CoreError)) this.onInternalError(result.reason);
+    });
+    return { failed, code };
   }
 
   private toErrorBody(error: unknown): ErrorBody {

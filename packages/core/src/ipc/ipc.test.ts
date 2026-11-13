@@ -485,14 +485,113 @@ describe("core.shutdown", () => {
     expect(registry.get(ids[0]).state).toBe("Detached");
   });
 
-  it("still stops the other sessions when one cannot be stopped", async () => {
+  it("answers with an error naming the sessions that could not be stopped, and stops the rest", async () => {
     const { client, registry, backend, ids } = await withTwoSessions();
     backend.failNextKill = new Error("tmux gone");
     const closed = new Promise<void>((resolve) => client.onClose(resolve));
-    await client.request("core.shutdown", { stopSessions: true });
+    const error = await client.request("core.shutdown", { stopSessions: true }).catch((e: unknown) => e);
     await closed;
+    expect(error).toBeInstanceOf(IpcError);
+    expect((error as IpcError).code).toBe("backend_unavailable");
     const states = ids.map((id) => registry.get(id).state);
     expect(states).toContain("Exited");
+    const failed = ids.filter((id) => registry.get(id).state !== "Exited");
+    expect(failed).toHaveLength(1);
+    expect((error as IpcError).message).toContain(failed[0]);
+  });
+
+  /** Makes the backend's next start wait until `release()` is called, so a session stays in Starting. */
+  function holdNextStart(backend: FakeBackend): { release: () => void } {
+    const originalStart = backend.start.bind(backend);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    backend.start = async (...args) => {
+      backend.start = originalStart;
+      await gate;
+      return originalStart(...args);
+    };
+    return { release: () => release() };
+  }
+
+  it("waits for sessions in Starting and stops them too, rejecting new requests meanwhile", async () => {
+    const { backend, registry, pipePath } = await startCore();
+    const gate = holdNextStart(backend);
+    const creator = await newClient(pipePath);
+    const creating = creator.request("session.create", { name: "slow", launch });
+    await waitFor(() => registry.list().some((s) => s.state === "Starting"), "session in Starting");
+    const id = registry.list()[0]!.id;
+
+    const shutter = await newClient(pipePath);
+    const closed = new Promise<void>((resolve) => shutter.onClose(resolve));
+    const shutdown = shutter.request("core.shutdown", { stopSessions: true });
+    const other = await newClient(pipePath);
+    // Shutdown has begun once the other client's request is refused.
+    let refused = "";
+    for (let i = 0; i < 100 && refused !== "invalid_state"; i += 1) {
+      refused = await other.request("session.list", {}).then(
+        () => "ok",
+        (e: IpcError) => e.code,
+      );
+      if (refused === "ok") await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(refused).toBe("invalid_state");
+    expect(await errorCode(other.request("session.create", { name: "late", launch }))).toBe("invalid_state");
+
+    gate.release();
+    await creating.catch(() => {});
+    await shutdown;
+    await closed;
+    expect(registry.get(id).state).toBe("Exited");
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it("answers every shutdown request and applies stopSessions of any of them", async () => {
+    const { client, registry, pipePath, ids } = await withTwoSessions();
+    const second = await newClient(pipePath);
+    const firstClosed = new Promise<void>((resolve) => client.onClose(resolve));
+    const secondClosed = new Promise<void>((resolve) => second.onClose(resolve));
+    const first = client.request("core.shutdown", {});
+    await first;
+    // Shortly after the first answer, still before the server closes.
+    await second.request("core.shutdown", { stopSessions: true });
+    await Promise.all([firstClosed, secondClosed]);
+    expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
+  });
+
+  it("answers two concurrent shutdown requests", async () => {
+    const { client, registry, pipePath, ids } = await withTwoSessions();
+    const second = await newClient(pipePath);
+    const results = await Promise.all([
+      client.request("core.shutdown", {}),
+      second.request("core.shutdown", { stopSessions: true }),
+    ]);
+    expect(results).toHaveLength(2);
+    expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
+  });
+});
+
+describe("attach failure", () => {
+  it("still delivers events held back during a failing attach", async () => {
+    const { backend, registry, pipePath } = await startCore();
+    const info = await registry.create({ name: "x", launch });
+    // The first view's attach waits in the backend snapshot; the session is archived meanwhile.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    backend.snapshot = async () => {
+      await gate;
+      return undefined;
+    };
+    const client = await newClient(pipePath);
+    const states: string[] = [];
+    client.on("session.stateChanged", (data) => states.push(data.state));
+    await client.request("session.list", {});
+    const attaching = client.request("session.attach", { sessionId: info.id });
+    await waitFor(() => registry.list().length === 1 && backend.starts.length === 1, "attach started");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await registry.archive(info.id);
+    release();
+    expect(await errorCode(attaching)).toBe("invalid_state");
+    await waitFor(() => states.includes("Archived"), "stateChanged(Archived) after the failed attach");
   });
 });
 
@@ -543,6 +642,28 @@ describe("client library", () => {
     await client.close();
     await client.close();
     expect(await errorCode(client.request("session.list", {}))).toBe("closed");
+  });
+
+  it("survives a throwing listener: others and later frames still arrive, the error is reported", async () => {
+    const { pipePath, backend, registry } = await startCore();
+    const reported: unknown[] = [];
+    const client = await connect(pipePath, {
+      requestTimeoutMs: 3000,
+      onListenerError: (error) => reported.push(error),
+    });
+    cleanups.push(() => client.close());
+    const info = await registry.create({ name: "x", launch });
+    await attach(client, info.id);
+    client.on("session.output", () => {
+      throw new Error("listener bug");
+    });
+    const seen = collectOutput(client);
+    backend.pty(info.id).emitData("one");
+    backend.pty(info.id).emitData("two");
+    await waitFor(() => seen.length === 2, "both outputs");
+    expect(seen).toEqual(["one", "two"]);
+    expect(reported).toHaveLength(2);
+    expect((await client.request("session.list", {})).result.sessions).toHaveLength(1);
   });
 
   it("stops delivering events to a disposed listener", async () => {

@@ -73,7 +73,7 @@ Der Core SHALL die Methoden `session.create`, `session.list`, `session.attach`, 
 
 ### Requirement: Event-Verteilung
 
-Der Core SHALL `session.output`, `session.resized` und `view.writerChanged` nur an Verbindungen senden, die eine View der Session haben, je Event höchstens einmal je Verbindung. `session.stateChanged` SHALL zusätzlich an Verbindungen gehen, die `session.list` genutzt haben. Ein Event für eine View MUST nach der Attach-Antwort dieser View eintreffen. Ausgabe über der Nutzdatengrenze SHALL in mehrere Events geteilt werden.
+Der Core SHALL `session.output`, `session.resized` und `view.writerChanged` nur an Verbindungen senden, die eine View der Session haben, je Event höchstens einmal je Verbindung. `session.stateChanged` SHALL zusätzlich an Verbindungen gehen, die `session.list` genutzt haben. Ausgabe über der Nutzdatengrenze SHALL in mehrere Events geteilt werden.
 
 #### Scenario: Ausgabe an alle Views
 
@@ -93,6 +93,16 @@ Der Core SHALL `session.output`, `session.resized` und `view.writerChanged` nur 
 - **WHEN** die Session ihren Zustand wechselt
 - **THEN** erhält er `session.stateChanged`
 
+### Requirement: Event-Reihenfolge beim Attach
+
+Ein Event für eine View MUST nach der Attach-Antwort dieser View eintreffen. Events, die während eines laufenden Attach für die Verbindung anfallen, MUST in ihrer Reihenfolge ausgeliefert werden, auch wenn der Attach fehlschlägt.
+
+#### Scenario: Fehlgeschlagener Attach verliert keine Events
+
+- **GIVEN** ein Client, der `session.list` genutzt hat und dessen `session.attach` noch läuft
+- **WHEN** die Session archiviert wird und der Attach deshalb mit `invalid_state` scheitert
+- **THEN** erhält der Client trotzdem `session.stateChanged` mit `Archived`
+
 ### Requirement: Backpressure
 
 Der Core SHALL je Verbindung die noch nicht abgenommene Ausgabe auf eine Obergrenze begrenzen. Liest ein Client nicht ab und überschreitet die Grenze, SHALL der Core die Verbindung trennen und ihre Views abhängen; andere Clients und die Sessions bleiben unberührt.
@@ -105,7 +115,7 @@ Der Core SHALL je Verbindung die noch nicht abgenommene Ausgabe auf eine Obergre
 
 ### Requirement: Einzelinstanz
 
-Der Core SHALL die Pipe `\\.\pipe\termdock-core-<benutzer>` (Benutzername bereinigt für Pipe-Namen; Pfad konfigurierbar) exklusiv belegen. Ist sie belegt, SHALL der Start mit dem Fehlercode `already_running` scheitern; der Einstiegsprozess SHALL sich mit Exit-Code 10 und einer Meldung auf stderr beenden. Der laufende Core MUST davon unberührt bleiben.
+Der Core SHALL die Pipe exklusiv belegen (Pfad konfigurierbar). Ist sie belegt, SHALL der Start mit dem Fehlercode `already_running` scheitern; der Einstiegsprozess SHALL sich mit Exit-Code 10 und einer Meldung auf stderr beenden. Der laufende Core MUST davon unberührt bleiben.
 
 #### Scenario: Zweite Instanz
 
@@ -113,9 +123,19 @@ Der Core SHALL die Pipe `\\.\pipe\termdock-core-<benutzer>` (Benutzername berein
 - **WHEN** ein zweiter Core dieselbe Pipe belegen will
 - **THEN** scheitert er mit `already_running`, Exit-Code 10 und einer stderr-Meldung, und der erste Core antwortet weiter
 
+### Requirement: Pipe-Name pro Konto
+
+Der Pipe-Name SHALL `\\.\pipe\termdock-core-<benutzer>-<hash>` lauten. `<benutzer>` ist der für Pipe-Namen bereinigte Benutzername, `<hash>` sind 12 Hex-Zeichen von SHA-256 über `<Domäne>\<Benutzername>` im Rohzustand (Domäne aus `USERDOMAIN`, sonst Rechnername). Konten, deren bereinigte Namen gleich sind oder die sich nur in der Domäne unterscheiden, MUST verschiedene Pipes haben.
+
+#### Scenario: Konten mit gleichem bereinigtem Namen
+
+- **GIVEN** die Konten `PC\Jörg` und `PC\Jürg` sowie `DOMAIN\bob` und `PC\bob`
+- **WHEN** ihre Pipe-Namen gebildet werden
+- **THEN** sind alle Namen verschieden
+
 ### Requirement: Shutdown
 
-`core.shutdown { stopSessions }` SHALL den Core beenden. Mit `stopSessions: true` SHALL der Core zuvor alle laufenden Sessions (`Running`, `Detached`) über die Registry beenden; mit `false` oder ohne Angabe SHALL er nur den Server schließen und die Sessions unberührt lassen. Danach MUST die Pipe geschlossen sein und neue Verbindungen scheitern.
+`core.shutdown { stopSessions }` SHALL den Core beenden und danach die Pipe schließen. Ab der ersten Shutdown-Anfrage MUST der Core alle anderen Anfragen mit `invalid_state` ablehnen. Mit `stopSessions: true` SHALL der Core zuvor alle Sessions beenden, auch solche in `Starting` (nach einer Frist); sonst lässt er die Sessions unberührt.
 
 #### Scenario: Shutdown mit Stop
 
@@ -128,6 +148,28 @@ Der Core SHALL die Pipe `\\.\pipe\termdock-core-<benutzer>` (Benutzername berein
 - **GIVEN** eine laufende Session
 - **WHEN** ein Client `core.shutdown { stopSessions: false }` sendet
 - **THEN** bleibt die Session unverändert, und die Pipe ist geschlossen
+
+#### Scenario: Session in Starting
+
+- **GIVEN** eine Session in `Starting` und ein laufender `core.shutdown { stopSessions: true }`
+- **WHEN** eine weitere Anfrage eintrifft und danach der Start abgeschlossen wird
+- **THEN** wird die weitere Anfrage mit `invalid_state` abgelehnt und die Session am Ende `Exited`
+
+### Requirement: Shutdown-Fehler und mehrere Shutdown-Anfragen
+
+Scheitert das Beenden einzelner Sessions, SHALL die Antwort ein Fehler sein, dessen Meldung die nicht beendeten Session-IDs nennt; die übrigen Sessions werden trotzdem beendet und der Core schließt. Mehrere Shutdown-Anfragen SHALL zusammengeführt werden: `stopSessions` gilt, wenn eine von ihnen es verlangt, und jede MUST beantwortet werden, bevor der Server schließt.
+
+#### Scenario: Beenden schlägt fehl
+
+- **GIVEN** zwei laufende Sessions, bei einer scheitert das Beenden
+- **WHEN** ein Client `core.shutdown { stopSessions: true }` sendet
+- **THEN** antwortet der Core mit einem Fehler, dessen Meldung die nicht beendete Session-ID nennt, die andere Session ist `Exited` und die Pipe ist geschlossen
+
+#### Scenario: Zwei Shutdown-Anfragen
+
+- **GIVEN** zwei Clients
+- **WHEN** der erste `core.shutdown {}` und kurz danach der zweite `core.shutdown { stopSessions: true }` sendet
+- **THEN** werden beide beantwortet und alle Sessions sind `Exited`
 
 ### Requirement: Client-Bibliothek
 
@@ -144,3 +186,13 @@ Die Client-Bibliothek SHALL mit `connect(pipe)` verbinden und den `hello`-Handsh
 - **GIVEN** eine offene Anfrage
 - **WHEN** der Server die Verbindung schließt
 - **THEN** wird die Anfrage mit Code `closed` abgewiesen
+
+### Requirement: Fehler in Event-Listenern
+
+Eine Ausnahme in einem Event-Listener der Client-Bibliothek MUST weder andere Listener noch die Verarbeitung folgender Nachrichten stoppen; sie SHALL an einen optionalen Fehler-Rückruf (Standard `console.error`) gemeldet werden.
+
+#### Scenario: Listener wirft
+
+- **GIVEN** ein Listener, der bei jedem Event eine Ausnahme wirft, und ein zweiter Listener
+- **WHEN** zwei Events nacheinander eintreffen
+- **THEN** erhält der zweite Listener beide Events, der Fehler-Rückruf wird zweimal aufgerufen und weitere Anfragen funktionieren

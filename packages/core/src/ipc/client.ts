@@ -35,6 +35,8 @@ export interface ConnectOptions {
   protocolVersion?: string;
   requestTimeoutMs?: number;
   connectTimeoutMs?: number;
+  /** Receives exceptions thrown by event listeners; defaults to `console.error`. */
+  onListenerError?: (error: unknown) => void;
 }
 
 export interface RequestResult<M extends Method> {
@@ -64,6 +66,7 @@ export class CoreClient {
   private constructor(
     private readonly socket: Socket,
     private readonly requestTimeoutMs: number,
+    private readonly onListenerError: (error: unknown) => void,
   ) {
     this.closedPromise = new Promise((resolve) => {
       socket.once("close", () => {
@@ -79,7 +82,11 @@ export class CoreClient {
   /** Connects, performs the `hello` handshake and resolves with a ready client. */
   static async connect(pipePath: string, options: ConnectOptions = {}): Promise<CoreClient> {
     const socket = await openSocket(pipePath, options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
-    const client = new CoreClient(socket, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    const client = new CoreClient(
+      socket,
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      options.onListenerError ?? ((error) => console.error("termdock client: event listener failed:", error)),
+    );
     try {
       await client.request("hello", {
         protocolVersion: options.protocolVersion ?? PROTOCOL_VERSION,
@@ -181,7 +188,20 @@ export class CoreClient {
 
   private emit(event: ParsedEvent): void {
     for (const listener of [...(this.listeners.get(event.event) ?? [])]) {
-      listener(event.data, event.payload);
+      // A faulty listener must not stop other listeners or the frames behind this one.
+      try {
+        listener(event.data, event.payload);
+      } catch (error) {
+        this.reportListenerError(error);
+      }
+    }
+  }
+
+  private reportListenerError(error: unknown): void {
+    try {
+      this.onListenerError(error);
+    } catch {
+      // The error handler itself failed; nothing sensible is left to do.
     }
   }
 

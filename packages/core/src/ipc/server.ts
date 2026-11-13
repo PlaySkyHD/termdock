@@ -32,6 +32,8 @@ const CLOSE_GRACE_MS = 1000;
 export const DEFAULT_SHUTDOWN_START_TIMEOUT_MS = 5000;
 /** After the last shutdown answer the server waits this long for further shutdown requests before it closes. */
 const SHUTDOWN_SETTLE_MS = 100;
+/** A connection that has not completed `hello` after this long is destroyed (spec core-ipc, pipe security). */
+export const DEFAULT_HELLO_TIMEOUT_MS = 5000;
 
 /** Another core already holds the pipe (ADR 0001). Not an IPC error code: no client sees it over the wire. */
 export class AlreadyRunningError extends Error {
@@ -55,6 +57,8 @@ export interface CoreServerOptions {
   onShutdown?: () => void;
   /** Receives the cause of every error that is answered with `internal`. */
   onInternalError?: (error: unknown) => void;
+  /** How long a new connection may stay without a completed `hello`; defaults to 5 s. */
+  helloTimeoutMs?: number;
 }
 
 interface Connection {
@@ -69,6 +73,8 @@ interface Connection {
   /** Requests of one connection run one after the other. */
   chain: Promise<void>;
   closeTimer: NodeJS.Timeout | undefined;
+  /** Destroys the connection when `hello` does not arrive in time; cleared on `hello` and on close. */
+  helloTimer: NodeJS.Timeout | undefined;
   /** `session.attach` requests in progress. While > 0, events for this connection wait in `held`. */
   pendingAttaches: number;
   held: Uint8Array[];
@@ -95,6 +101,7 @@ export class CoreServer {
   private readonly registry: SessionRegistry;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
+  private readonly helloTimeoutMs: number;
   private readonly onInternalError: (error: unknown) => void;
   private readonly netServer: Server;
   private readonly connections = new Set<Connection>();
@@ -113,6 +120,7 @@ export class CoreServer {
     this.maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
     this.startWaitMs = options.shutdownStartTimeoutMs ?? DEFAULT_SHUTDOWN_START_TIMEOUT_MS;
     this.onShutdown = options.onShutdown;
+    this.helloTimeoutMs = options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS;
     this.onInternalError = options.onInternalError ?? (() => {});
     this.netServer = createServer((socket) => this.accept(socket));
   }
@@ -203,10 +211,12 @@ export class CoreServer {
       listSubscriber: false,
       chain: Promise.resolve(),
       closeTimer: undefined,
+      helloTimer: undefined,
       pendingAttaches: 0,
       held: [],
     };
     this.connections.add(conn);
+    conn.helloTimer = setTimeout(() => socket.destroy(), this.helloTimeoutMs);
     // 'close' always follows an error and cleans up.
     socket.on("error", () => {});
     socket.on("data", (chunk) => this.onData(conn, chunk));
@@ -228,6 +238,7 @@ export class CoreServer {
   private onClose(conn: Connection): void {
     conn.closed = true;
     clearTimeout(conn.closeTimer);
+    clearTimeout(conn.helloTimer);
     this.connections.delete(conn);
     for (const viewId of [...conn.views]) this.releaseView(viewId);
   }
@@ -273,6 +284,7 @@ export class CoreServer {
       return;
     }
     conn.greeted = true;
+    clearTimeout(conn.helloTimer);
     this.write(conn, encodeFrame({ kind: "response", id: request.id, result: negotiated.value }));
   }
 

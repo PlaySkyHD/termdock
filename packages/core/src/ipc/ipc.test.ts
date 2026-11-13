@@ -146,6 +146,24 @@ describe("handshake", () => {
     expect(code).toBe("protocol_mismatch");
   });
 
+  it("closes a connection that sends no hello within the timeout", async () => {
+    const { pipePath } = await startCore({ helloTimeoutMs: 100 });
+    const raw = await rawConnect(pipePath);
+    await waitFor(() => raw.closed(), "connection close");
+    expect(raw.frames).toEqual([]);
+  });
+
+  it("keeps a connection open after hello even past the hello timeout", async () => {
+    const { pipePath } = await startCore({ helloTimeoutMs: 100 });
+    const raw = await rawConnect(pipePath);
+    raw.send(hello);
+    await waitFor(() => raw.frames.length === 1, "hello response");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(raw.closed()).toBe(false);
+    raw.send({ kind: "request", id: "l", method: "session.list", params: {} });
+    await waitFor(() => raw.frames.length === 2, "list response");
+  });
+
   it("drops a connection that sends garbage", async () => {
     const { pipePath } = await startCore();
     const raw = await rawConnect(pipePath);

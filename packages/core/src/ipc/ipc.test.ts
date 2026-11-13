@@ -146,6 +146,66 @@ describe("handshake", () => {
     expect(code).toBe("protocol_mismatch");
   });
 
+  it("closes a connection that sends no hello within the timeout", async () => {
+    const { pipePath } = await startCore({ helloTimeoutMs: 100 });
+    const raw = await rawConnect(pipePath);
+    await waitFor(() => raw.closed(), "connection close");
+    expect(raw.frames).toEqual([]);
+  });
+
+  it("rejects a hello timeout that is zero, negative or not finite when starting", async () => {
+    for (const helloTimeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(startCore({ helloTimeoutMs }), String(helloTimeoutMs)).rejects.toThrow(RangeError);
+    }
+  });
+
+  it("rejects a pending-handshake limit below 1 or not an integer when starting", async () => {
+    for (const maxPendingHandshakes of [0, -1, 1.5, Number.NaN]) {
+      await expect(startCore({ maxPendingHandshakes }), String(maxPendingHandshakes)).rejects.toThrow(
+        RangeError,
+      );
+    }
+  });
+
+  it("disconnects new connections at once while the limit of connections without hello is reached", async () => {
+    const { pipePath } = await startCore({ maxPendingHandshakes: 2 });
+    const first = await rawConnect(pipePath);
+    const second = await rawConnect(pipePath);
+    const third = await rawConnect(pipePath);
+    await waitFor(() => third.closed(), "third connection close");
+    expect(first.closed()).toBe(false);
+    expect(second.closed()).toBe(false);
+    // hello frees a slot, and so does closing a connection
+    first.send(hello);
+    await waitFor(() => first.frames.length === 1, "hello response");
+    const fourth = await rawConnect(pipePath);
+    fourth.send({ ...hello, id: "h4" });
+    await waitFor(() => fourth.frames.length === 1, "fourth hello response");
+    expect(fourth.closed()).toBe(false);
+    // second and fifth are without hello again: the limit is reached
+    const fifth = await rawConnect(pipePath);
+    const sixth = await rawConnect(pipePath);
+    await waitFor(() => sixth.closed(), "sixth connection close");
+    expect(fifth.closed()).toBe(false);
+    second.socket.destroy();
+    await waitFor(() => second.closed(), "second close");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const seventh = await rawConnect(pipePath);
+    seventh.send({ ...hello, id: "h7" });
+    await waitFor(() => seventh.frames.length === 1, "seventh hello response");
+  });
+
+  it("keeps a connection open after hello even past the hello timeout", async () => {
+    const { pipePath } = await startCore({ helloTimeoutMs: 100 });
+    const raw = await rawConnect(pipePath);
+    raw.send(hello);
+    await waitFor(() => raw.frames.length === 1, "hello response");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(raw.closed()).toBe(false);
+    raw.send({ kind: "request", id: "l", method: "session.list", params: {} });
+    await waitFor(() => raw.frames.length === 2, "list response");
+  });
+
   it("drops a connection that sends garbage", async () => {
     const { pipePath } = await startCore();
     const raw = await rawConnect(pipePath);

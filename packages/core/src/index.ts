@@ -40,3 +40,8 @@ export { DistroKeepalive } from "./backend/wsl/keepalive.js";
 export type { KeepaliveProcess, KeepaliveSpawner } from "./backend/wsl/keepalive.js";
 export type { PtyProcess } from "./backend/wsl/pty.js";
 export { wslPath } from "./backend/wsl/paths.js";
+
+// pipe security
+export { DEFAULT_HELLO_TIMEOUT_MS, DEFAULT_MAX_PENDING_HANDSHAKES } from "./ipc/server.js";
+export { foreignAllowEntries, grantsWrite, parseDacl } from "./ipc/pipe-acl.js";
+export type { DaclEntry } from "./ipc/pipe-acl.js";

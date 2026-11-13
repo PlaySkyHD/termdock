@@ -8,7 +8,8 @@ Fenster und Core sind getrennte Prozesse (ADR 0001). Ausgabe kann sehr groß wer
 
 ## Entscheidung
 
-- **Transport:** Windows Named Pipe `\\.\pipe\termdock-core-<windows-benutzer>`, nur für den aktuellen Benutzer zugänglich. Kein TCP. In Tests ein eindeutiger Pipe-Name je Test.
+- **Transport:** Windows Named Pipe `\\.\pipe\termdock-core-<benutzer>-<hash>` (ein Name je Konto). Kein TCP. In Tests ein eindeutiger Pipe-Name je Test.
+- **Zugriff:** Der Core nutzt den Standard-Sicherheitsdeskriptor von libuv (Node bietet keine eigene DACL, Messung im archivierten Change `secure-core-pipe`, `design.md`). Er gibt SYSTEM, Administratoren und dem aktuellen Benutzer Vollzugriff und Everyone und Anonymous nur Lesezugriff. Kein fremdes Konto kann schreiben, also keine Anfrage senden und keine Events erhalten; lesendes Öffnen bleibt möglich. Der Core trennt Verbindungen ohne `hello` nach 5 s, und ein Windows-Test prüft die DACL der echten Pipe. Soll auch das Öffnen verboten werden, braucht es ein Native-Modul mit `CreateNamedPipe` und eigener DACL (eigener Change).
 - **Rahmung:** Längenpräfix. Jeder Frame ist `uint32 BE Länge des Headers | Header (UTF-8-JSON) | uint32 BE Länge der Nutzdaten | Nutzdaten (Bytes)`. Terminal-Ein- und -Ausgabe stehen als rohe Bytes in den Nutzdaten, nicht als Base64 im JSON. Maximale Headergröße 1 MiB, maximale Nutzdaten 4 MiB; größere Frames sind ein Protokollfehler.
 - **Nachrichtenarten im Header** (`kind`):
   - `request` mit `id`, `method`, `params`; Antwort `response` mit gleicher `id` und `result` oder `error { code, message }`.

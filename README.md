@@ -16,7 +16,7 @@ V1 in development. Phase 0 (proof of concept) and Phase 1 (core system) first.
 
 ## Development
 
-Requires Windows 11, Node 22.5+, and for the WSL backend a WSL distribution with tmux.
+Requires Windows 11, Node 22.13+, and for the WSL backend a WSL distribution with tmux.
 
 ```sh
 npm ci

@@ -1,0 +1,74 @@
+// SQLite storage of the Core metadata (ADR 0004): termdock.db in the data directory, WAL, numbered migrations.
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { Disposable } from "../backend/types.js";
+import { migrate, schemaVersion } from "./migrations.js";
+import { SqliteSessionRepository } from "./session-repository.js";
+import type { SessionRepository } from "./session-repository.js";
+
+export const DATABASE_FILE = "termdock.db";
+
+/** Waits this long for a lock held by another connection before failing. */
+const BUSY_TIMEOUT_MS = 5000;
+
+/** `TERMDOCK_DATA_DIR` if set (tests), otherwise `%APPDATA%\TermDock`. */
+export function resolveDataDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const override = env.TERMDOCK_DATA_DIR;
+  if (override) return override;
+  const appData = env.APPDATA;
+  if (!appData)
+    throw new Error("Neither TERMDOCK_DATA_DIR nor APPDATA is set; cannot locate the data directory");
+  return join(appData, "TermDock");
+}
+
+/** Opens (and creates) a database file, or `:memory:`, in WAL mode with all migrations applied. */
+export function openDatabase(file: string): DatabaseSync {
+  const db = new DatabaseSync(file);
+  try {
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA foreign_keys = ON");
+    migrate(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  return db;
+}
+
+export interface Storage extends Disposable {
+  readonly sessions: SessionRepository;
+  /** Highest applied migration. */
+  schemaVersion(): number;
+  /** Closes the database. */
+  dispose(): void;
+}
+
+export interface OpenStorageOptions {
+  /** Directory of termdock.db; defaults to `resolveDataDir()`. Created if missing. */
+  dataDir?: string;
+}
+
+export function openStorage(options: OpenStorageOptions = {}): Storage {
+  const dataDir = options.dataDir ?? resolveDataDir();
+  mkdirSync(dataDir, { recursive: true });
+  const db = openDatabase(join(dataDir, DATABASE_FILE));
+  let sessions: SessionRepository;
+  try {
+    sessions = new SqliteSessionRepository(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  let open = true;
+  return {
+    sessions,
+    schemaVersion: () => schemaVersion(db),
+    dispose: () => {
+      if (!open) return;
+      open = false;
+      db.close();
+    },
+  };
+}

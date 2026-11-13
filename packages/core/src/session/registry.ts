@@ -1,6 +1,7 @@
 // Session Registry: identities, lifecycle, views and input lock of all sessions in the Core (ADR 0003, ADR 0005).
 import { randomUUID } from "node:crypto";
 import type {
+  BackendKind,
   LaunchProfileId,
   LaunchSpec,
   SessionId,
@@ -11,6 +12,7 @@ import type {
   WorkspaceId,
 } from "@termdock/protocol";
 import type { Backend, Disposable, PtyHandle, TerminalSnapshot } from "../backend/types.js";
+import type { SessionRepository } from "../storage/session-repository.js";
 import { CoreError } from "./errors.js";
 import { transition } from "./lifecycle.js";
 import { OutputBuffer } from "./output-buffer.js";
@@ -23,6 +25,11 @@ export interface SessionRegistryOptions {
   backends: readonly Backend[];
   /** Clock for `createdAt`/`updatedAt`; defaults to `new Date()`. */
   now?: () => Date;
+  /**
+   * Storage of the session metadata (ADR 0004). Every change of a session is saved before it is reported.
+   * Without a repository the registry keeps sessions only in memory. Required for `restore()`.
+   */
+  repository?: SessionRepository;
 }
 
 export interface CreateSessionInput {
@@ -72,6 +79,23 @@ export interface AttachResult {
   snapshot: TerminalSnapshot;
 }
 
+/** How the reconcile changed one stored session. */
+export interface ReconciledSession {
+  sessionId: SessionId;
+  from: SessionState;
+  to: SessionState;
+}
+
+export interface RestoreResult {
+  /** Sessions whose stored state was `Starting`, `Running` or `Detached`, in load order. */
+  sessions: ReconciledSession[];
+  /** Backends that could not be reached; the Core reports `backend_unavailable` in the status bar (ADR 0005). */
+  backendUnavailable: BackendKind[];
+}
+
+/** Stored states whose process may still be alive and must be checked on start. */
+const LIVE_STATES: ReadonlySet<SessionState> = new Set(["Starting", "Running", "Detached"]);
+
 type Listener<T> = (event: T) => void;
 
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
@@ -108,6 +132,8 @@ export class SessionRegistry {
   private readonly sessions = new Map<SessionId, SessionEntry>();
   private readonly backends: readonly Backend[];
   private readonly now: () => Date;
+  private readonly repository: SessionRepository | undefined;
+  private restored = false;
   private readonly stateListeners = new ListenerSet<StateChangeEvent>();
   private readonly writerListeners = new ListenerSet<WriterChangedEvent>();
   private readonly resizedListeners = new ListenerSet<ResizedEvent>();
@@ -116,6 +142,7 @@ export class SessionRegistry {
   constructor(options: SessionRegistryOptions) {
     this.backends = options.backends;
     this.now = options.now ?? (() => new Date());
+    this.repository = options.repository;
   }
 
   onStateChange(listener: Listener<StateChangeEvent>): Disposable {
@@ -158,19 +185,53 @@ export class SessionRegistry {
     };
     if (input.workspaceId !== undefined) info.workspaceId = input.workspaceId;
     if (input.profileId !== undefined) info.profileId = input.profileId;
-    const entry: SessionEntry = {
-      info,
-      pty: undefined,
-      ptySubscriptions: [],
-      views: new Set(),
-      output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
-      attachCollectors: new Set(),
-      busy: undefined,
-      endedDuringOp: undefined,
-    };
+    const entry = newEntry(info);
     this.sessions.set(info.id, entry);
+    // Stored before the start, so a Core that dies while starting leaves the session for the reconcile.
+    this.persist(entry);
     await this.launch(entry, { reuseExisting: false, clearOutput: false });
     return snapshotInfo(entry.info);
+  }
+
+  /**
+   * Loads the stored sessions on Core start and reconciles them with the backends (ADR 0005).
+   * Sessions in `Starting`, `Running` or `Detached`: Windows → `Interrupted` (the PTY belonged to the old Core);
+   * WSL → re-attached and `Detached` if the backend session exists, otherwise `Interrupted`. An unreachable
+   * backend makes its sessions `Interrupted` and is listed in `backendUnavailable`. `Exited`, `Interrupted` and
+   * `Archived` stay as stored. New states are saved. Setting the state of a loaded session is not a transition
+   * of a running one, so the transition table and `onStateChange` are bypassed; the result reports the changes.
+   * Needs a repository and runs once, before any session is created.
+   */
+  async restore(): Promise<RestoreResult> {
+    const repository = this.repository;
+    if (!repository) throw new CoreError("internal", "SessionRegistry.restore needs a repository");
+    if (this.restored || this.sessions.size > 0) {
+      throw new CoreError("invalid_state", "Sessions can only be restored once, into an empty registry");
+    }
+    this.restored = true;
+    const result: RestoreResult = { sessions: [], backendUnavailable: [] };
+    const unavailable = new Set<BackendKind>();
+    const availability = new Map<Backend, Promise<boolean>>();
+    const isAvailable = (backend: Backend): Promise<boolean> => {
+      let available = availability.get(backend);
+      if (!available) {
+        available = backend.available().catch(() => false);
+        availability.set(backend, available);
+      }
+      return available;
+    };
+    // One after another, so a slow WSL is not hit with many parallel wsl.exe calls.
+    for (const info of repository.list()) {
+      const entry = newEntry(info);
+      if (LIVE_STATES.has(info.state)) {
+        const from = info.state;
+        const to = await this.reconcile(entry, isAvailable, unavailable);
+        result.sessions.push({ sessionId: info.id, from, to });
+      }
+      this.sessions.set(info.id, entry);
+    }
+    result.backendUnavailable = [...unavailable];
+    return result;
   }
 
   /**
@@ -299,6 +360,7 @@ export class SessionRegistry {
     entry.pty?.resize(size);
     entry.info.size = { cols: size.cols, rows: size.rows };
     entry.info.updatedAt = this.now().toISOString();
+    this.persist(entry);
     this.resizedListeners.emit({ sessionId, size: { ...entry.info.size }, viewIds: [...entry.views] });
   }
 
@@ -337,6 +399,7 @@ export class SessionRegistry {
     if (viewId === undefined) delete entry.info.writerViewId;
     else entry.info.writerViewId = viewId;
     entry.info.updatedAt = this.now().toISOString();
+    this.persist(entry);
     this.writerListeners.emit({ sessionId: entry.info.id, writerViewId: viewId, viewIds: [...entry.views] });
   }
 
@@ -475,8 +538,66 @@ export class SessionRegistry {
     const from = entry.info.state;
     entry.info.state = transition(from, to);
     entry.info.updatedAt = this.now().toISOString();
+    this.persist(entry);
     this.stateListeners.emit({ sessionId: entry.info.id, from, to, session: snapshotInfo(entry.info) });
   }
+
+  /** Reconciles one loaded live session and stores its new state; see `restore`. */
+  private async reconcile(
+    entry: SessionEntry,
+    isAvailable: (backend: Backend) => Promise<boolean>,
+    unavailable: Set<BackendKind>,
+  ): Promise<SessionState> {
+    const { info } = entry;
+    const settle = (state: SessionState): SessionState => {
+      info.state = state;
+      info.updatedAt = this.now().toISOString();
+      this.persist(entry);
+      return state;
+    };
+    // ConPTY shells end with the Core that owned them (ADR 0005).
+    if (info.launch.backend === "windows") return settle("Interrupted");
+    const backend = this.backendFor(info.launch);
+    if (!backend || !(await isAvailable(backend))) {
+      unavailable.add(info.launch.backend);
+      return settle("Interrupted");
+    }
+    let exists: boolean;
+    try {
+      exists = await backend.exists(info.id, info.launch);
+    } catch {
+      unavailable.add(info.launch.backend);
+      return settle("Interrupted");
+    }
+    if (!exists) return settle("Interrupted");
+    let pty: PtyHandle;
+    try {
+      pty = await backend.attach(info.id, info.launch, { ...info.size });
+    } catch {
+      return settle("Interrupted");
+    }
+    // Bound and settled in one synchronous step, so no PTY end falls in between.
+    this.bindPty(entry, pty);
+    return settle("Detached");
+  }
+
+  /** Writes the session through to the repository; the writer is runtime state and not stored. */
+  private persist(entry: SessionEntry): void {
+    this.repository?.save(entry.info);
+  }
+}
+
+function newEntry(info: SessionInfo): SessionEntry {
+  return {
+    info,
+    pty: undefined,
+    ptySubscriptions: [],
+    views: new Set(),
+    output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
+    attachCollectors: new Set(),
+    busy: undefined,
+    endedDuringOp: undefined,
+  };
 }
 
 function assertSize(size: TerminalSize): void {

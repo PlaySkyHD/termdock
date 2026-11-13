@@ -13,3 +13,12 @@ export type {
   StateChangeEvent,
   WriterChangedEvent,
 } from "./session/registry.js";
+
+// storage
+export type { ReconciledSession, RestoreResult } from "./session/registry.js";
+export { DATABASE_FILE, openDatabase, openStorage, resolveDataDir } from "./storage/database.js";
+export type { OpenStorageOptions, Storage } from "./storage/database.js";
+export { MIGRATIONS, migrate, schemaVersion } from "./storage/migrations.js";
+export type { Migration } from "./storage/migrations.js";
+export { InMemorySessionRepository, SqliteSessionRepository } from "./storage/session-repository.js";
+export type { SessionRepository } from "./storage/session-repository.js";

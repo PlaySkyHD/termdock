@@ -1,6 +1,6 @@
 // One terminal view of one session (ADR 0003, ADR 0006): snapshot, live output, writer and readers.
 // Free of DOM and React; `TerminalView.tsx` connects it to xterm.js, split panes (#27) reuse it per pane.
-import type { SessionId, SessionState, TerminalSize, ViewId } from "@termdock/protocol";
+import type { SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 
 /** The part of xterm.js and its fit addon the controller uses. */
@@ -22,7 +22,6 @@ export interface ViewStatus {
   role: ViewRole;
   /** Size of the session's terminal, set by the writer. */
   size?: TerminalSize;
-  state?: SessionState;
   error?: string;
 }
 
@@ -132,7 +131,7 @@ export class TerminalController {
       this.setStatus({ ...this.status, role: "closed" });
       return;
     }
-    if (event.sessionId !== this.sessionId) return;
+    if (event.kind === "sessionCreated" || event.sessionId !== this.sessionId) return;
     switch (event.kind) {
       case "output":
         if (this.pending) this.pending.push({ seq: event.seq, data: event.data });
@@ -147,9 +146,6 @@ export class TerminalController {
         this.writerViewId = event.writerViewId;
         this.writerFromEvent = true;
         if (this.viewId !== undefined) this.applyRole();
-        return;
-      case "stateChanged":
-        this.setStatus({ ...this.status, state: event.state });
         return;
     }
   }

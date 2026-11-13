@@ -1,8 +1,9 @@
-// A terminal view (taken over from poc/): xterm.js with the fit addon, driven by a TerminalController.
-import { useEffect, useRef, useState } from "react";
+// A terminal view (taken over from poc/): xterm.js with the fit addon, driven by a TerminalController. One tab
+// is one view; the status bar of the window shows its role (App.tsx).
+import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import type { SessionInfo } from "@termdock/protocol";
+import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import { TerminalController } from "./terminal-controller.js";
 import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
@@ -61,10 +62,33 @@ function surfaceOf(term: Terminal, fit: FitAddon): TerminalSurface {
   };
 }
 
-export function TerminalView({ api, session }: { api: TermdockApi; session: SessionInfo }) {
+export interface TerminalViewProps {
+  api: TermdockApi;
+  sessionId: SessionId;
+  /** The tab is the visible one; it takes the keyboard focus. */
+  active: boolean;
+  /** Changes whenever the window wants the active terminal to take the focus again (clicks on tab or sidebar). */
+  focusSignal: number;
+  onStatus: (status: ViewStatus | undefined) => void;
+  /** Hands the controller to the window (for "Schreibrecht übernehmen"); undefined when the view goes. */
+  onController: (controller: TerminalController | undefined) => void;
+}
+
+export function TerminalView({
+  api,
+  sessionId,
+  active,
+  focusSignal,
+  onStatus,
+  onController,
+}: TerminalViewProps) {
   const host = useRef<HTMLDivElement>(null);
-  const controller = useRef<TerminalController>(undefined);
-  const [status, setStatus] = useState<ViewStatus>({ role: "connecting" });
+  const terminal = useRef<Terminal>(undefined);
+  // The callbacks of the parent change on every render; the view must not attach again for that.
+  const callbacks = useRef({ onStatus, onController });
+  callbacks.current = { onStatus, onController };
+  const activeNow = useRef(active);
+  activeNow.current = active;
 
   useEffect(() => {
     const element = host.current;
@@ -78,63 +102,28 @@ export function TerminalView({ api, session }: { api: TermdockApi; session: Sess
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
-    const current = new TerminalController(api, surfaceOf(term, fit), setStatus);
-    controller.current = current;
-    void current.open(session.id);
+    terminal.current = term;
+    const current = new TerminalController(api, surfaceOf(term, fit), (status) =>
+      callbacks.current.onStatus(status),
+    );
+    callbacks.current.onController(current);
+    void current.open(sessionId);
     const observer = new ResizeObserver(() => current.layoutChanged());
     observer.observe(element);
-    term.focus();
+    if (activeNow.current) term.focus();
     return () => {
       observer.disconnect();
-      controller.current = undefined;
+      terminal.current = undefined;
+      callbacks.current.onController(undefined);
+      callbacks.current.onStatus(undefined);
       void current.dispose();
       term.dispose();
     };
-  }, [api, session.id]);
+  }, [api, sessionId]);
 
-  const reader = status.role === "reader";
-  return (
-    <div className="terminal-view">
-      <div className={`terminal-view__screen${reader ? " terminal-view__screen--reader" : ""}`} ref={host} />
-      <footer className={`status-bar status-bar--${status.role}`}>
-        <span className="status-bar__item">{session.name}</span>
-        <span className="status-bar__item">{status.state ?? session.state}</span>
-        <span className="status-bar__item">{roleText(status)}</span>
-        {status.size && (
-          <span className="status-bar__item">
-            {status.size.cols}×{status.size.rows}
-          </span>
-        )}
-        <span className="status-bar__spacer" />
-        {status.error && status.role !== "error" && (
-          <span className="status-bar__item status-bar__item--error">{status.error}</span>
-        )}
-        {reader && (
-          <button
-            className="status-bar__button"
-            type="button"
-            // claimWriter never rejects; a refusal arrives as status.error.
-            onClick={() => void controller.current?.claimWriter()}
-          >
-            Schreibrecht übernehmen
-          </button>
-        )}
-      </footer>
-    </div>
-  );
-}
+  useEffect(() => {
+    if (active) terminal.current?.focus();
+  }, [active, focusSignal]);
 
-function roleText(status: ViewStatus): string {
-  switch (status.role) {
-    case "connecting":
-      return "Verbinde …";
-    case "writer":
-      return "Schreibt";
-    case "reader":
-      return "Liest";
-    case "closed":
-      return "Verbindung zum Core getrennt";
-    case "error":
-      return `Fehler: ${status.error ?? "unbekannt"}`;
-  }
+  return <div className="terminal-view" ref={host} />;
 }

@@ -1,0 +1,28 @@
+{
+  "name": "@termdock/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TermDock desktop app: Electron main, preload and React renderer as a client of the core.",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "start": "npm run build && electron .",
+    "screenshot": "npm run build && electron . --screenshot",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@termdock/core": "0.0.0",
+    "@termdock/protocol": "0.0.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "electron": "45.3.1",
+    "vite": "^7.3.8"
+  }
+}

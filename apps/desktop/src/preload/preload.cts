@@ -1,0 +1,44 @@
+// Preload (sandboxed, CommonJS): exposes the narrow bridge API as `window.termdock` (ADR 0002, ADR 0006).
+// A sandboxed preload cannot load local modules, so only types come from ../shared/bridge.ts.
+// A CommonJS file under verbatimModuleSyntax must import with `import = require`.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import electron = require("electron");
+import type {
+  BridgeCall,
+  BridgeEvent,
+  BridgeResult,
+  BridgeResults,
+  CALL_CHANNEL,
+  EVENT_CHANNEL,
+  TermdockApi,
+} from "../shared/bridge.js" with { "resolution-mode": "import" };
+
+const { contextBridge, ipcRenderer } = electron;
+const callChannel: typeof CALL_CHANNEL = "termdock:call";
+const eventChannel: typeof EVENT_CHANNEL = "termdock:event";
+
+async function call<M extends BridgeCall["method"]>(
+  request: Extract<BridgeCall, { method: M }>,
+): Promise<BridgeResults[M]> {
+  const result = (await ipcRenderer.invoke(callChannel, request)) as BridgeResult<BridgeResults[M]>;
+  if (result.ok) return result.value;
+  // Errors crossing contextBridge keep only their message; the code travels in it.
+  throw new Error(`[${result.error.code}] ${result.error.message}`);
+}
+
+const api: TermdockApi = {
+  listSessions: () => call({ method: "listSessions" }),
+  createSession: (params) => call({ method: "createSession", params }),
+  attach: (sessionId, size) => call({ method: "attach", sessionId, size }),
+  detach: async (viewId) => void (await call({ method: "detach", viewId })),
+  input: async (viewId, data) => void (await call({ method: "input", viewId, data })),
+  resize: async (viewId, size) => void (await call({ method: "resize", viewId, size })),
+  claimWriter: async (viewId) => void (await call({ method: "claimWriter", viewId })),
+  onEvent: (listener) => {
+    const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
+    ipcRenderer.on(eventChannel, handler);
+    return () => void ipcRenderer.removeListener(eventChannel, handler);
+  },
+};
+
+contextBridge.exposeInMainWorld("termdock", api);

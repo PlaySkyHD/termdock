@@ -8,7 +8,8 @@
     "node": ">=22.13"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "typecheck": "tsc -b",

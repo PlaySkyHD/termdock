@@ -16,8 +16,8 @@ Stack: Node 22+ (lokal 25), TypeScript strict, npm Workspaces, Vitest, ESLint, P
 
 - `packages/protocol`: Domänentypen und IPC-Vertrag (ADR 0002). Keine Laufzeit-Abhängigkeit auf andere Pakete, kein Node-API außer `Buffer`-freien Typen.
 - `packages/core`: Session Registry, Lifecycle, Eingabe-Lock, Backends, Storage, IPC-Server. Kennt weder Electron noch React.
-- `apps/desktop`: Electron-Main, Preload, Renderer. Spricht mit dem Core nur über `packages/protocol`.
-- Abhängigkeiten nur in diese Richtung: `desktop → protocol`, `core → protocol`. Nie `protocol → core` oder `core → desktop`.
+- `apps/desktop`: Electron-Main, Preload, Renderer (ADR 0006). Spricht mit dem Core nur über die Pipe mit dem Vertrag aus `packages/protocol`.
+- Abhängigkeiten nur in diese Richtung: `desktop → protocol`, `core → protocol`, dazu der Desktop-Main → `core` nur für die Client-Bibliothek (`connect`, `defaultPipeName`, `IpcError`) und den Pfad des Core-Einstiegs. Renderer und Preload importieren nur Typen. Nie `protocol → core` oder `core → desktop`.
 
 ## Code
 

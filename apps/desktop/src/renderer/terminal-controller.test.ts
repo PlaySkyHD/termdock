@@ -1,0 +1,349 @@
+import type { TerminalSize } from "@termdock/protocol";
+import { describe, expect, it, vi } from "vitest";
+import type { AttachedView, BridgeEvent, TermdockApi } from "../shared/bridge.js";
+import { TerminalController } from "./terminal-controller.js";
+import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
+
+const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
+const decode = (data: Uint8Array | string): string =>
+  typeof data === "string" ? data : new TextDecoder().decode(data);
+
+/** xterm.js stand-in: records what is written and how big it is; `area` is what would fit the element. */
+class FakeSurface implements TerminalSurface {
+  cols = 80;
+  rows = 24;
+  area: TerminalSize = { cols: 120, rows: 40 };
+  screen: string[] = [];
+  private listener: ((data: string) => void) | undefined;
+
+  write(data: Uint8Array | string): void {
+    this.screen.push(decode(data));
+  }
+  reset(): void {
+    this.screen = ["<reset>"];
+  }
+  resize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+  }
+  proposeSize(): TerminalSize | undefined {
+    return this.area;
+  }
+  onData(listener: (data: string) => void): () => void {
+    this.listener = listener;
+    return () => (this.listener = undefined);
+  }
+  /** What xterm.js does on a key press or on an automatic reply (DA1, cursor position). */
+  emitData(data: string): void {
+    this.listener?.(data);
+  }
+}
+
+/** Bridge double: `attach` waits until the test releases it, so output can arrive before the answer. */
+class FakeApi implements TermdockApi {
+  listeners = new Set<(event: BridgeEvent) => void>();
+  inputs: Array<[string, string]> = [];
+  resizes: Array<[string, TerminalSize]> = [];
+  claims: string[] = [];
+  detached: string[] = [];
+  attachCalls: Array<[string, TerminalSize]> = [];
+  claimError: Error | undefined;
+  private release: ((view: AttachedView) => void) | undefined;
+  private refuse: ((error: Error) => void) | undefined;
+
+  listSessions = vi.fn(async () => []);
+  createSession = vi.fn();
+  attach(sessionId: string, size: TerminalSize): Promise<AttachedView> {
+    this.attachCalls.push([sessionId, size]);
+    return new Promise((resolve, reject) => {
+      this.release = resolve;
+      this.refuse = reject;
+    });
+  }
+  async detach(viewId: string): Promise<void> {
+    this.detached.push(viewId);
+  }
+  async input(viewId: string, data: string): Promise<void> {
+    this.inputs.push([viewId, data]);
+  }
+  async resize(viewId: string, size: TerminalSize): Promise<void> {
+    this.resizes.push([viewId, size]);
+  }
+  async claimWriter(viewId: string): Promise<void> {
+    this.claims.push(viewId);
+    if (this.claimError) throw this.claimError;
+  }
+  onEvent(listener: (event: BridgeEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(event: BridgeEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+  answerAttach(view: Partial<AttachedView> = {}): void {
+    this.release?.({
+      viewId: "v1",
+      size: { cols: 100, rows: 30 },
+      snapshot: bytes("snap"),
+      outputSeq: 0,
+      ...view,
+    });
+  }
+  failAttach(error: Error): void {
+    this.refuse?.(error);
+  }
+  output(sessionId: string, seq: number, text: string): void {
+    this.emit({ kind: "output", sessionId, seq, data: bytes(text) });
+  }
+}
+
+async function opened(view: Partial<AttachedView>) {
+  const api = new FakeApi();
+  const surface = new FakeSurface();
+  const statuses: ViewStatus[] = [];
+  const controller = new TerminalController(api, surface, (status) => statuses.push(status));
+  const opening = controller.open("s1");
+  api.answerAttach(view);
+  await opening;
+  return { api, surface, controller, statuses };
+}
+
+describe("TerminalController", () => {
+  it("attaches with the size that fits and shows the snapshot before live output that came first", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const controller = new TerminalController(api, surface, () => {});
+
+    const opening = controller.open("s1");
+    api.output("s1", 1, "early");
+    api.output("other", 1, "not mine");
+    api.answerAttach({ writerViewId: "v1" });
+    await opening;
+    api.output("s1", 2, "late");
+
+    expect(api.attachCalls).toEqual([["s1", { cols: 120, rows: 40 }]]);
+    expect(surface.screen).toEqual(["<reset>", "snap", "early", "late"]);
+  });
+
+  it("drops buffered and late output the snapshot already contains", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const controller = new TerminalController(api, surface, () => {});
+
+    const opening = controller.open("s1");
+    api.output("s1", 4, "in snapshot");
+    api.output("s1", 5, "also in snapshot");
+    api.output("s1", 6, "new");
+    api.answerAttach({ writerViewId: "v1", outputSeq: 5 });
+    await opening;
+    api.output("s1", 5, "in snapshot, late");
+    api.output("s1", 7, "newer");
+
+    expect(surface.screen).toEqual(["<reset>", "snap", "new", "newer"]);
+  });
+
+  it("stops listening and buffering when the attach fails", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const statuses: ViewStatus[] = [];
+    const controller = new TerminalController(api, surface, (status) => statuses.push(status));
+
+    const opening = controller.open("s1");
+    api.failAttach(new Error("[not_found] Unknown session s1"));
+    await opening;
+    api.output("s1", 1, "late");
+    surface.emitData("x");
+
+    expect(statuses.at(-1)).toMatchObject({ role: "error", error: "[not_found] Unknown session s1" });
+    expect(api.listeners.size).toBe(0);
+    expect(surface.screen).toEqual([]);
+    expect(api.inputs).toEqual([]);
+  });
+
+  it("reports nothing when it was disposed before the attach failed", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const statuses: ViewStatus[] = [];
+    const controller = new TerminalController(api, surface, (status) => statuses.push(status));
+
+    const opening = controller.open("s1");
+    await controller.dispose();
+    api.failAttach(new Error("[closed] Window closed or reloaded during attach"));
+    await opening;
+
+    expect(statuses).toEqual([]);
+  });
+
+  it("shows the snapshot in the session's size and keeps the cursor behind the last non-empty line", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const sizes: string[] = [];
+    const write = surface.write.bind(surface);
+    surface.write = (data) => {
+      sizes.push(`${surface.cols}x${surface.rows}`);
+      write(data);
+    };
+    const controller = new TerminalController(api, surface, () => {});
+
+    const opening = controller.open("s1");
+    // capture-pane lists every row of the pane; the shell's cursor sits behind the prompt.
+    api.answerAttach({ writerViewId: "v0", snapshot: bytes("out\r\nuser@host:~$ \r\n\x1b[0m\r\n \r\n") });
+    await opening;
+
+    expect(sizes[0]).toBe("100x30");
+    expect(surface.screen).toEqual(["<reset>", "out\r\nuser@host:~$ \x1b[0m"]);
+  });
+
+  it("keeps control sequences the core appended behind the blank rows, without the rows", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const controller = new TerminalController(api, surface, () => {});
+
+    const opening = controller.open("s1");
+    // Output during the capture (here tmux toggling the cursor) is appended to the snapshot.
+    api.answerAttach({ snapshot: bytes("user@host:~$ \r\n\r\n\r\n\x1b[?25l\x1b[?12l\x1b[?25h") });
+    await opening;
+
+    expect(surface.screen).toEqual(["<reset>", "user@host:~$ \x1b[?25l\x1b[?12l\x1b[?25h"]);
+  });
+
+  it("trusts writer and size events that arrive during the attach over the attach answer", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const controller = new TerminalController(api, surface, () => {});
+
+    const opening = controller.open("s1");
+    api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v2" });
+    api.emit({ kind: "resized", sessionId: "s1", size: { cols: 90, rows: 25 } });
+    api.answerAttach({ writerViewId: "v1", size: { cols: 100, rows: 30 } });
+    await opening;
+    surface.emitData("x");
+
+    expect(api.inputs).toEqual([]);
+    expect([surface.cols, surface.rows]).toEqual([90, 25]);
+  });
+
+  it("as writer sends typed input and its own size", async () => {
+    const { api, surface, statuses } = await opened({ writerViewId: "v1" });
+
+    surface.emitData("ls --color\r");
+
+    expect(api.inputs).toEqual([["v1", "ls --color\r"]]);
+    expect(api.resizes).toEqual([["v1", { cols: 120, rows: 40 }]]);
+    expect([surface.cols, surface.rows]).toEqual([120, 40]);
+    expect(statuses.at(-1)).toMatchObject({ role: "writer", size: { cols: 120, rows: 40 } });
+  });
+
+  it("as writer follows a smaller area and sends the new size once", async () => {
+    const { api, surface, controller } = await opened({ writerViewId: "v1" });
+
+    surface.area = { cols: 70, rows: 20 };
+    controller.layoutChanged();
+    controller.layoutChanged();
+
+    expect(api.resizes).toEqual([
+      ["v1", { cols: 120, rows: 40 }],
+      ["v1", { cols: 70, rows: 20 }],
+    ]);
+  });
+
+  it("as reader drops input and automatic replies and shows the writer's size", async () => {
+    const { api, surface, controller, statuses } = await opened({ writerViewId: "v0" });
+
+    surface.emitData("typed");
+    surface.emitData("\x1b[?1;2c");
+    surface.area = { cols: 50, rows: 10 };
+    controller.layoutChanged();
+
+    expect(api.inputs).toEqual([]);
+    expect(api.resizes).toEqual([]);
+    expect([surface.cols, surface.rows]).toEqual([100, 30]);
+    expect(statuses.at(-1)).toMatchObject({ role: "reader", size: { cols: 100, rows: 30 } });
+  });
+
+  it("as reader follows resizes of the writer", async () => {
+    const { api, surface } = await opened({ writerViewId: "v0" });
+
+    api.emit({ kind: "resized", sessionId: "s1", size: { cols: 90, rows: 25 } });
+
+    expect([surface.cols, surface.rows]).toEqual([90, 25]);
+  });
+
+  it("claims the writer on request and becomes writer only when the core reports it", async () => {
+    const { api, surface, controller, statuses } = await opened({ writerViewId: "v0" });
+
+    await controller.claimWriter();
+    surface.emitData("before");
+    api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
+    surface.emitData("after");
+
+    expect(api.claims).toEqual(["v1"]);
+    expect(api.inputs).toEqual([["v1", "after"]]);
+    expect(api.resizes).toEqual([["v1", { cols: 120, rows: 40 }]]);
+    expect(statuses.at(-1)).toMatchObject({ role: "writer" });
+  });
+
+  it("becomes reader when another view takes the writer and offers the claim when nobody writes", async () => {
+    const { api, surface, statuses } = await opened({ writerViewId: "v1" });
+
+    api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v2" });
+    surface.emitData("x");
+    api.emit({ kind: "writerChanged", sessionId: "s1" });
+
+    expect(api.inputs).toEqual([]);
+    expect(statuses.at(-1)).toMatchObject({ role: "reader" });
+  });
+
+  it("reports state changes of its session and a lost core", async () => {
+    const { api, statuses } = await opened({ writerViewId: "v1" });
+
+    api.emit({ kind: "stateChanged", sessionId: "s1", state: "Exited", lastExitCode: 0 });
+    expect(statuses.at(-1)).toMatchObject({ state: "Exited" });
+
+    api.emit({ kind: "coreClosed" });
+    expect(statuses.at(-1)).toMatchObject({ role: "closed" });
+  });
+
+  it("stays closed after the core is gone: no role change, no input, no resize", async () => {
+    const { api, surface, controller, statuses } = await opened({ writerViewId: "v1" });
+    const resizesBefore = api.resizes.length;
+
+    api.emit({ kind: "coreClosed" });
+    api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
+    surface.area = { cols: 60, rows: 20 };
+    controller.layoutChanged();
+    surface.emitData("x");
+    await controller.claimWriter();
+
+    expect(statuses.at(-1)).toMatchObject({ role: "closed" });
+    expect(api.inputs).toEqual([]);
+    expect(api.resizes.length).toBe(resizesBefore);
+    expect(api.claims).toEqual([]);
+  });
+
+  it("shows a refused writer claim in its status instead of losing it", async () => {
+    const { api, controller, statuses } = await opened({ writerViewId: "v0" });
+    api.claimError = new Error("[not_found] View v1 does not belong to this window");
+
+    await expect(controller.claimWriter()).resolves.toBeUndefined();
+
+    expect(statuses.at(-1)).toMatchObject({
+      role: "reader",
+      error: "[not_found] View v1 does not belong to this window",
+    });
+  });
+
+  it("detaches its view and stops listening on dispose", async () => {
+    const { api, surface, controller } = await opened({ writerViewId: "v1" });
+
+    await controller.dispose();
+    surface.emitData("x");
+    api.output("s1", 1, "late");
+
+    expect(api.detached).toEqual(["v1"]);
+    expect(api.inputs).toEqual([]);
+    expect(surface.screen).not.toContain("late");
+    expect(api.listeners.size).toBe(0);
+  });
+});

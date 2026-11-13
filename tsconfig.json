@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/protocol" }, { "path": "packages/core" }]
+  "references": [{ "path": "packages/protocol" }, { "path": "packages/core" }, { "path": "apps/desktop" }]
 }

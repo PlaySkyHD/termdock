@@ -18,3 +18,4 @@ Windows-Desktop-App zur Verwaltung langlebiger Terminal-Sessions (WSL-first, tmu
 
 - `npm ci`, `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test -w packages/<name>`.
 - WSL-Integrationstests: `TERMDOCK_WSL_TESTS=1 npm test -w packages/core`.
+- Desktop-App (ADR 0006): `npm start -w apps/desktop`; Screenshots gegen einen isolierten Core: `npm run screenshot -w apps/desktop -- <dir>`. In Agent-Shells vorher `unset ELECTRON_RUN_AS_NODE`.

@@ -87,6 +87,11 @@ export interface SessionAttachResult {
   size: TerminalSize;
   /** Current writer; undefined when nobody writes. */
   writerViewId?: ViewId;
+  /**
+   * Number (`seq` of `session.output`) of the last output of the session that does not go to the new view;
+   * output with a higher number is its live output. 0 before any output. Since protocol 1.1.
+   */
+  outputSeq?: number;
 }
 
 export interface CoreStatusResult {
@@ -151,8 +156,11 @@ export const METHODS = [
 // --- Events ---------------------------------------------------------------------------------
 
 export interface EventMap {
-  /** Output bytes travel in the event payload. */
-  "session.output": { sessionId: SessionId };
+  /**
+   * Output bytes travel in the event payload. `seq` numbers the output of the session from 1 (since protocol
+   * 1.1); parts of output split at the payload limit share it.
+   */
+  "session.output": { sessionId: SessionId; seq?: number };
   "session.stateChanged": { sessionId: SessionId; state: SessionState; lastExitCode?: number };
   "session.resized": { sessionId: SessionId; size: TerminalSize };
   /** writerViewId undefined means nobody writes. */

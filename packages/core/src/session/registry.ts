@@ -81,6 +81,8 @@ export interface ResizedEvent {
 
 export interface OutputEvent {
   sessionId: SessionId;
+  /** Number of this output in its session, from 1; it keeps counting when the PTY is replaced. */
+  seq: number;
   data: Uint8Array;
   /** Views attached when the output arrived; each of them gets `session.output`. */
   viewIds: readonly ViewId[];
@@ -92,6 +94,8 @@ export interface AttachResult {
   writer: boolean;
   /** Content to show before live output (ADR 0003). */
   snapshot: TerminalSnapshot;
+  /** `seq` of the last output before the view was registered; the view gets exactly the output above it. */
+  outputSeq: number;
 }
 
 /** How the reconcile changed one stored session. */
@@ -122,8 +126,8 @@ interface SessionEntry {
   /** Attached views in attach order. */
   views: Set<ViewId>;
   output: OutputBuffer;
-  /** Output collected for views whose backend snapshot is still being taken. */
-  attachCollectors: Set<Uint8Array[]>;
+  /** `seq` of the last output of the session (0 before any). */
+  outputSeq: number;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
   busy: "start" | "kill" | "archive" | "reattach" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
@@ -389,42 +393,39 @@ export class SessionRegistry {
 
   /**
    * Attaches a view. A view that attaches to a session without other views becomes the writer (ADR 0005).
-   * Allowed in every state except `Archived`.
+   * Allowed in every state except `Archived`. The view gets exactly the output numbered above `outputSeq`.
    */
   async attachView(sessionId: SessionId, viewId: ViewId): Promise<AttachResult> {
     const entry = this.entry(sessionId);
     this.assertAttachable(entry, viewId);
     let snapshot: TerminalSnapshot | undefined;
     const pty = entry.pty;
+    const backend = this.backendFor(entry.info.launch);
     if (pty) {
-      const backend = this.backendFor(entry.info.launch);
-      // Output during the wait reaches neither the view nor (reliably) the backend snapshot; collect it.
-      const inFlight: Uint8Array[] = [];
-      entry.attachCollectors.add(inFlight);
       try {
         snapshot = await backend?.snapshot(entry.info.id, entry.info.launch);
       } catch {
         // Fall back to the Core buffer below; a missing screen must not fail the attach.
         snapshot = undefined;
-      } finally {
-        entry.attachCollectors.delete(inFlight);
       }
       // The session may have changed while the backend answered.
       this.assertAttachable(entry, viewId);
       if (entry.pty !== pty) snapshot = undefined;
-      else if (snapshot && inFlight.length > 0) {
-        // The appended output moves the cursor, so the `cursor` field is no longer valid. The backend's
-        // positioning inside the data stays before the appended output (ADR 0003).
-        snapshot = { data: concat([snapshot.data, ...inFlight]) };
-      }
+      // Output of the query is not appended: the PTY lags behind the backend screen, so the screen may hold it
+      // already (issue #34). It stays below the mark; the redraw below repaints the screen instead.
     }
-    // Copy the buffer in the same synchronous step as the view is registered, so no output falls in between.
+    const fromBackend = snapshot !== undefined;
+    // Copy the buffer and read the mark in the same synchronous step as the view is registered, so no output
+    // falls in between.
     snapshot ??= { data: entry.output.contents() };
+    const outputSeq = entry.outputSeq;
     const writer = entry.views.size === 0;
     entry.views.add(viewId);
     if (writer) this.setWriter(entry, viewId);
     if (entry.pty && entry.info.state === "Detached") this.setState(entry, "Running");
-    return { session: snapshotInfo(entry.info), writer, snapshot };
+    // Not awaited: the view gets its snapshot at once. A failed redraw leaves the snapshot as it is.
+    if (fromBackend) void backend?.redraw?.(entry.info.id, entry.info.launch).catch(() => {});
+    return { session: snapshotInfo(entry.info), writer, snapshot, outputSeq };
   }
 
   /** Detaches a view. The process keeps running; the writer gets no automatic successor (ADR 0005). */
@@ -635,8 +636,13 @@ export class SessionRegistry {
       pty.onData((data) => {
         if (entry.pty !== pty) return;
         entry.output.append(data);
-        for (const collector of entry.attachCollectors) collector.push(data.slice());
-        this.outputListeners.emit({ sessionId: entry.info.id, data, viewIds: [...entry.views] });
+        entry.outputSeq += 1;
+        this.outputListeners.emit({
+          sessionId: entry.info.id,
+          seq: entry.outputSeq,
+          data,
+          viewIds: [...entry.views],
+        });
       }),
       pty.onExit(({ exitCode }) => {
         if (entry.pty !== pty) return;
@@ -840,7 +846,7 @@ function newEntry(info: SessionInfo): SessionEntry {
     ptySubscriptions: [],
     views: new Set(),
     output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
-    attachCollectors: new Set(),
+    outputSeq: 0,
     busy: undefined,
     endedDuringOp: undefined,
     reattach: { attempts: 0, boundAt: Number.NEGATIVE_INFINITY },
@@ -853,16 +859,6 @@ function assertSize(size: TerminalSize): void {
   if (!valid(size.cols) || !valid(size.rows)) {
     throw new CoreError("bad_request", `Invalid terminal size ${size.cols}x${size.rows}`);
   }
-}
-
-function concat(parts: readonly Uint8Array[]): Uint8Array {
-  const result = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.byteLength;
-  }
-  return result;
 }
 
 function snapshotInfo(info: SessionInfo): SessionInfo {

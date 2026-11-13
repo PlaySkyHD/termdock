@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionInfo } from "@termdock/protocol";
+import type { SessionInfo, TerminalSize } from "@termdock/protocol";
+import { Terminal } from "@xterm/headless";
 import { runWsl } from "./backend/wsl/processes.js";
 import { runCore } from "./bin/run-core.js";
 import type { RunCoreResult } from "./bin/run-core.js";
@@ -34,6 +35,26 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
 }
 
 const occurrences = (text: string, marker: string) => text.split(marker).length - 1;
+
+/** Screen lines of a terminal emulator (as a view) after writing `parts`, without trailing blanks. */
+async function render(size: TerminalSize, parts: readonly Uint8Array[]): Promise<string[]> {
+  const terminal = new Terminal({ cols: size.cols, rows: size.rows, allowProposedApi: true });
+  try {
+    for (const part of parts) await new Promise<void>((resolve) => terminal.write(part, resolve));
+    const buffer = terminal.buffer.active;
+    return Array.from(
+      { length: size.rows },
+      // capture-pane drops trailing spaces as well.
+      (_, y) =>
+        buffer
+          .getLine(buffer.baseY + y)
+          ?.translateToString(true)
+          .trimEnd() ?? "",
+    );
+  } finally {
+    terminal.dispose();
+  }
+}
 
 describe.skipIf(!enabled)("termdock-core end to end", () => {
   const pipePath = `\\\\.\\pipe\\termdock-e2e-${randomUUID()}`;
@@ -161,6 +182,55 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     const tail = decoder.decode(attached.payload).split("\x1b[5;10H").at(-1);
     expect(decoder.decode(attached.payload)).toContain("\x1b[5;10H");
     expect(tail?.replaceAll(/\[\?(12|25)[hl]/g, "").replaceAll("\x1b", "")).toBe("");
+  }, 120_000);
+
+  it("shows exactly the tmux screen in views attached during running output (issue #34)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const size = { cols: 80, rows: 24 };
+    const { session } = (
+      await c1.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" }, size })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const screen = async () =>
+      (await tmux(distro, ["capture-pane", "-p", "-t", `=td-${session.id}:`])).stdout;
+    const { viewId } = (await c1.request("session.attach", { sessionId: session.id })).result;
+    // Appends a number every 20 ms; output a view gets twice or never shifts the rest of the screen. Only shell
+    // builtins: tmux redraws the whole screen when the foreground program changes (window name), which would
+    // hide the error. The last `read` waits without showing the prompt again.
+    const loop =
+      'clear; for i in {100..299}; do printf "$i "; read -rt 0.02; done; echo; echo e2e-done; read -r\r';
+    await c1.request("session.input", { viewId }, new TextEncoder().encode(loop));
+
+    // Views of further clients (windows) attach at different points of the output.
+    const views: Array<{ snapshot: Uint8Array; chunks: readonly Uint8Array[] }> = [];
+    for (const marker of ["130 ", "180 ", "230 "]) {
+      await waitFor(async () => (await screen()).includes(marker), `output ${marker}`);
+      const c = await client();
+      const chunks: Uint8Array[] = [];
+      c.on("session.output", (_data, payload) => chunks.push(payload));
+      const { payload } = await c.request("session.attach", { sessionId: session.id });
+      views.push({ snapshot: payload, chunks });
+    }
+    // Output up to the end of the loop. About a second after the output stops, tmux redraws the whole screen by
+    // itself (measured; it re-initialises the terminal first), which would hide the error.
+    const untilDone = (chunks: readonly Uint8Array[]): Uint8Array[] | undefined => {
+      let text = "";
+      for (const [index, chunk] of chunks.entries()) {
+        text += decoder.decode(chunk);
+        if (text.includes("e2e-done\r\n")) return chunks.slice(0, index + 1);
+      }
+      return undefined;
+    };
+    await waitFor(() => views.every((view) => untilDone(view.chunks)), "end of output in every view");
+
+    const expected = (await screen()).replace(/\n$/, "").split("\n");
+    while (expected.length < size.rows) expected.push("");
+    for (const view of views) {
+      expect(await render(size, [view.snapshot, ...untilDone(view.chunks)!])).toEqual(expected);
+    }
   }, 120_000);
 
   it("re-attaches when the tmux client is detached from outside and keeps delivering output", async () => {

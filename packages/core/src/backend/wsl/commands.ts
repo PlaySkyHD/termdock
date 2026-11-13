@@ -27,6 +27,8 @@ const WORD = /^[A-Za-z0-9_-]+$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PANE_STATUS_FORMAT = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}";
 const CURSOR_FORMAT = "#{cursor_x} #{cursor_y} #{cursor_flag}";
+/** A tmux client name as `list-clients` reports it: a device path such as /dev/pts/3. */
+const CLIENT_TTY = /^\/dev(\/[A-Za-z0-9_-]+)+$/;
 const encoder = new TextEncoder();
 
 /** tmux session name of a TermDock session. Only letters, digits, `-` and `_`, so no tmux target syntax gets in. */
@@ -157,6 +159,22 @@ export function snapshotArgs(target: TmuxTarget, id: SessionId): string[] {
     paneTarget(name),
     CURSOR_FORMAT,
   ]);
+}
+
+/** tty of each tmux client of the session, one per line (issue #34). */
+export function listClientsArgs(target: TmuxTarget, id: SessionId): string[] {
+  return tmux(target, "~", ["list-clients", "-t", sessionTarget(sessionName(id)), "-F", "#{client_tty}"]);
+}
+
+/** Makes one tmux client paint its whole screen again; `tty` comes from `parseClientTtys`. */
+export function refreshClientArgs(target: TmuxTarget, tty: string): string[] {
+  if (!CLIENT_TTY.test(tty)) throw new Error(`Invalid tmux client: ${JSON.stringify(tty)}`);
+  return tmux(target, "~", ["refresh-client", "-t", tty]);
+}
+
+/** Client ttys from `list-clients`; anything that is not a plain device path is dropped. */
+export function parseClientTtys(stdout: string): string[] {
+  return stdout.split(/\r?\n/).filter((line) => CLIENT_TTY.test(line));
 }
 
 export function versionArgs(distro: string): string[] {

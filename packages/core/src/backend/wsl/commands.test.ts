@@ -6,10 +6,13 @@ import {
   isMissingSession,
   keepaliveArgs,
   killSessionArgs,
+  listClientsArgs,
+  parseClientTtys,
   parseDistroList,
   parsePaneStatus,
   parseSnapshot,
   paneStatusArgs,
+  refreshClientArgs,
   sessionName,
   snapshotArgs,
   startArgs,
@@ -208,6 +211,20 @@ describe("other tmux commands", () => {
       "#{cursor_x} #{cursor_y} #{cursor_flag}",
     ]);
     expect(versionArgs("Ubuntu")).toEqual(["-d", "Ubuntu", "--cd", "~", "--exec", "tmux", "-V"]);
+    expect(listClientsArgs(target, "abc")).toEqual([
+      ...prefix,
+      "list-clients",
+      "-t",
+      "=td-abc",
+      "-F",
+      "#{client_tty}",
+    ]);
+    expect(refreshClientArgs(target, "/dev/pts/3")).toEqual([
+      ...prefix,
+      "refresh-client",
+      "-t",
+      "/dev/pts/3",
+    ]);
   });
 
   it("keeps the distro alive with sleep infinity", () => {
@@ -238,6 +255,14 @@ describe("parsers", () => {
     expect(isMissingSession({ code: null, stdout: "", stderr: "can't find session", timedOut: true })).toBe(
       false,
     );
+  });
+
+  it("keeps only client names that are device paths (issue #34)", () => {
+    expect(parseClientTtys("/dev/pts/3\n;kill-server\n\n/dev/pts/12\n-t\n/dev/../x\n")).toEqual([
+      "/dev/pts/3",
+      "/dev/pts/12",
+    ]);
+    expect(() => refreshClientArgs(target, ";kill-server")).toThrow(/client/i);
   });
 
   it("parses the pane status", () => {

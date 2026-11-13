@@ -125,7 +125,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.0" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.1" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -346,17 +346,32 @@ describe("two clients on one session", () => {
     expect(registry.get(session.id).writerViewId).toBeUndefined();
   });
 
-  it("splits output larger than the payload limit into several events", async () => {
+  it("splits output larger than the payload limit into several events with the same number", async () => {
     const { a, backend, session } = await twoViews();
     let total = 0;
-    let events = 0;
-    a.on("session.output", (_data, payload) => {
+    const seqs: Array<number | undefined> = [];
+    a.on("session.output", (data, payload) => {
       total += payload.length;
-      events += 1;
+      seqs.push(data.seq);
     });
     backend.pty(session.id).emitData(new Uint8Array(MAX_PAYLOAD_BYTES + 1000));
     await waitFor(() => total === MAX_PAYLOAD_BYTES + 1000, "all output bytes");
-    expect(events).toBe(2);
+    expect(seqs).toEqual([1, 1]);
+  });
+
+  it("numbers the output of a session and answers attach with the mark (issue #34)", async () => {
+    const { a, backend, session, pipePath, viewB } = await twoViews();
+    const seqs: Array<number | undefined> = [];
+    a.on("session.output", (data) => seqs.push(data.seq));
+    backend.pty(session.id).emitData("one");
+    backend.pty(session.id).emitData("two");
+    await waitFor(() => seqs.length === 2, "two outputs");
+
+    const viewC = await attach(await newClient(pipePath), session.id);
+
+    expect(viewB.outputSeq).toBe(0);
+    expect(seqs).toEqual([1, 2]);
+    expect(viewC.outputSeq).toBe(2);
   });
 
   it("only sends events to clients with a view or a session list", async () => {

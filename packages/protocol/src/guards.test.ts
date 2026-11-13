@@ -245,6 +245,22 @@ describe("parseResponse", () => {
     }
   });
 
+  it("returns the output mark of session.attach and rejects other values (issue #34)", () => {
+    const attach = (result: unknown) =>
+      parseResponse(frame({ kind: "response", id: "r1", result }), "session.attach");
+    const parsed = attach({ viewId: "v1", size, outputSeq: 7 });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.value.ok)
+      expect(parsed.value.result).toEqual({ viewId: "v1", size, outputSeq: 7 });
+    expect(attach({ viewId: "v1", size, outputSeq: 0 }).ok).toBe(true);
+    expect(failure(attach({ viewId: "v1", size, outputSeq: -1 })).message).toContain("result.outputSeq");
+    expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
+  });
+
+  it("speaks protocol 1.1 (issue #34)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.1");
+  });
+
   it("allows an empty snapshot and no writer", () => {
     const parsed = parseResponse(
       frame({ kind: "response", id: "r1", result: { viewId: "v1", size } }),
@@ -330,6 +346,16 @@ describe("parseEvent", () => {
       expect(parsed.value.data).toEqual({ sessionId: "s1" });
       expect(Array.from(parsed.value.payload)).toEqual([104, 105]);
     }
+  });
+
+  it("returns the output number of session.output and rejects other values (issue #34)", () => {
+    const output = (data: unknown) =>
+      parseEvent(frame({ kind: "event", event: "session.output", data }, Uint8Array.from([104])));
+    const parsed = output({ sessionId: "s1", seq: 8 });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.data).toEqual({ sessionId: "s1", seq: 8 });
+    expect(failure(output({ sessionId: "s1", seq: 1.5 })).message).toContain("data.seq");
+    expect(failure(output({ sessionId: "s1", seq: -1 })).code).toBe("bad_request");
   });
 
   it("rejects session.output without bytes", () => {

@@ -390,6 +390,7 @@ const RESULT_CHECK: Record<Method, Check> = {
     string(obj, "viewId", path);
     checkSize(present(obj, "size", path), `${path}.size`);
     optional(obj, "writerViewId", path, isId);
+    optional(obj, "outputSeq", path, isNonNegativeInteger);
   },
   "session.detach": checkEmpty,
   "session.input": checkEmpty,
@@ -412,7 +413,11 @@ const RESULT_CHECK: Record<Method, Check> = {
 };
 
 const EVENT_CHECK: Record<EventName, Check> = {
-  "session.output": (value, path) => string(record(value, path), "sessionId", path),
+  "session.output": (value, path) => {
+    const obj = record(value, path);
+    string(obj, "sessionId", path);
+    optional(obj, "seq", path, isNonNegativeInteger);
+  },
   "session.stateChanged": (value, path) => {
     const obj = record(value, path);
     string(obj, "sessionId", path);

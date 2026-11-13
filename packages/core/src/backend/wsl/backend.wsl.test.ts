@@ -168,6 +168,21 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     expect(Date.now() - attachedAt).toBeLessThan(3_000);
   }, 30_000);
 
+  it("repaints the whole screen through the PTY on redraw (issue #34)", async () => {
+    backend = new WslBackend({ socket: SOCKET });
+    const id = nextId();
+    const session = track(await backend.start(id, spec(), size));
+    session.pty.write("echo redraw-$((6*7))\r");
+    await waitFor(() => session.output().includes("redraw-42"));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const before = session.output().length;
+
+    await backend.redraw(id, spec());
+
+    // Through ConPTY the repaint starts at the top left and contains the marker again.
+    await waitFor(() => session.output().slice(before).split("\x1b[H").at(-1)!.includes("redraw-42"));
+  }, 30_000);
+
   it("reports a client detached from outside without exit code and keeps the session", async () => {
     backend = new WslBackend({ socket: SOCKET });
     const id = nextId();

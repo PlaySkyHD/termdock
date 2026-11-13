@@ -41,6 +41,7 @@ Every prompt contains:
 - the OpenSpec flow: create the change (`openspec-propose` skill), `npx openspec validate <change> --strict`, implement test-first (`tdd` skill), archive in the same branch (`npx openspec archive <change> -y`, then `npx openspec validate --specs --strict`),
 - the checks: `npm run typecheck`, `npm run lint`, `npm test -w <package>`; WSL integration tests with `TERMDOCK_WSL_TESTS=1` (see lessons section 2); never return unfiltered test output,
 - for a bug fix: show the new test fails without the fix and put the red line in the report,
+- for a visible UI change (`apps/desktop`, `poc/` UI): PNG screenshots of every changed state via the app's screenshot mode (`--screenshot <dir>`, `webContents.capturePage()`), before and after for changed behavior, saved outside the repo (`P:/Temp/td-shots/<branch>/`); list the paths in the report, do not commit them,
 - before the push: commit, then run the skill `code-review low` on `origin/main...HEAD` and fix findings (amend) or state why not,
 - the commit: Conventional Commits, body ends with `Fixes #<n>` and the Co-Authored-By line,
 - `git push -u origin <branch>`,
@@ -60,6 +61,7 @@ Start agents in the background. Do not touch their worktrees while they run.
 ## 5. Pull requests and merge
 
 - One PR per issue with `gh pr create`, `Fixes #<n>` in the body. Register it with T3 if `link_pull_request` exists.
+- UI change: look at the screenshots yourself, then attach them right after `gh pr create`: `bash scripts/attach-screenshots.sh pr <n> --title "Vorher / Nachher" <files…>`. An issue about visible behavior gets screenshots the same way (`issue <n>`). No screenshots for a UI change → send the agent back before the PR.
 - Review right after `gh pr create`: `code-review <PR>` (`medium --max-findings 5`; after a rework `low`; Core lifecycle, input lock or reconcile: `high`). Use the `termdock-review` skill for what to check.
 - Triage: only correctness bugs inside the issue's scope go back to the agent. Extensions and style become new issues or are rejected with a reason.
 - Watch checks with `bash scripts/pr-wait.sh --timeout 60 <prs…>` via Bash `run_in_background`.

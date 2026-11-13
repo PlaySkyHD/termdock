@@ -261,9 +261,11 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
       [backend],
     );
 
+    expect(registry.backendUnavailable()).toEqual([]);
     const result = await registry.restore();
 
     expect(result.backendUnavailable).toEqual(["wsl"]);
+    expect(registry.backendUnavailable()).toEqual(["wsl"]);
     expect(registry.list().map((s) => s.state)).toEqual(["Interrupted", "Interrupted"]);
     expect(backend.attaches).toEqual([]);
   });

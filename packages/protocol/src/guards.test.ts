@@ -46,6 +46,7 @@ describe("parseRequest", () => {
       ["session.resize", { viewId: "v1", size }],
       ["session.claimWriter", { viewId: "v1" }],
       ["session.kill", { sessionId: "s1" }],
+      ["core.status", {}],
       ["core.shutdown", {}],
     ];
     for (const [method, params] of valid) {
@@ -300,6 +301,18 @@ describe("parseResponse", () => {
       "session.attach",
     );
     expect(failure(parsed).message).toContain("result.size");
+  });
+
+  it("parses core.status with known backend kinds only", () => {
+    const status = (result: unknown) =>
+      parseResponse(frame({ kind: "response", id: "r1", result }), "core.status");
+    const parsed = status({ backendUnavailable: ["wsl"] });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.value.ok) expect(parsed.value.result).toEqual({ backendUnavailable: ["wsl"] });
+    expect(status({ backendUnavailable: [] }).ok).toBe(true);
+    expect(failure(status({})).message).toContain("result.backendUnavailable");
+    expect(failure(status({ backendUnavailable: ["mac"] })).code).toBe("bad_request");
+    expect(failure(status({ backendUnavailable: "wsl" })).code).toBe("bad_request");
   });
 });
 

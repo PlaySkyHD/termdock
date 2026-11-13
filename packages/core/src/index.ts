@@ -45,3 +45,6 @@ export { wslPath } from "./backend/wsl/paths.js";
 export { DEFAULT_HELLO_TIMEOUT_MS, DEFAULT_MAX_PENDING_HANDSHAKES } from "./ipc/server.js";
 export { foreignAllowEntries, grantsWrite, parseDacl } from "./ipc/pipe-acl.js";
 export type { DaclEntry } from "./ipc/pipe-acl.js";
+
+// assembly
+export { DEFAULT_REATTACH_DELAYS_MS } from "./session/registry.js";

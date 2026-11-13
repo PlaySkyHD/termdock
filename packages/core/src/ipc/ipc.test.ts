@@ -1,5 +1,6 @@
 // Integration tests over a real named pipe with FakeBackend (issue #5, spec core-ipc).
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, connect as netConnect } from "node:net";
 import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -494,14 +495,17 @@ describe("single instance", () => {
 
   it("starts a core through runCore and serves clients", async () => {
     const pipePath = uniquePipe();
+    const dataDir = mkdtempSync(join(tmpdir(), "termdock-ipc-"));
+    cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
     const outcome = await runCore({
       pipePath,
+      dataDir,
       backends: [new FakeBackend()],
       stderr: { write: () => {} },
       installSignalHandlers: false,
     });
     expect(outcome.exitCode).toBe(0);
-    cleanups.push(() => outcome.server?.close());
+    cleanups.push(() => outcome.close?.());
     const client = await newClient(pipePath);
     expect((await client.request("session.list", {})).result.sessions).toEqual([]);
   });
@@ -525,6 +529,20 @@ describe("core.shutdown", () => {
     expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
     expect(onShutdown).toHaveBeenCalledTimes(1);
     expect(await errorCode(connect(pipePath, { connectTimeoutMs: 500 }))).toBe("closed");
+  });
+
+  it("stops a session whose lost client is being re-attached", async () => {
+    const { client, registry, backend, ids } = await withTwoSessions();
+    // The first check fails, so the re-attach waits 0.5 s before its next attempt.
+    backend.failNextExists = new Error("wsl.exe timed out");
+    backend.pty(ids[0]).loseClient();
+    await waitFor(() => backend.failNextExists === undefined, "first failed check");
+
+    await client.request("core.shutdown", { stopSessions: true });
+
+    expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
+    expect(backend.kills).toContain(ids[0]);
+    expect(backend.attaches).toEqual([]);
   });
 
   it("only closes the server without stopSessions", async () => {

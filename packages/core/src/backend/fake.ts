@@ -65,13 +65,23 @@ export class FakePty implements PtyHandle {
     for (const listener of [...this.dataListeners]) listener(bytes);
   }
 
-  /** Test control: the PTY ends. Without `exitCode` the end counts as unexpected (lost process or tmux client). */
+  /**
+   * Test control: the PTY ends and takes the backend session with it. Without `exitCode` the end counts as
+   * unexpected (lost process).
+   */
   emitExit(exitCode?: number): void {
     if (this.ended) return;
     this.ended = true;
     this.onEnd();
     const event = exitCode === undefined ? {} : { exitCode };
     for (const listener of [...this.exitListeners]) listener(event);
+  }
+
+  /** Test control: only the client is lost (like `tmux detach-client`); the backend session keeps running. */
+  loseClient(): void {
+    if (this.ended) return;
+    this.ended = true;
+    for (const listener of [...this.exitListeners]) listener({});
   }
 }
 
@@ -98,6 +108,12 @@ export class FakeBackend implements Backend {
   failNextSnapshot: Error | undefined;
   /** When set, the next `exists` rejects with this error. */
   failNextExists: Error | undefined;
+  /** When set, the next `resolveLaunch` rejects with this error. */
+  failNextResolve: Error | undefined;
+  /** Distro `resolveLaunch` fills into WSL specs without one; undefined leaves specs unchanged. */
+  defaultDistro: string | undefined;
+  /** Test hook: runs for every PTY that `start` or `attach` creates. */
+  onPty: ((pty: FakePty) => void) | undefined;
   readonly starts: FakeBackendCall[] = [];
   readonly attaches: FakeBackendCall[] = [];
   readonly kills: SessionId[] = [];
@@ -136,6 +152,16 @@ export class FakeBackend implements Backend {
 
   async available(): Promise<boolean> {
     return this.isAvailable;
+  }
+
+  async resolveLaunch(spec: LaunchSpec): Promise<LaunchSpec> {
+    const error = this.failNextResolve;
+    if (error) {
+      this.failNextResolve = undefined;
+      throw error;
+    }
+    if (spec.backend !== "wsl" || spec.distro !== undefined || this.defaultDistro === undefined) return spec;
+    return { ...spec, distro: this.defaultDistro };
   }
 
   async start(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
@@ -191,6 +217,7 @@ export class FakeBackend implements Backend {
     this.ptys.set(id, list);
     this.alive.add(id);
     this.existsOverride.delete(id);
+    this.onPty?.(pty);
     return pty;
   }
 }

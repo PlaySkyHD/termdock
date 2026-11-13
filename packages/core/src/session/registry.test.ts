@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
+import { InMemorySessionRepository } from "../storage/session-repository.js";
 import { SessionRegistry } from "./registry.js";
 import type { SessionRegistryOptions } from "./registry.js";
 
@@ -13,6 +14,9 @@ function setup(options: Partial<SessionRegistryOptions> = {}, backend = new Fake
   registry.onStateChange(({ sessionId, from, to }) => states.push({ sessionId, from, to }));
   return { registry, backend, states };
 }
+
+/** Lets the registry finish its existence check after a PTY ended without exit code. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function errorCode(fn: () => unknown): string | undefined {
   try {
@@ -67,6 +71,31 @@ describe("SessionRegistry: create and start", () => {
   it("reports unknown sessions as not_found", () => {
     const { registry } = setup();
     expect(errorCode(() => registry.get("missing"))).toBe("not_found");
+  });
+
+  it("pins the backend's default distro in the stored launch spec before starting", async () => {
+    const backend = new FakeBackend();
+    backend.defaultDistro = "Ubuntu";
+    const repository = new InMemorySessionRepository();
+    const { registry } = setup({ repository }, backend);
+
+    const session = await registry.create({ name: "shell", launch: spec });
+
+    expect(session.launch).toEqual({ ...spec, distro: "Ubuntu" });
+    expect(backend.starts[0]?.spec).toEqual({ ...spec, distro: "Ubuntu" });
+    expect(repository.list()[0]?.launch.distro).toBe("Ubuntu");
+  });
+
+  it("treats a failing resolve as a failed start", async () => {
+    const { registry, backend } = setup();
+    backend.failNextResolve = new Error("wsl.exe -l failed");
+
+    await expect(registry.create({ name: "shell", launch: spec })).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+
+    expect(registry.list()[0]?.state).toBe("Interrupted");
+    expect(backend.starts).toEqual([]);
   });
 });
 
@@ -308,7 +337,7 @@ describe("SessionRegistry: end of the PTY", () => {
   });
 
   it.each([["Running"], ["Detached"]] as const)(
-    "moves %s to Interrupted when the PTY ends without exit code",
+    "moves %s to Interrupted when the PTY ends without exit code and the backend session is gone",
     async (state) => {
       const { registry, backend } = setup();
       const { id } = await registry.create({ name: "shell", launch: spec });
@@ -316,6 +345,7 @@ describe("SessionRegistry: end of the PTY", () => {
       expect(registry.get(id).state).toBe(state);
 
       backend.pty(id).emitExit();
+      await settle();
 
       expect(registry.get(id).state).toBe("Interrupted");
       expect(registry.get(id).lastExitCode).toBeUndefined();
@@ -382,6 +412,7 @@ describe("SessionRegistry: restart", () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     backend.pty(id).emitExit();
+    await settle();
     backend.setExists(id, true);
 
     const session = await registry.restart(id);
@@ -464,6 +495,7 @@ describe("SessionRegistry: archive", () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     backend.pty(id).emitExit();
+    await settle();
     backend.setExists(id, true);
 
     await registry.archive(id);
@@ -544,6 +576,7 @@ describe("SessionRegistry: backend failures", () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     backend.pty(id).emitExit();
+    await settle();
     backend.failNextExists = new Error("wsl.exe failed");
 
     await expect(registry.archive(id)).rejects.toMatchObject({ code: "backend_unavailable" });

@@ -91,6 +91,12 @@ export class WslBackend implements Backend {
     }
   }
 
+  /** Pins the distro: configured, else the WSL default. Rejects when WSL lists no distro. */
+  async resolveLaunch(spec: LaunchSpec): Promise<LaunchSpec> {
+    if (spec.distro !== undefined) return spec;
+    return { ...spec, distro: await this.resolveDistro(undefined) };
+  }
+
   async start(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
     const target = await this.target(spec);
     const args = startArgs(target, id, spec);

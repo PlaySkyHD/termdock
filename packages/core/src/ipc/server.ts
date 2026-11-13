@@ -62,6 +62,11 @@ export interface CoreServerOptions {
   helloTimeoutMs?: number;
   /** Connections without completed `hello` allowed at the same time; further ones are destroyed. Defaults to 32. */
   maxPendingHandshakes?: number;
+  /**
+   * Requests other than `hello` wait for this before they reach the registry; the core resolves it after the
+   * reconcile, so no client sees the state before it. A rejection is answered like any error of the request.
+   */
+  ready?: Promise<void>;
 }
 
 interface Connection {
@@ -119,9 +124,13 @@ export class CoreServer {
   private shuttingDown = false;
   private pendingShutdownReplies = 0;
   private settleTimer: NodeJS.Timeout | undefined;
+  private readonly ready: Promise<void>;
 
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
+    this.ready = options.ready ?? Promise.resolve();
+    // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
+    this.ready.catch(() => {});
     this.pipePath = options.pipePath ?? defaultPipeName();
     this.maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
     this.startWaitMs = options.shutdownStartTimeoutMs ?? DEFAULT_SHUTDOWN_START_TIMEOUT_MS;
@@ -312,6 +321,7 @@ export class CoreServer {
 
   private async dispatch(conn: Connection, request: ParsedRequest): Promise<Outcome> {
     const { registry } = this;
+    await this.ready;
     if (this.shuttingDown && request.method !== "core.shutdown") {
       throw new CoreError("invalid_state", "Core is shutting down");
     }
@@ -360,6 +370,8 @@ export class CoreServer {
       case "session.kill":
         await registry.kill(request.params.sessionId);
         return EMPTY_RESULT;
+      case "core.status":
+        return { result: { backendUnavailable: registry.backendUnavailable() } };
       case "core.shutdown":
         return this.shutdown(request.params.stopSessions === true);
     }

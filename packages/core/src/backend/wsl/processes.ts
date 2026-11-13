@@ -72,7 +72,7 @@ let nodePty: Promise<typeof NodePty> | undefined;
 export async function spawnPty(args: readonly string[], size: TerminalSize): Promise<PtyProcess> {
   nodePty ??= import("node-pty");
   const pty = await nodePty;
-  return pty.spawn(WSL, [...args], {
+  const terminal = pty.spawn(WSL, [...args], {
     name: "xterm-256color",
     cols: size.cols,
     rows: size.rows,
@@ -81,4 +81,19 @@ export async function spawnPty(args: readonly string[], size: TerminalSize): Pro
     env: process.env as Record<string, string>,
     useConptyDll: true,
   });
+  ignoreInputErrors(terminal);
+  return terminal;
+}
+
+/**
+ * node-pty 1.1.0 writes input to the ConPTY input pipe (`_agent.inSocket`, windowsPtyAgent.js) without an
+ * `error` listener. Input that arrives after the tmux client ended but before its exit is reported fails
+ * asynchronously with `EAGAIN` and would crash the core as an uncaught exception. The input is lost either
+ * way; the exit follows and the registry re-attaches.
+ */
+function ignoreInputErrors(terminal: NodePty.IPty): void {
+  const agent = (
+    terminal as unknown as { _agent?: { inSocket?: { on(event: "error", fn: () => void): void } } }
+  )._agent;
+  agent?.inSocket?.on("error", () => {});
 }

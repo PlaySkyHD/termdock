@@ -191,7 +191,7 @@ const PARAMS_CHECK: Record<Method, Check> = {
   },
   "session.claimWriter": (value, path) => string(record(value, path), "viewId", path),
   "session.kill": (value, path) => string(record(value, path), "sessionId", path),
-  "core.shutdown": checkEmpty,
+  "core.shutdown": (value, path) => optional(record(value, path), "stopSessions", path, isBoolean),
 };
 
 const RESULT_CHECK: Record<Method, Check> = {

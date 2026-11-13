@@ -64,6 +64,7 @@ Start agents in the background. Do not touch their worktrees while they run.
 - One PR per issue with `gh pr create`, `Fixes #<n>` in the body. Register it with T3 if `link_pull_request` exists.
 - UI change: look at the screenshots yourself, then attach them right after `gh pr create`: `bash scripts/attach-screenshots.sh pr <n> --title "Vorher / Nachher" <files…>`. An issue about visible behavior gets screenshots the same way (`issue <n>`). No screenshots for a UI change → send the agent back before the PR.
 - Review right after `gh pr create`: `code-review <PR>` (`medium --max-findings 5`; after a rework `low`; Core lifecycle, input lock or reconcile: `high`). Use the `termdock-review` skill for what to check.
+- Read the review's coverage note, not only the findings. If it says the diff was cut off or files were skipped, rerun `code-review` with path targets for the missing files (PR #8: `registry.ts` skipped at 60 KB; PR #10: end of `server.ts` skipped). For PRs over about 1500 changed lines, review with path targets per package from the start.
 - Triage: only correctness bugs inside the issue's scope go back to the agent. Extensions and style become new issues or are rejected with a reason.
 - Watch checks with `bash scripts/pr-wait.sh --timeout 60 <prs…>` via Bash `run_in_background`.
 - Merge only when checks are green and review findings are fixed or rejected: `gh pr merge <n> --merge --delete-branch`. Then `git -C P:/GitHub/termdock worktree remove P:/GitHub/termdock-wt/<branch>` and `git -C P:/GitHub/termdock pull --ff-only`.

@@ -4,9 +4,12 @@ import type { SessionId, SessionInfo } from "@termdock/protocol";
 import { groupSessions, stateText } from "./session-display.js";
 import { StateIcon } from "./StateIcon.js";
 
+/** `tab`: open or focus the tab; `newTab`: always a new tab; `split`: next to the active pane. */
+export type OpenMode = "tab" | "newTab" | "split";
+
 export interface SidebarProps {
   sessions: readonly SessionInfo[];
-  /** Session of the active tab. */
+  /** Session of the active pane of the active tab. */
   activeSessionId: SessionId | undefined;
   formOpen: boolean;
   /** A create is in flight (owned by the window, so it survives hiding the sidebar). */
@@ -14,8 +17,8 @@ export interface SidebarProps {
   /** Message of the last failed create. */
   createError: string | undefined;
   onFormOpen: (open: boolean) => void;
-  /** Click opens or focuses the tab; Ctrl+click always opens a new one. */
-  onOpen: (sessionId: SessionId, forceNew: boolean) => void;
+  /** Click opens or focuses the tab; Ctrl+click always opens a new one; Shift+click splits the active pane. */
+  onOpen: (sessionId: SessionId, mode: OpenMode) => void;
   /** Starts creating the session and opening its tab; `creating` and `createError` report the outcome. */
   onCreate: (name: string, cwd: string) => void;
 }
@@ -71,8 +74,10 @@ export function Sidebar({
                     type="button"
                     data-session-name={session.name}
                     data-state={session.state}
-                    title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen`}
-                    onClick={(event) => onOpen(session.id, event.ctrlKey)}
+                    title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen`}
+                    onClick={(event) =>
+                      onOpen(session.id, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")
+                    }
                   >
                     <StateIcon session={session} />
                     <span className="session-item__name">{session.name}</span>

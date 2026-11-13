@@ -10,6 +10,8 @@ export interface TerminalSurface {
   write(data: Uint8Array | string): void;
   reset(): void;
   resize(cols: number, rows: number): void;
+  /** Draws the cursor from now on, also without focus (the snapshot carries its position, #32). */
+  showCursor(): void;
   /** Size that fills the element; undefined while the element cannot be measured. */
   proposeSize(): TerminalSize | undefined;
   /** Key presses and automatic replies of the emulator; the returned function unsubscribes. */
@@ -23,6 +25,19 @@ export interface ViewStatus {
   /** Size of the session's terminal, set by the writer. */
   size?: TerminalSize;
   error?: string;
+}
+
+/** Delay between a change of the element and the fit; bounds resizes while a divider is dragged (#27). */
+export const LAYOUT_DELAY_MS = 60;
+
+export interface ControllerOptions {
+  /** Runs `run` once after the layout delay; the returned function cancels it. Tests pass a manual one. */
+  scheduleLayout?: (run: () => void) => () => void;
+}
+
+function delayLayout(run: () => void): () => void {
+  const timer = setTimeout(run, LAYOUT_DELAY_MS);
+  return () => clearTimeout(timer);
 }
 
 export class TerminalController {
@@ -42,12 +57,18 @@ export class TerminalController {
   private sizeFromEvent = false;
   private disposed = false;
   private readonly unsubscribe: Array<() => void> = [];
+  private readonly scheduleLayout: (run: () => void) => () => void;
+  /** Set while a fit after a change of the element is planned. */
+  private cancelLayout: (() => void) | undefined;
 
   constructor(
     private readonly api: TermdockApi,
     private readonly surface: TerminalSurface,
     private readonly onStatus: (status: ViewStatus) => void,
-  ) {}
+    options: ControllerOptions = {},
+  ) {
+    this.scheduleLayout = options.scheduleLayout ?? delayLayout;
+  }
 
   /** Attaches a new view to the session and shows it. Subscribes first, so no output is lost. */
   async open(sessionId: SessionId): Promise<void> {
@@ -86,6 +107,8 @@ export class TerminalController {
       this.surface.resize(view.size.cols, view.size.rows);
     this.surface.reset();
     this.surface.write(trimTrailingBlankLines(view.snapshot));
+    // A reader pane may never get the focus; it still shows where the writer's cursor is.
+    this.surface.showCursor();
     this.snapshotSeq = view.outputSeq;
     for (const { seq, data } of this.pending ?? []) if (seq > this.snapshotSeq) this.surface.write(data);
     this.pending = undefined;
@@ -108,13 +131,22 @@ export class TerminalController {
     }
   }
 
-  /** The element changed size: the writer fits and sends its size, a reader stays at the writer's size. */
+  /**
+   * The element changed size. After a short delay the writer fits and sends its size, once for all changes in
+   * that time (no storm of resizes while a divider is dragged); a reader stays at the writer's size.
+   */
   layoutChanged(): void {
-    if (this.isWriter()) this.fitAsWriter();
+    if (this.cancelLayout || this.disposed) return;
+    this.cancelLayout = this.scheduleLayout(() => {
+      this.cancelLayout = undefined;
+      if (!this.disposed && this.isWriter()) this.fitAsWriter();
+    });
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.cancelLayout?.();
+    this.cancelLayout = undefined;
     this.stopListening();
     const viewId = this.viewId;
     this.viewId = undefined;

@@ -283,10 +283,22 @@ Scheitert das Öffnen der Datenbank oder der Abgleich, SHALL der Core wartende A
 
 ### Requirement: Abbau des Core
 
-Bei `core.shutdown`, SIGINT und SIGTERM SHALL der Core die Pipe schließen, alle PTYs lösen, ohne Zustände zu ändern, die Keepalives des WSL-Backends beenden und die Datenbank schließen. Ohne `stopSessions` MUST jede tmux-Session weiterlaufen; mit `stopSessions` werden die Sessions vorher beendet.
+Bei `core.shutdown`, SIGINT und SIGTERM SHALL der Core die Pipe schließen, alle PTYs lösen, ohne Zustände zu ändern, die Keepalives des WSL-Backends beenden und die Datenbank schließen. Ein Signal während des Abgleichs MUST diesen abbrechen und ebenso abbauen. Ohne `stopSessions` MUST jede tmux-Session weiterlaufen; mit `stopSessions` werden die Sessions vorher beendet, auch solche, die gerade wieder angebunden werden.
 
 #### Scenario: Beenden ohne Stop
 
 - **GIVEN** ein Core mit einer laufenden WSL-Session
 - **WHEN** er ohne Stop beendet wird
 - **THEN** existiert die tmux-Session weiter, kein Keepalive-Prozess des Core läuft mehr und die Datenbank ist geschlossen
+
+#### Scenario: Signal während des Abgleichs
+
+- **GIVEN** ein Core, dessen Abgleich noch auf das Backend wartet
+- **WHEN** SIGTERM eintrifft
+- **THEN** endet der Core mit Exit-Code 0, die Pipe ist frei, die Datenbank ist geschlossen und der gespeicherte Zustand der Session ist unverändert
+
+#### Scenario: Shutdown während des Wiederanbindens
+
+- **GIVEN** eine Session, deren Client verloren ging und die gerade wieder angebunden wird
+- **WHEN** ein Client `core.shutdown { stopSessions: true }` sendet
+- **THEN** antwortet der Core ohne Fehler und die Session ist `Exited`

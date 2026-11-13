@@ -531,6 +531,20 @@ describe("core.shutdown", () => {
     expect(await errorCode(connect(pipePath, { connectTimeoutMs: 500 }))).toBe("closed");
   });
 
+  it("stops a session whose lost client is being re-attached", async () => {
+    const { client, registry, backend, ids } = await withTwoSessions();
+    // The first check fails, so the re-attach waits 0.5 s before its next attempt.
+    backend.failNextExists = new Error("wsl.exe timed out");
+    backend.pty(ids[0]).loseClient();
+    await waitFor(() => backend.failNextExists === undefined, "first failed check");
+
+    await client.request("core.shutdown", { stopSessions: true });
+
+    expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
+    expect(backend.kills).toContain(ids[0]);
+    expect(backend.attaches).toEqual([]);
+  });
+
   it("only closes the server without stopSessions", async () => {
     const onShutdown = vi.fn();
     const { client, registry, backend, pipePath, ids } = await withTwoSessions({ onShutdown });

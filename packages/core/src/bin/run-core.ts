@@ -26,8 +26,16 @@ export interface RunCoreOptions {
   stderr?: { write(text: string): unknown };
   /** Close on SIGINT/SIGTERM. Default true; tests turn it off. */
   installSignalHandlers?: boolean;
+  /** Where SIGINT/SIGTERM handlers are installed; defaults to `process`. Tests pass their own source. */
+  signals?: SignalSource;
   /** Called when the core ends on purpose (shutdown request, signal). The entry point maps it to `process.exit`. */
   onExit?: (exitCode: number) => void;
+}
+
+/** The part of `process` the core uses for its signal handlers. */
+export interface SignalSource {
+  once(signal: NodeJS.Signals, listener: () => void): unknown;
+  off(signal: NodeJS.Signals, listener: () => void): unknown;
 }
 
 export interface RunCoreResult {
@@ -35,7 +43,7 @@ export interface RunCoreResult {
   errorCode?: "already_running" | "start_failed";
   /** Set when the core runs. */
   server?: CoreServer;
-  /** Outcome of the reconcile on start; set when the core runs. */
+  /** Outcome of the reconcile on start; set when the core runs, unset when it was closed during the reconcile. */
   restore?: RestoreResult;
   /**
    * Set when the core runs. Closes the pipe, releases all PTYs without changing session states, disposes the
@@ -106,12 +114,23 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   }
 
   let storage: Storage | undefined;
+  const signals = options.signals ?? process;
   const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
+  let isReady = false;
   let closing: Promise<void> | undefined;
+  let markClosed: () => void = () => {};
+  const closed = new Promise<"closed">((resolve) => (markClosed = () => resolve("closed")));
   close = () => {
     closing ??= (async () => {
-      for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+      markClosed();
+      for (const [signal, handler] of signalHandlers) signals.off(signal, handler);
+      if (!isReady) {
+        // Closed during the reconcile: waiting requests get an answer before the connections end.
+        markFailed(new CoreError("internal", "Core is shutting down"));
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       await server.close();
+      // Also stops a reconcile still running: it changes and saves nothing more and releases late PTYs.
       registry.dispose();
       for (const backend of ownBackends) backend.dispose();
       storage?.dispose();
@@ -119,11 +138,28 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     return closing;
   };
 
+  // Right after the pipe is taken, so a signal during a slow reconcile still tears everything down.
+  if (options.installSignalHandlers !== false) {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const handler = (): void => void close().then(() => options.onExit?.(0));
+      signalHandlers.push([signal, handler]);
+      signals.once(signal, handler);
+    }
+  }
+
   let restore: RestoreResult;
   try {
     storage = openStorage(options.dataDir === undefined ? {} : { dataDir: options.dataDir });
     repository.target = storage.sessions;
-    restore = await registry.restore();
+    const restoring = registry.restore();
+    // After a close nothing waits for the reconcile any more; its outcome no longer matters.
+    restoring.catch(() => {});
+    const outcome = await Promise.race([restoring, closed]);
+    if (outcome === "closed") {
+      await close();
+      return { exitCode: 0, server, close };
+    }
+    restore = outcome;
   } catch (error) {
     markFailed(new CoreError("internal", "Core failed to start"));
     log(`start failed: ${messageOf(error)}`);
@@ -135,15 +171,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   for (const kind of restore.backendUnavailable) {
     log(`backend_unavailable: ${kind} could not be reached, its sessions are Interrupted`);
   }
+  isReady = true;
   markReady();
-
-  if (options.installSignalHandlers !== false) {
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      const handler = (): void => void close().then(() => options.onExit?.(0));
-      signalHandlers.push([signal, handler]);
-      process.once(signal, handler);
-    }
-  }
   return { exitCode: 0, server, restore, close };
 }
 

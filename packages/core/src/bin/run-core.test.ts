@@ -8,6 +8,7 @@ import type { LaunchSpec } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { connect } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
+import { openStorage } from "../storage/database.js";
 import { runCore } from "./run-core.js";
 import type { RunCoreOptions, RunCoreResult } from "./run-core.js";
 
@@ -57,6 +58,41 @@ async function clientWhenListening(pipePath: string): Promise<CoreClient> {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
+}
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function timeout(ms: number, what: string): Promise<never> {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms));
+}
+
+/** Signal source the test triggers instead of sending real signals to the test process. */
+function fakeSignals() {
+  const handlers = new Map<NodeJS.Signals, Set<() => void>>();
+  return {
+    once(signal: NodeJS.Signals, handler: () => void): void {
+      const set = handlers.get(signal) ?? new Set();
+      set.add(handler);
+      handlers.set(signal, set);
+    },
+    off(signal: NodeJS.Signals, handler: () => void): void {
+      handlers.get(signal)?.delete(handler);
+    },
+    emit(signal: NodeJS.Signals): void {
+      const set = handlers.get(signal);
+      for (const handler of [...(set ?? [])]) {
+        set?.delete(handler);
+        handler();
+      }
+    },
+    listeners: (): number => [...handlers.values()].reduce((sum, set) => sum + set.size, 0),
+  };
 }
 
 describe("runCore", () => {
@@ -160,6 +196,55 @@ describe("runCore", () => {
 
     expect(failed).toMatchObject({ exitCode: 1, errorCode: "start_failed" });
     expect(stderr.lines.join("")).toMatch(/start failed: .+/);
+    const next = await start({ pipePath, dataDir: tempDir(), backends: [new FakeBackend()] });
+    expect(next.exitCode).toBe(0);
+  });
+
+  it("tears down on a signal during a slow reconcile without changing the stored state", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const first = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    const c1 = await client(pipePath);
+    const { session } = (await c1.request("session.create", { name: "build", launch })).result;
+    await c1.close();
+    await first.close?.();
+
+    let release: (exists: boolean) => void = () => {};
+    let checking = false;
+    const slow = new (class extends FakeBackend {
+      override exists(): Promise<boolean> {
+        checking = true;
+        return new Promise((resolve) => (release = resolve));
+      }
+    })();
+    const signals = fakeSignals();
+    let exited: (code: number) => void = () => {};
+    const exitCode = new Promise<number>((resolve) => (exited = resolve));
+    const starting = runCore({
+      pipePath,
+      dataDir,
+      backends: [slow],
+      signals,
+      stderr: stderrSink(),
+      onExit: (code) => exited(code),
+    });
+    cleanups.push(async () => (await starting).close?.());
+    cleanups.push(() => release(false));
+    await until(() => checking, "reconcile asks the backend");
+
+    signals.emit("SIGTERM");
+
+    expect(await Promise.race([exitCode, timeout(2000, "onExit")])).toBe(0);
+    expect((await starting).exitCode).toBe(0);
+    expect(signals.listeners()).toBe(0);
+    release(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(slow.attaches).toEqual([]);
+    const storage = openStorage({ dataDir });
+    expect(storage.sessions.list()).toEqual([expect.objectContaining({ id: session.id, state: "Detached" })]);
+    storage.dispose();
+    // The core closed its database: Windows would refuse to delete an open file.
+    rmSync(dataDir, { recursive: true });
     const next = await start({ pipePath, dataDir: tempDir(), backends: [new FakeBackend()] });
     expect(next.exitCode).toBe(0);
   });

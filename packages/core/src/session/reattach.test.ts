@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
+import type { FakePty } from "../backend/fake.js";
+import type { PtyHandle } from "../backend/types.js";
 import { InMemorySessionRepository } from "../storage/session-repository.js";
 import { SessionRegistry } from "./registry.js";
 import type { SessionRegistryOptions } from "./registry.js";
@@ -96,7 +98,23 @@ describe("SessionRegistry: lost backend client", () => {
     expect(backend.attaches).toEqual([]);
   });
 
-  it("rejects kill while re-attaching and settles Detached when the last view left meanwhile", async () => {
+  it("gives a restarted session a fresh re-attach budget", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.onPty = (pty) => setTimeout(() => pty.loseClient(), 0);
+    backend.pty(id).loseClient();
+    await waitFor(stateIs(registry, id, "Interrupted"), "Interrupted");
+    backend.onPty = undefined;
+    await registry.restart(id);
+    const attaches = backend.attaches.length;
+
+    backend.pty(id).loseClient();
+    await waitFor(() => backend.attaches.length === attaches + 1, "re-attach after the restart");
+
+    expect(registry.get(id).state).toBe("Detached");
+  });
+
+  it("rejects restart while re-attaching and settles Detached when the last view left meanwhile", async () => {
     let releaseExists: (value: boolean) => void = () => {};
     const backend = new (class extends FakeBackend {
       override exists(): Promise<boolean> {
@@ -108,14 +126,46 @@ describe("SessionRegistry: lost backend client", () => {
     await registry.attachView(id, "view-a");
 
     backend.pty(id).loseClient();
-    await expect(registry.kill(id)).rejects.toMatchObject({ code: "invalid_state" });
+    await expect(registry.restart(id)).rejects.toMatchObject({ code: "invalid_state" });
     registry.detachView(id, "view-a");
     expect(registry.get(id).state).toBe("Running");
     releaseExists(true);
     await waitFor(stateIs(registry, id, "Detached"), "Detached");
+  });
 
-    await registry.kill(id);
+  it("kill during a re-attach waits for the backend check, cancels the re-attach and ends the session", async () => {
+    let releaseExists: (value: boolean) => void = () => {};
+    const backend = new (class extends FakeBackend {
+      override exists(): Promise<boolean> {
+        return new Promise((resolve) => (releaseExists = resolve));
+      }
+    })();
+    const { registry } = setup({}, backend);
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    await registry.attachView(id, "view-a");
+
+    backend.pty(id).loseClient();
+    const killing = registry.kill(id);
+    releaseExists(true);
+    await killing;
+
+    expect(backend.kills).toEqual([id]);
+    expect(backend.attaches).toEqual([]);
     expect(registry.get(id).state).toBe("Exited");
+  });
+
+  it("archive during the wait between attempts cancels the re-attach and ends the session", async () => {
+    const { registry, backend } = setup({ reattachDelaysMs: [0, 60_000] });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.failNextExists = new Error("wsl.exe timed out");
+
+    backend.pty(id).loseClient();
+    await waitFor(() => backend.failNextExists === undefined, "first failed check");
+    await registry.archive(id);
+
+    expect(backend.kills).toEqual([id]);
+    expect(backend.attaches).toEqual([]);
+    expect(registry.get(id).state).toBe("Archived");
   });
 });
 
@@ -137,6 +187,39 @@ describe("SessionRegistry: dispose", () => {
       code: "invalid_state",
     });
   });
+
+  it.each([
+    ["fails", false],
+    ["succeeds", true],
+  ] as const)(
+    "neither changes nor saves a session whose start %s after dispose",
+    async (_outcome, succeeds) => {
+      let finishStart: (() => void) | undefined;
+      let started: FakePty | undefined;
+      const backend = new (class extends FakeBackend {
+        override start(...args: Parameters<FakeBackend["start"]>): Promise<PtyHandle> {
+          return new Promise((resolve, reject) => {
+            finishStart = () => {
+              if (!succeeds) return reject(new Error("wsl.exe gone"));
+              void super.start(...args).then((pty) => resolve((started = pty as FakePty)));
+            };
+          });
+        }
+      })();
+      const repository = new InMemorySessionRepository();
+      const { registry, states } = setup({ repository }, backend);
+      const creating = registry.create({ name: "shell", launch: spec }).catch((error: unknown) => error);
+      await waitFor(() => finishStart !== undefined, "start begun");
+
+      registry.dispose();
+      finishStart?.();
+
+      expect(await creating).toMatchObject({ code: "invalid_state" });
+      expect(states).toEqual([]);
+      expect(repository.list()[0]?.state).toBe("Starting");
+      if (succeeds) expect(started?.disposed).toBe(true);
+    },
+  );
 
   it("cancels a running re-attach and releases a PTY that arrives afterwards", async () => {
     let releaseExists: (value: boolean) => void = () => {};

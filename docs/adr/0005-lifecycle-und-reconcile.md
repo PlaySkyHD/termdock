@@ -21,7 +21,7 @@ Kapitel 6 definiert die Zustände `Starting`, `Running`, `Detached`, `Exited`, `
   - WSL: `exists()` true → neu anbinden, Zustand `Detached`; false → `Interrupted`.
   - Windows: immer `Interrupted` (PTY gehörte dem alten Core).
   - Ist WSL selbst nicht erreichbar, werden die WSL-Sessions `Interrupted` und der Core meldet `backend_unavailable` in der Statusleiste.
-- **Autostart:** Nur der Core startet Autostart-Profile, nur einmal pro Core-Start, nach dem Reconcile. Hat ein Profil schon eine lebende Session (`Running`/`Detached`), wird nicht neu gestartet.
+- **Autostart (#61, `session/autostart.ts`):** Nur der Core startet Autostart-Profile, nur einmal pro Core-Start, nach dem Reconcile; keine IPC-Methode löst ihn aus. Hat ein Profil schon eine lebende Session (`Starting`/`Running`/`Detached`, Bindung über `profileId`), wird nicht neu gestartet; eine Session in `Exited`, `Interrupted` oder `Archived` bleibt und das Profil bekommt eine neue, angelegt wie `session.create { name, profileId }`. Anfragen warten, bis die Autostart-Sessions eingetragen sind, damit jeder Client sie in seiner ersten Liste sieht und kein Aufruf parallel läuft. Ein fehlendes oder nicht erreichbares Backend wird einmal auf stderr und in `core.status` gemeldet, seine Profile bekommen keine Session; ein gescheiterter Start wird `Interrupted` und einmal gemeldet. Keine Wiederholung.
 - **Eingabe-Lock:** Pro Session höchstens eine schreibende View. Die erste angehängte View wird Schreiber. `session.claimWriter` überträgt das Recht atomar und sendet `view.writerChanged` an alle Views. Trennt sich der Schreiber, wird keine andere View automatisch Schreiber.
 
 ## Folgen

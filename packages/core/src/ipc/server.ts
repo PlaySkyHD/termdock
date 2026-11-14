@@ -396,24 +396,17 @@ export class CoreServer {
         const { name, launch, size, workspaceId, profileId, loggingEnabled } = request.params;
         // A deleted or unknown workspace must not collect sessions that no delete can ungroup any more.
         if (workspaceId !== undefined) this.workspaces.assertWorkspace(workspaceId);
-        let resolved = launch;
-        let profileLogging: boolean | undefined;
-        let sessionWorkspaceId = workspaceId;
         if (profileId !== undefined) {
-          const fromProfile = this.profiles.launchFor(profileId, launch, this.settings.get());
-          resolved = fromProfile.launch;
-          profileLogging = fromProfile.loggingEnabled;
-          // The workspace of the profile (existing: the profile list drops a deleted one) is the default.
-          sessionWorkspaceId ??= fromProfile.workspaceId;
+          // Same input as the autostart builds for a profile (spec launch-profiles).
+          const input = this.profiles.sessionInput(profileId, request.params, this.settings.get());
+          return { result: { session: await registry.create(input) } };
         }
         // The parser guarantees a launch spec when there is no profile.
-        if (resolved === undefined) throw new CoreError("bad_request", "params.launch is required");
-        const input: CreateSessionInput = { name, launch: resolved };
+        if (launch === undefined) throw new CoreError("bad_request", "params.launch is required");
+        const input: CreateSessionInput = { name, launch };
         if (size !== undefined) input.size = size;
-        if (sessionWorkspaceId !== undefined) input.workspaceId = sessionWorkspaceId;
-        if (profileId !== undefined) input.profileId = profileId;
-        const logging = loggingEnabled ?? profileLogging;
-        if (logging !== undefined) input.loggingEnabled = logging;
+        if (workspaceId !== undefined) input.workspaceId = workspaceId;
+        if (loggingEnabled !== undefined) input.loggingEnabled = loggingEnabled;
         return { result: { session: await registry.create(input) } };
       }
       case "session.list":

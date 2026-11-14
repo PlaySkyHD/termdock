@@ -1046,6 +1046,14 @@ export class SessionRegistry {
       this.onPersistError(error, snapshotInfo(entry.info));
     }
   }
+
+  /**
+   * Adds a backend the Core found unreachable after `restore()` (autostart, issue #61) to `backendUnavailable`,
+   * so `core.status` reports it; each kind at most once.
+   */
+  reportBackendUnavailable(kind: BackendKind): void {
+    if (!this.unavailableAtRestore.includes(kind)) this.unavailableAtRestore.push(kind);
+  }
 }
 
 /** The snapshot with the mode sequences in front of its data; the cursor field stays. */

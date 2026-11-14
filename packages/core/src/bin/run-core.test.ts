@@ -415,3 +415,183 @@ describe("runCore", () => {
     rmSync(dataDir, { recursive: true });
   });
 });
+
+describe("runCore autostart (issue #61)", () => {
+  /** Starts a core, lets `prepare` set it up through a client, and closes it without stopping the sessions. */
+  async function prepared(
+    dataDir: string,
+    pipePath: string,
+    backend: FakeBackend,
+    prepare: (c: CoreClient) => Promise<void>,
+  ): Promise<void> {
+    const core = await start({ pipePath, dataDir, backends: [backend] });
+    const c = await client(pipePath);
+    await prepare(c);
+    await c.close();
+    await core.close?.();
+  }
+
+  async function sessionsOf(pipePath: string) {
+    const c = await client(pipePath);
+    const { sessions } = (await c.request("session.list", {})).result;
+    await c.close();
+    return sessions;
+  }
+
+  it("starts exactly the autostart profiles, and a restart with running sessions starts none", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const ids: string[] = [];
+    await prepared(dataDir, pipePath, backend, async (c) => {
+      for (const [name, autostart] of [
+        ["Claude", true],
+        ["Codex", true],
+        ["Manual", false],
+      ] as const) {
+        const { profile } = (await c.request("profile.create", { name, launch, autostart })).result;
+        if (autostart) ids.push(profile.id);
+      }
+      // Marking a profile starts nothing; it takes effect on the next Core start.
+      expect((await c.request("session.list", {})).result.sessions).toEqual([]);
+    });
+
+    const second = await start({ pipePath, dataDir, backends: [backend] });
+    await second.autostart?.started;
+    const sessions = await sessionsOf(pipePath);
+    expect(sessions.map((session) => [session.name, session.profileId, session.state])).toEqual([
+      ["Claude", ids[0], "Detached"],
+      ["Codex", ids[1], "Detached"],
+    ]);
+    expect(backend.starts).toHaveLength(2);
+    await second.close?.();
+
+    const third = await start({ pipePath, dataDir, backends: [backend] });
+    await third.autostart?.started;
+    const again = await sessionsOf(pipePath);
+    expect(again.map((session) => [session.id, session.state])).toEqual(
+      sessions.map((session) => [session.id, "Detached"]),
+    );
+    expect(backend.starts).toHaveLength(2);
+    expect(third.autostart?.sessions).toEqual([]);
+  });
+
+  it("gives a profile whose session was interrupted exactly one new session and keeps the old", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    let old = "";
+    await prepared(dataDir, pipePath, backend, async (c) => {
+      const { profile } = (await c.request("profile.create", { name: "Claude", launch, autostart: true }))
+        .result;
+      old = (await c.request("session.create", { name: "Claude", profileId: profile.id })).result.session.id;
+    });
+    // The tmux session is gone when the next Core starts: the reconcile makes the session Interrupted.
+    backend.setExists(old, false);
+
+    const next = await start({ pipePath, dataDir, backends: [backend] });
+    await next.autostart?.started;
+
+    const sessions = await sessionsOf(pipePath);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((session) => session.id === old)?.state).toBe("Interrupted");
+    expect(sessions.find((session) => session.id !== old)?.state).toBe("Detached");
+  });
+
+  it("holds requests until the autostart sessions are registered; two clients see one start", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    await prepared(dataDir, pipePath, backend, async (c) => {
+      await c.request("profile.create", { name: "Claude", launch, autostart: true });
+    });
+
+    // The reconcile has nothing to check, so the first `available()` is the autostart's backend check.
+    let release: (available: boolean) => void = () => {};
+    let asked = false;
+    const slow = new (class extends FakeBackend {
+      override available(): Promise<boolean> {
+        asked = true;
+        return new Promise((resolve) => (release = resolve));
+      }
+    })();
+    const starting = runCore({
+      pipePath,
+      dataDir,
+      backends: [slow],
+      installSignalHandlers: false,
+      stderr: stderrSink(),
+    });
+    cleanups.push(async () => (await starting).close?.());
+    const a = await clientWhenListening(pipePath);
+    const b = await client(pipePath);
+    const created: string[] = [];
+    for (const c of [a, b]) c.on("session.created", ({ session }) => void created.push(session.id));
+    let answered = false;
+    const lists = Promise.all([a.request("session.list", {}), b.request("session.list", {})]).then(
+      (answers) => {
+        answered = true;
+        return answers.map((answer) => answer.result.sessions);
+      },
+    );
+    await until(() => asked, "backend check");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+
+    release(true);
+    const [first, second] = await lists;
+    expect(first).toHaveLength(1);
+    expect(second?.map((session) => session.id)).toEqual(first?.map((session) => session.id));
+    await (
+      await starting
+    ).autostart?.started;
+    expect(slow.starts).toHaveLength(1);
+    // Nobody had listed when the session was registered; both clients know it from their list.
+    expect(created).toEqual([]);
+  });
+
+  it("reports an unreachable backend once on stderr and in core.status and starts nothing", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    await prepared(dataDir, pipePath, new FakeBackend(), async (c) => {
+      await c.request("profile.create", { name: "a", launch, autostart: true });
+      await c.request("profile.create", { name: "b", launch, autostart: true });
+    });
+
+    const offline = new FakeBackend();
+    offline.isAvailable = false;
+    const stderr = stderrSink();
+    const core = await start({ pipePath, dataDir, backends: [offline], stderr });
+    await core.autostart?.started;
+    const c = await client(pipePath);
+
+    expect((await c.request("core.status", {})).result).toEqual({ backendUnavailable: ["wsl"] });
+    expect((await c.request("session.list", {})).result.sessions).toEqual([]);
+    expect(stderr.lines.filter((line) => line.includes("autostart: backend_unavailable: wsl"))).toHaveLength(
+      1,
+    );
+    expect(offline.starts).toEqual([]);
+  });
+
+  it("reports a backend the reconcile and the autostart both miss only once", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    let old = "";
+    await prepared(dataDir, pipePath, new FakeBackend(), async (c) => {
+      await c.request("profile.create", { name: "a", launch, autostart: true });
+      old = (await c.request("session.create", { name: "build", launch })).result.session.id;
+    });
+
+    const offline = new FakeBackend();
+    offline.isAvailable = false;
+    const stderr = stderrSink();
+    const core = await start({ pipePath, dataDir, backends: [offline], stderr });
+    await core.autostart?.started;
+    const c = await client(pipePath);
+
+    expect((await c.request("core.status", {})).result).toEqual({ backendUnavailable: ["wsl"] });
+    const sessions = (await c.request("session.list", {})).result.sessions;
+    expect(sessions.map((session) => [session.id, session.state])).toEqual([[old, "Interrupted"]]);
+    expect(stderr.lines.filter((line) => line.includes("backend_unavailable: wsl"))).toHaveLength(1);
+  });
+});

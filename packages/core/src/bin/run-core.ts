@@ -1,5 +1,6 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
-// Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
+// Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, register the autostart
+// sessions (issue #61), then serve requests.
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
 import type {
   LaunchProfile,
@@ -13,6 +14,8 @@ import type {
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
+import { runAutostart } from "../session/autostart.js";
+import type { AutostartResult } from "../session/autostart.js";
 import { CoreError } from "../session/errors.js";
 import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
@@ -26,6 +29,8 @@ import type { ProfileRepository } from "../storage/profile-repository.js";
 import type { SettingsRepository } from "../storage/settings-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
+import { ProfileService } from "../workspace/profile-service.js";
+import { WorkspaceService } from "../workspace/service.js";
 
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
 export const ALREADY_RUNNING_EXIT_CODE = 10;
@@ -61,6 +66,8 @@ export interface RunCoreResult {
   server?: CoreServer;
   /** Outcome of the reconcile on start; set when the core runs, unset when it was closed during the reconcile. */
   restore?: RestoreResult;
+  /** Outcome of the autostart after the reconcile; set when the core runs, unset when it was closed before. */
+  autostart?: AutostartResult;
   /**
    * Set when the core runs. Closes the pipe, releases all PTYs without changing session states, disposes the
    * backends the core created (WSL: keepalives end, tmux sessions stay) and closes the database. Idempotent.
@@ -309,9 +316,26 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   for (const kind of restore.backendUnavailable) {
     log(`backend_unavailable: ${kind} could not be reached, its sessions are Interrupted`);
   }
+  // Autostart (issue #61): once per start, after the reconcile and before requests are let through, so every
+  // client sees the autostart sessions in its first `session.list` and no request (profile change, shutdown)
+  // runs alongside it. It waits for the sessions to be registered, not for their start. It never rejects.
+  const autostarting = runAutostart({
+    registry,
+    profiles: new ProfileService(profiles, new WorkspaceService(workspaces)),
+    settings: () => settings.get(),
+    backends: options.backends ?? ownBackends,
+    knownUnavailable: restore.backendUnavailable,
+    cancelled: () => closing !== undefined,
+    report: log,
+  });
+  const autostart = await Promise.race([autostarting, closed]);
+  if (autostart === "closed") {
+    await close();
+    return { exitCode: 0, server, restore, close };
+  }
   isReady = true;
   markReady();
-  return { exitCode: 0, server, restore, close };
+  return { exitCode: 0, server, restore, autostart, close };
 }
 
 function messageOf(error: unknown): string {

@@ -24,12 +24,15 @@ import {
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import {
+  cleanStaleSockets,
   isolatedCore,
   QuietWatch,
   screenshotDir,
   screenshotProfileDir,
+  settleWithin,
   staleProfileDirs,
   stopIsolatedCore,
+  wslSocketDeps,
 } from "./screenshot.js";
 import type { IsolatedCore } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
@@ -59,6 +62,9 @@ try {
 // neither reach the productive core nor hand itself over to a running app as a second instance.
 let shotTemp: string | undefined;
 let isolated: IsolatedCore | undefined;
+let staleSocketCleanup: Promise<unknown> | undefined;
+/** How long the end of a screenshot run waits for the cleanup of stale tmux sockets. */
+const STALE_SOCKET_WAIT_MS = 30_000;
 if (shotDir !== undefined) {
   shotTemp = mkdtempSync(path.join(tmpdir(), "termdock-shot-"));
   isolated = isolatedCore(shotTemp, process.pid, randomBytes(4).toString("hex"));
@@ -71,6 +77,8 @@ if (shotDir !== undefined) {
       // Best effort.
     }
   }
+  // tmux servers of aborted runs (sockets of ended processes); never rejects, `finish()` waits for it.
+  staleSocketCleanup = cleanStaleSockets(process.pid, { ...wslSocketDeps(), isAlive, log });
 }
 const pipePath = isolated?.pipePath ?? defaultPipeName();
 
@@ -124,6 +132,7 @@ async function main(): Promise<void> {
         sleep: (ms) => sleep(ms),
       });
       log(`isolated core: ${outcome}`);
+      await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       cleanTemp();
     }
     app.exit(1);
@@ -353,6 +362,7 @@ async function runScreenshot(
         exitCode = 1;
       });
       await client.close();
+      await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
       cleanTemp();
       app.exit(exitCode);

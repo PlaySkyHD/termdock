@@ -162,6 +162,18 @@ describe("HistorySearchModel", () => {
     expect(model.getState()).toMatchObject({ status: "done", query: "second", total: 1 });
   });
 
+  it("drops the answer of a running search as soon as the text changes", async () => {
+    let finish!: (result: HistorySearchResult) => void;
+    const { model } = setup(() => new Promise((resolve) => (finish = resolve)));
+
+    const running = model.run("abc");
+    model.setQuery("abcd");
+    finish({ hits: [hit("s1", 1, "abc")], truncated: false });
+    await running;
+
+    expect(model.getState()).toEqual({ status: "searching", query: "abc" });
+  });
+
   it("drops a running search when the text is cleared", async () => {
     let finish!: (result: HistorySearchResult) => void;
     const { model } = setup(() => new Promise((resolve) => (finish = resolve)));

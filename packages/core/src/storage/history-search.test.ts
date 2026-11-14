@@ -171,6 +171,28 @@ describe("searchHistory", () => {
     expect((await searchHistory(source, { query: "needle" })).hits).toHaveLength(1);
   });
 
+  it("reports a line longer than the read buffer once, however often it matches", async () => {
+    const line = `${"NEEDLE ".repeat(2000)}\r\n`;
+    const source = memorySource({ s1: [line, "NEEDLE again\r\n"] });
+
+    const hits = (await searchHistory(source, { query: "needle" })).hits;
+
+    expect(hits).toHaveLength(2);
+  });
+
+  it("keeps a line break that follows a lone escape character", async () => {
+    const source = memorySource({ s1: ["foo\x1b\nbar\r\n"] });
+
+    expect((await searchHistory(source, { query: "foobar" })).hits).toHaveLength(0);
+    expect((await searchHistory(source, { query: "bar" })).hits.map((hit) => hit.line)).toEqual(["bar"]);
+  });
+
+  it("dates a hit by the entry in which its line began", async () => {
+    const source = memorySource({ s1: ["slow ", "line ", "with needle\r\n"] });
+
+    expect((await searchHistory(source, { query: "needle" })).hits[0]?.timestamp).toBe(1000);
+  });
+
   it("limits the hits to `limit`, keeps the newest and reports truncated", async () => {
     const lines = Array.from({ length: 10 }, (_, i) => `hit ${i}\r\n`);
     const source = memorySource({ s1: lines });

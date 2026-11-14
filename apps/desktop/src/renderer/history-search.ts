@@ -101,9 +101,10 @@ export class HistorySearchModel {
 
   setQuery(raw: string): void {
     this.cancelTimer();
+    // The text changed: an answer to an older text must not show next to it.
+    this.generation++;
     const query = raw.trim();
     if (query === "") {
-      this.generation++;
       this.set(IDLE);
       return;
     }

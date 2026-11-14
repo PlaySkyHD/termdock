@@ -85,7 +85,11 @@ export class AnsiStripper {
           else if (code === 0x5d || code === 0x50 || code === 0x58 || code === 0x5e || code === 0x5f)
             this.enter("str");
           else if (code >= 0x20 && code <= 0x2f) this.enter("escapeIntermediate");
-          else if (code !== 0x1b) this.mode = "text";
+          else if (code !== 0x1b) {
+            this.mode = "text";
+            // A control character (a line break) after a lone ESC is not part of the sequence.
+            if (code < 0x20) i--;
+          }
           break;
         case "escapeIntermediate":
           if (code < 0x20 || code > 0x2f) this.mode = "text";
@@ -184,6 +188,9 @@ class LineScanner {
   private readonly stripper = new AnsiStripper();
   private line = "";
   private timestamp = 0;
+  private lineTimestamp = 0;
+  /** The open line has a hit already. */
+  private reported = false;
 
   constructor(
     private readonly sessionId: SessionId,
@@ -214,6 +221,8 @@ class LineScanner {
   }
 
   private append(text: string): void {
+    // The time of a hit is when its line began, not when the line ended.
+    if (this.line.length === 0 && text.length > 0) this.lineTimestamp = this.timestamp;
     this.line += text;
     while (this.line.length > MAX_SEARCH_LINE_BUFFER) {
       const head = this.line.slice(0, MAX_SEARCH_LINE_BUFFER);
@@ -227,14 +236,18 @@ class LineScanner {
   private endLine(): void {
     if (this.line.length > 0) this.scan(this.line);
     this.line = "";
+    this.reported = false;
   }
 
   private scan(line: string): void {
+    // One hit per line, also for a line that is scanned in several pieces.
+    if (this.reported) return;
     const match = this.pattern.exec(line);
     if (!match) return;
+    this.reported = true;
     this.onHit({
       sessionId: this.sessionId,
-      timestamp: this.timestamp,
+      timestamp: this.lineTimestamp,
       ...snippet(line, match.index, match[0].length),
     });
   }

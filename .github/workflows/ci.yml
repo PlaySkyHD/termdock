@@ -41,6 +41,9 @@ jobs:
       - name: Format
         run: npm run format:check
 
+      - name: Script tests
+        run: python -I -m unittest discover -s scripts -p "*_test.py"
+
       # WSL integration tests need a distro with tmux and run only locally (TERMDOCK_WSL_TESTS=1).
       - name: Test
         run: npm test

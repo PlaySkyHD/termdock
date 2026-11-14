@@ -9,13 +9,14 @@ You improve the **environment** for future agent runs: skills, rules, lessons, c
 
 ## Steps
 
-1. **Collect evidence from this session.** Default to the current session, which is in your context. For another session, read its transcript under `~/.claude/projects/<repo-slug>/<session-id>.jsonl`. For questions about usage, quota or context size, run `py -I scripts/agent-usage.py ~/.claude/projects/<slug>/<session-id>` (path without `.jsonl`; `<slug>` is the session's working directory with `/` replaced by `-`, for T3 worktrees the worktree path, see `ls ~/.claude/projects`; per agent: model, turns, context, cache rebuilds, share of the total) instead of reading transcripts. Run it in every retro, not only on request: report the three largest cost drivers (transcript, model, average context, rework rounds) and treat any driver above about 15 % as a candidate. Note each moment where the agent:
+1. **Collect evidence from this session.** Default to the current session, which is in your context. For another session, read its transcript under `~/.claude/projects/<repo-slug>/<session-id>.jsonl`. For questions about usage, quota or context size, run `py -I scripts/agent-usage.py ~/.claude/projects/<slug>/<session-id>` (path without `.jsonl`; `<slug>` is the session's working directory with `/` replaced by `-`, for T3 worktrees the worktree path, see `ls ~/.claude/projects`; per agent: model, turns, context, cache rebuilds, share of the total) instead of reading transcripts. Run it in every retro, not only on request: report the three largest cost drivers (transcript, model, average context, rework rounds) and treat any driver above about 15 % as a candidate. Also run `py -I scripts/adhoc-code.py` with the same path in every retro: it lists inline code (`py -c`, `node -e`), long heredocs, script files written outside the repo and repeated long shell commands, each with its size in characters. Note each moment where the agent:
    - was corrected by the user or had to redo work,
    - searched long for a file, command, skill or fact,
    - followed a skill, rule or lesson that was wrong, outdated or contradicted the code,
    - needed a skill or rule that did not exist, or worked around a missing one,
    - made a mistake that a test, analyzer, formatter or CI job could have caught,
    - made an expensive or repeated tool call that a better tool or pointer would avoid,
+   - wrote or ran throwaway code (Python, Node, shell scripts, heredocs) for a task that will come back,
    - lacked information (logs, server state, credentials flow) and had to guess or ask.
 2. **Classify each candidate** with the categories below and pick the cheapest durable fix.
 3. **Drop weak candidates.** Keep only findings with a concrete moment from the session as evidence. Keep at most three, ordered by how much time or risk they cost. Before filing, confirm the suspected cause with a quick test: rerun the command, call the hook with sample JSON, or read the code location. If you cannot confirm it, drop the finding or mark it clearly as a hypothesis in the issue.
@@ -36,6 +37,7 @@ You improve the **environment** for future agent runs: skills, rules, lessons, c
 - **Lessons**: a pitfall that cost time and will recur goes into `docs/agent-lessons-learned.md` in the matching section.
 - **Steering hygiene**: `CLAUDE.md` and always-loaded rules stay short and hold pointers. Flag instructions that changed nothing, duplicate another file, or belong in a skill loaded on demand.
 - **Tool economy**: a call that returned far more than needed, or a sequence that one command or script could replace.
+- **Script candidates**: throwaway code from `scripts/adhoc-code.py` that solves a recurring task becomes a script under `scripts/` with a test (`scripts/*_test.py` or `*.test.mjs`), or a skill when it needs judgement. Point to it from the skill or lesson that is read at that moment. One-off probes stay throwaway. Code that edits repo files is no script candidate: the finding is a breach of "edit files with Read/Edit/Write" (lessons section 5).
 - **Information access**: a missing log, status or read-only view that would have answered the question directly.
 
 ## Issues

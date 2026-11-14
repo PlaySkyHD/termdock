@@ -153,6 +153,8 @@ export interface RestoreResult {
   sessions: ReconciledSession[];
   /** Backends that could not be reached; the Core reports `backend_unavailable` in the status bar (ADR 0005). */
   backendUnavailable: BackendKind[];
+  /** Backends the reconcile checked and reached; the autostart does not check them again (issue #61). */
+  backendAvailable: BackendKind[];
 }
 
 /** Stored states whose process may still be alive and must be checked on start. */
@@ -402,7 +404,13 @@ export class SessionRegistry {
       this.sessions.set(info.id, entry);
     }
     this.unavailableAtRestore = [...unavailable];
+    // Settled already: every check was awaited by the reconcile of its session.
+    const reachable: BackendKind[] = [];
+    for (const [backend, available] of availability) {
+      if ((await available) && !unavailable.has(backend.kind)) reachable.push(backend.kind);
+    }
     return {
+      backendAvailable: reachable,
       sessions: reconciled.map(({ entry, from }) => ({
         sessionId: entry.info.id,
         from,
@@ -1102,6 +1110,14 @@ export class SessionRegistry {
       // into the backend's event emitter when called from the PTY exit handler.
       this.onPersistError(error, snapshotInfo(entry.info));
     }
+  }
+
+  /**
+   * Adds a backend the Core found unreachable after `restore()` (autostart, issue #61) to `backendUnavailable`,
+   * so `core.status` reports it; each kind at most once.
+   */
+  reportBackendUnavailable(kind: BackendKind): void {
+    if (!this.unavailableAtRestore.includes(kind)) this.unavailableAtRestore.push(kind);
   }
 }
 

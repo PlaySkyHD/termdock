@@ -518,3 +518,76 @@ describe("DesktopBridge layout calls (#29)", () => {
     });
   });
 });
+
+describe("DesktopBridge quit answers (#60)", () => {
+  function withQuit() {
+    const { core, a, b } = setup();
+    const answers: Array<[number, string, unknown]> = [];
+    const shown: Array<[number, string]> = [];
+    const quit = {
+      answer: (windowId: number, requestId: string, answer: unknown) => {
+        if (requestId !== "q1") throw new IpcError("not_found", "no open quit question");
+        answers.push([windowId, requestId, answer]);
+      },
+      ack: (windowId: number, requestId: string) => {
+        if (requestId !== "q1") throw new IpcError("not_found", "no open quit question");
+        shown.push([windowId, requestId]);
+      },
+    };
+    const bridge = new DesktopBridge(core, undefined, quit);
+    bridge.addWindow(a);
+    return { core, bridge, a, b, answers, shown };
+  }
+
+  it("passes the confirmation that the dialog is shown on, and refuses a foreign id", async () => {
+    const { core, bridge, a, shown } = withQuit();
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "q1" })).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(shown).toEqual([[a.id, "q1"]]);
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "x" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "" })).toMatchObject({
+      ok: false,
+      error: { code: "bad_request" },
+    });
+    expect(core.requests).toEqual([]);
+  });
+
+  it("passes the answer of the calling window on, without asking the core", async () => {
+    const { core, bridge, a, answers } = withQuit();
+    const result = await bridge.call(a.id, {
+      method: "answerQuit",
+      requestId: "q1",
+      choice: "stopSessions",
+      remember: true,
+    });
+    expect(result).toEqual({ ok: true, value: null });
+    expect(answers).toEqual([[a.id, "q1", { choice: "stopSessions", remember: true }]]);
+    expect(core.requests).toEqual([]);
+  });
+
+  it("answers not_found for an id that was not asked", async () => {
+    const { bridge, a } = withQuit();
+    expect(
+      await bridge.call(a.id, { method: "answerQuit", requestId: "x", choice: "cancel", remember: false }),
+    ).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it.each([
+    ["an unknown choice", { method: "answerQuit", requestId: "q1", choice: "reboot", remember: false }],
+    ["a missing choice", { method: "answerQuit", requestId: "q1", remember: false }],
+    [
+      "a remember that is no boolean",
+      { method: "answerQuit", requestId: "q1", choice: "cancel", remember: 1 },
+    ],
+    ["an empty request id", { method: "answerQuit", requestId: "", choice: "cancel", remember: false }],
+  ])("refuses %s with bad_request", async (_name, call) => {
+    const { bridge, a, answers } = withQuit();
+    expect(await bridge.call(a.id, call)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(answers).toEqual([]);
+  });
+});

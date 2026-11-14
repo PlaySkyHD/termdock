@@ -12,6 +12,7 @@ import type {
   ViewId,
 } from "@termdock/protocol";
 import type { LayoutWindowPart } from "./layout-mapping.js";
+import type { QuitAnswer, QuitChoice } from "./quit-decision.js";
 
 /** `ipcRenderer.invoke` channel for every call of the bridge. */
 export const CALL_CHANNEL = "termdock:call";
@@ -31,7 +32,11 @@ export type BridgeCall =
   /** The layout of this window as the main process holds it (restore, #29). */
   | { method: "windowLayout" }
   /** The tabs and sidebar of this window after a change; the main process bundles and saves the layout. */
-  | { method: "reportLayout"; window: LayoutWindowPart };
+  | { method: "reportLayout"; window: LayoutWindowPart }
+  /** The answer of this window to the quit dialog (`quitRequested`, #60). */
+  | { method: "answerQuit"; requestId: string; choice: QuitChoice; remember: boolean }
+  /** This window now shows the quit dialog; without it the main process cancels the question after 5 s. */
+  | { method: "quitShown"; requestId: string };
 
 export type BridgeMethod = BridgeCall["method"];
 
@@ -56,6 +61,8 @@ export interface BridgeResults {
   claimWriter: null;
   windowLayout: LayoutWindow;
   reportLayout: null;
+  answerQuit: null;
+  quitShown: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -77,6 +84,8 @@ export type BridgeEvent =
   | { kind: "stateChanged"; sessionId: SessionId; state: SessionState; lastExitCode?: number }
   /** The core's `session.created`: a session came into the registry, from any client (ADR 0002, 0006). */
   | { kind: "sessionCreated"; session: SessionInfo }
+  /** The app is about to quit while sessions run: this window shows the quit dialog and answers (#60). */
+  | { kind: "quitRequested"; requestId: string; activeSessions: number }
   | { kind: "coreClosed" };
 
 /**
@@ -94,6 +103,8 @@ export interface TermdockApi {
   claimWriter(viewId: ViewId): Promise<void>;
   windowLayout(): Promise<LayoutWindow>;
   reportLayout(window: LayoutWindowPart): Promise<void>;
+  answerQuit(requestId: string, answer: QuitAnswer): Promise<void>;
+  quitShown(requestId: string): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

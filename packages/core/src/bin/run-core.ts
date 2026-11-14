@@ -1,7 +1,14 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
-import type { LaunchProfile, LayoutDocument, SessionInfo, Workspace } from "@termdock/protocol";
+import type {
+  LaunchProfile,
+  LayoutDocument,
+  SessionInfo,
+  Settings,
+  SettingsPatch,
+  Workspace,
+} from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -15,6 +22,7 @@ import type { HistorySettings } from "../storage/history-store.js";
 import type { Storage } from "../storage/database.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
+import type { SettingsRepository } from "../storage/settings-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 
@@ -102,6 +110,24 @@ class StorageLayoutRepository implements LayoutRepository {
   }
 }
 
+/** Same forwarding for the settings. */
+class StorageSettingsRepository implements SettingsRepository {
+  target: SettingsRepository | undefined;
+
+  get(): Settings {
+    return this.open().get();
+  }
+
+  set(patch: SettingsPatch): Settings {
+    return this.open().set(patch);
+  }
+
+  private open(): SettingsRepository {
+    if (!this.target) throw new Error("The database is not open yet");
+    return this.target;
+  }
+}
+
 /** Same forwarding for workspaces and projects. */
 class StorageWorkspaceRepository implements WorkspaceRepository {
   target: WorkspaceRepository | undefined;
@@ -155,8 +181,10 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
-  // TODO(#60): wird mit dem Settings-Repository (#60) verdrahtet; bis dahin gelten die Standardwerte.
-  const getSettings = (): HistorySettings => DEFAULT_SETTINGS;
+  const settings = new StorageSettingsRepository();
+  // History limit and logging default come from the stored settings, read at each use (spec history, settings);
+  // before the database is open the defaults apply.
+  const getSettings = (): HistorySettings => settings.target?.get() ?? DEFAULT_SETTINGS;
   const workspaces = new StorageWorkspaceRepository();
   const profiles = new StorageProfileRepository();
   const registry = new SessionRegistry({
@@ -178,6 +206,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     server = await CoreServer.start({
       registry,
       layouts,
+      settings,
       workspaces,
       profiles,
       ready,
@@ -246,6 +275,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     recordHistory(registry, history);
     repository.target = storage.sessions;
     layouts.target = storage.layouts;
+    settings.target = storage.settings;
     workspaces.target = storage.workspaces;
     profiles.target = storage.profiles;
     const restoring = registry.restore();

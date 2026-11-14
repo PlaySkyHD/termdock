@@ -405,6 +405,14 @@ input {
   background: #1177bb;
 }
 
+.button--danger {
+  background: #a1260d;
+}
+
+.button--danger:hover:not(:disabled) {
+  background: #c72e0f;
+}
+
 .button:disabled {
   opacity: 0.5;
   cursor: default;
@@ -700,6 +708,25 @@ input {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+
+/* --- Quit dialog (#60) ------------------------------------------------------------------------- */
+
+.dialog__text {
+  margin: 0 0 12px;
+  line-height: 1.4;
+}
+
+.dialog__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.dialog__actions--wrap {
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .shortcuts {

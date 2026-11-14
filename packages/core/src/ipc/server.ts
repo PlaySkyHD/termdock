@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import {
-  DEFAULT_SETTINGS,
   encodeFrame,
   FrameDecoder,
   MAX_PAYLOAD_BYTES,
@@ -29,6 +28,8 @@ import type { CreateSessionInput, SessionRegistry } from "../session/registry.js
 import type { LayoutRepository } from "../storage/layout-repository.js";
 import { InMemoryProfileRepository } from "../storage/profile-repository.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
+import { InMemorySettingsRepository } from "../storage/settings-repository.js";
+import type { SettingsRepository } from "../storage/settings-repository.js";
 import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 import { ProfileService } from "../workspace/profile-service.js";
@@ -60,6 +61,8 @@ export interface CoreServerOptions {
   registry: SessionRegistry;
   /** Stored layout behind `layout.get` and `layout.save`. */
   layouts: LayoutRepository;
+  /** Stored settings behind `settings.get` and `settings.set`; defaults to an in-memory repository. */
+  settings?: SettingsRepository;
   /** Stored workspaces and projects behind `workspace.*` and `project.*`; defaults to an in-memory repository. */
   workspaces?: WorkspaceRepository;
   /** Stored launch profiles behind `profile.*`; defaults to an in-memory repository. */
@@ -124,6 +127,7 @@ export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
   private readonly layouts: LayoutRepository;
+  private readonly settings: SettingsRepository;
   private readonly workspaces: WorkspaceService;
   private readonly profiles: ProfileService;
   private readonly maxBufferedBytes: number;
@@ -148,6 +152,7 @@ export class CoreServer {
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.layouts = options.layouts;
+    this.settings = options.settings ?? new InMemorySettingsRepository();
     this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
     this.profiles = new ProfileService(options.profiles ?? new InMemoryProfileRepository(), this.workspaces);
     this.ready = options.ready ?? Promise.resolve();
@@ -395,8 +400,7 @@ export class CoreServer {
         let profileLogging: boolean | undefined;
         let sessionWorkspaceId = workspaceId;
         if (profileId !== undefined) {
-          // settings: wird mit dem Settings-Repository (#60) verdrahtet
-          const fromProfile = this.profiles.launchFor(profileId, launch, DEFAULT_SETTINGS);
+          const fromProfile = this.profiles.launchFor(profileId, launch, this.settings.get());
           resolved = fromProfile.launch;
           profileLogging = fromProfile.loggingEnabled;
           // The workspace of the profile (existing: the profile list drops a deleted one) is the default.
@@ -521,11 +525,13 @@ export class CoreServer {
         throw notImplemented(request.method);
       case "session.delete":
         throw notImplemented(request.method);
-      // Settings: issue #64.
       case "settings.get":
-        throw notImplemented(request.method);
-      case "settings.set":
-        throw notImplemented(request.method);
+        return { result: { settings: this.settings.get() } };
+      case "settings.set": {
+        const settings = this.settings.set(request.params.settings);
+        // The event follows the answer; every lister gets it, the caller too.
+        return { result: { settings }, after: () => this.notifyListers("settings.changed", { settings }) };
+      }
       // History search: issue #62.
       case "history.search":
         throw notImplemented(request.method);

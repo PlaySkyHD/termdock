@@ -95,7 +95,7 @@ Der Core SHALL bei `session.create` mit `profileId` ohne `launch` den `LaunchSpe
 
 ### Requirement: Standardverzeichnis aus dem Profil
 
-Hat ein Profil `launch.cwd` `~` und kein ausdrückliches `launch` in der Anfrage, SHALL der Core `defaultCwd` mit dem Backend des Profils, dem Projekt und dem Workspace des Profils und den Einstellungen anwenden: Projektpfad, `defaultCwd` des Workspace, `defaultCwd` der Einstellungen, sonst `~`. Jedes andere `cwd` MUST unverändert bleiben. Bis zur Verdrahtung des Settings-Repositories (#60) gelten die Standard-Einstellungen.
+Hat ein Profil `launch.cwd` `~` und kein ausdrückliches `launch` in der Anfrage, SHALL der Core `defaultCwd` mit dem Backend des Profils, dem Projekt und dem Workspace des Profils und den Einstellungen anwenden: Projektpfad, `defaultCwd` des Workspace, `defaultCwd` der Einstellungen, sonst `~`. Jedes andere `cwd` MUST unverändert bleiben. Die Einstellungen sind die gespeicherten (Capability `settings`).
 
 #### Scenario: Rangfolge
 

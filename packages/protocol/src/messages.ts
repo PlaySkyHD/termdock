@@ -4,14 +4,21 @@ import type {
   BackendKind,
   ClientId,
   ErrorCode,
+  HistoryHit,
+  LaunchProfile,
   LaunchProfileId,
   LayoutDocument,
   LaunchSpec,
+  Project,
+  ProjectId,
   SessionId,
   SessionInfo,
   SessionState,
+  Settings,
+  SettingsPatch,
   TerminalSize,
   ViewId,
+  Workspace,
   WorkspaceId,
 } from "./model.js";
 
@@ -68,7 +75,8 @@ export interface HelloResult {
 
 export interface SessionCreateParams {
   name: string;
-  launch: LaunchSpec;
+  /** Required unless `profileId` is set; then the core takes the profile's launch spec (since 1.3). */
+  launch?: LaunchSpec;
   workspaceId?: WorkspaceId;
   profileId?: LaunchProfileId;
   size?: TerminalSize;
@@ -117,6 +125,84 @@ export interface LayoutSaveParams {
   baseRevision?: number;
 }
 
+// --- Phase 3 (since 1.3) ---------------------------------------------------------------------
+// In `*.update` a missing field stays unchanged and `null` removes an optional value; at least one change is
+// required. New requests reject unknown fields.
+
+export interface WorkspaceCreateParams {
+  name: string;
+  defaultCwd?: string;
+}
+
+export interface WorkspaceUpdateParams {
+  workspaceId: WorkspaceId;
+  name?: string;
+  defaultCwd?: string | null;
+}
+
+export interface ProjectCreateParams {
+  workspaceId: WorkspaceId;
+  name: string;
+  path: string;
+  backend: BackendKind;
+  /** Only for backend "wsl". */
+  distro?: string;
+}
+
+export interface ProjectUpdateParams {
+  projectId: ProjectId;
+  name?: string;
+  path?: string;
+  backend?: BackendKind;
+  distro?: string | null;
+}
+
+export interface ProfileCreateParams {
+  name: string;
+  workspaceId?: WorkspaceId;
+  projectId?: ProjectId;
+  launch: LaunchSpec;
+  /** Default false. */
+  autostart?: boolean;
+  /** Default: setting `historyEnabledByDefault`. */
+  loggingEnabled?: boolean;
+}
+
+export interface ProfileUpdateParams {
+  profileId: LaunchProfileId;
+  name?: string;
+  workspaceId?: WorkspaceId | null;
+  projectId?: ProjectId | null;
+  launch?: LaunchSpec;
+  autostart?: boolean;
+  loggingEnabled?: boolean;
+}
+
+export interface SessionUpdateParams {
+  sessionId: SessionId;
+  name?: string;
+  /** `null` makes the session ungrouped. Moving never touches the process. */
+  workspaceId?: WorkspaceId | null;
+  loggingEnabled?: boolean;
+}
+
+export interface HistorySearchParams {
+  /** 1 to MAX_HISTORY_QUERY_LENGTH characters, plain text, case-insensitive. */
+  query: string;
+  /** 1 to MAX_HISTORY_SESSION_IDS ids; undefined searches all sessions with stored history. */
+  sessionIds?: SessionId[];
+  /** 1 to MAX_HISTORY_HITS; default MAX_HISTORY_HITS. */
+  limit?: number;
+}
+
+export interface HistorySearchResult {
+  hits: HistoryHit[];
+  /** true when the search stopped at the hit or time limit; `hits` is then partial. */
+  truncated: boolean;
+}
+
+type Empty = Record<string, never>;
+
 export interface MethodMap {
   hello: { params: HelloParams; result: HelloResult };
   "session.create": { params: SessionCreateParams; result: { session: SessionInfo } };
@@ -133,9 +219,49 @@ export interface MethodMap {
   "core.shutdown": { params: CoreShutdownParams; result: Record<string, never> };
   "layout.get": { params: Record<string, never>; result: LayoutGetResult };
   "layout.save": { params: LayoutSaveParams; result: { revision: number } };
+  "workspace.list": { params: Empty; result: { workspaces: Workspace[] } };
+  "workspace.create": { params: WorkspaceCreateParams; result: { workspace: Workspace } };
+  "workspace.update": { params: WorkspaceUpdateParams; result: { workspace: Workspace } };
+  "workspace.delete": { params: { workspaceId: WorkspaceId }; result: Empty };
+  "project.create": { params: ProjectCreateParams; result: { project: Project } };
+  "project.update": { params: ProjectUpdateParams; result: { project: Project } };
+  "project.delete": { params: { projectId: ProjectId }; result: Empty };
+  "profile.list": { params: Empty; result: { profiles: LaunchProfile[] } };
+  "profile.create": { params: ProfileCreateParams; result: { profile: LaunchProfile } };
+  "profile.update": { params: ProfileUpdateParams; result: { profile: LaunchProfile } };
+  "profile.delete": { params: { profileId: LaunchProfileId }; result: Empty };
+  "session.update": { params: SessionUpdateParams; result: { session: SessionInfo } };
+  /** Ends the process; metadata and history stay. The new state comes as `session.stateChanged`. */
+  "session.archive": { params: { sessionId: SessionId }; result: Empty };
+  /** Removes the session and its history; the core announces it with `session.removed`. */
+  "session.delete": { params: { sessionId: SessionId }; result: Empty };
+  "settings.get": { params: Empty; result: { settings: Settings } };
+  "settings.set": { params: { settings: SettingsPatch }; result: { settings: Settings } };
+  "history.search": { params: HistorySearchParams; result: HistorySearchResult };
 }
 
 export type Method = keyof MethodMap;
+
+/** Methods added in protocol 1.3 (phase 3). */
+export const PHASE_3_METHODS = [
+  "workspace.list",
+  "workspace.create",
+  "workspace.update",
+  "workspace.delete",
+  "project.create",
+  "project.update",
+  "project.delete",
+  "profile.list",
+  "profile.create",
+  "profile.update",
+  "profile.delete",
+  "session.update",
+  "session.archive",
+  "session.delete",
+  "settings.get",
+  "settings.set",
+  "history.search",
+] as const satisfies readonly Method[];
 
 export const METHODS = [
   "hello",
@@ -151,6 +277,7 @@ export const METHODS = [
   "core.shutdown",
   "layout.get",
   "layout.save",
+  ...PHASE_3_METHODS,
 ] as const satisfies readonly Method[];
 
 // --- Events ---------------------------------------------------------------------------------
@@ -172,6 +299,16 @@ export interface EventMap {
    * start are not announced; clients get them with `session.list`.
    */
   "session.created": { session: SessionInfo };
+  // Since 1.3, like `session.created`: to every client that used `session.list`, also the one that asked.
+  /** Name, workspace or logging of a session changed (`session.update`, or a deleted workspace). */
+  "session.updated": { session: SessionInfo };
+  /** The session and its history are gone (`session.delete`). */
+  "session.removed": { sessionId: SessionId };
+  /** The complete list of workspaces with their projects after any change of one of them. */
+  "workspace.changed": { workspaces: Workspace[] };
+  /** The complete list of launch profiles after any change. */
+  "profile.changed": { profiles: LaunchProfile[] };
+  "settings.changed": { settings: Settings };
 }
 
 export type EventName = keyof EventMap;
@@ -182,14 +319,50 @@ export const EVENT_NAMES = [
   "session.resized",
   "view.writerChanged",
   "session.created",
+  "session.updated",
+  "session.removed",
+  "workspace.changed",
+  "profile.changed",
+  "settings.changed",
 ] as const satisfies readonly EventName[];
+
+/** Events that go to every connection that used `session.list` (spec core-ipc). */
+export type ListerEventName =
+  | "session.created"
+  | "session.updated"
+  | "session.removed"
+  | "workspace.changed"
+  | "profile.changed"
+  | "settings.changed";
 
 // --- Payload rules --------------------------------------------------------------------------
 
 /** none: payload must be empty. nonEmpty: bytes required. any: bytes required but may be empty. */
 export type PayloadRule = "none" | "nonEmpty" | "any";
 
+/** No phase-3 message carries bytes. */
+const PHASE_3_PAYLOAD: Record<(typeof PHASE_3_METHODS)[number], PayloadRule> = {
+  "workspace.list": "none",
+  "workspace.create": "none",
+  "workspace.update": "none",
+  "workspace.delete": "none",
+  "project.create": "none",
+  "project.update": "none",
+  "project.delete": "none",
+  "profile.list": "none",
+  "profile.create": "none",
+  "profile.update": "none",
+  "profile.delete": "none",
+  "session.update": "none",
+  "session.archive": "none",
+  "session.delete": "none",
+  "settings.get": "none",
+  "settings.set": "none",
+  "history.search": "none",
+};
+
 export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
+  ...PHASE_3_PAYLOAD,
   hello: "none",
   "session.create": "none",
   "session.list": "none",
@@ -206,6 +379,7 @@ export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
 };
 
 export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
+  ...PHASE_3_PAYLOAD,
   hello: "none",
   "session.create": "none",
   "session.list": "none",
@@ -227,6 +401,11 @@ export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {
   "session.resized": "none",
   "view.writerChanged": "none",
   "session.created": "none",
+  "session.updated": "none",
+  "session.removed": "none",
+  "workspace.changed": "none",
+  "profile.changed": "none",
+  "settings.changed": "none",
 };
 
 // --- Parsed forms ---------------------------------------------------------------------------

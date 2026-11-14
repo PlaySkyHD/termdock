@@ -3,6 +3,7 @@
 
 import type { Frame } from "./frame.js";
 import { EVENT_NAMES, EVENT_PAYLOAD, METHODS, REQUEST_PAYLOAD, RESPONSE_PAYLOAD } from "./messages.js";
+import type { PHASE_3_METHODS } from "./messages.js";
 import type {
   ErrorBody,
   EventName,
@@ -22,13 +23,35 @@ import {
   MAX_LAYOUT_BYTES,
   MAX_LAYOUT_ID_LENGTH,
   MAX_LAYOUT_WINDOWS,
+  MAX_HISTORY_HITS,
+  MAX_HISTORY_LIMIT_BYTES,
+  MAX_HISTORY_LINE_LENGTH,
+  MAX_HISTORY_QUERY_LENGTH,
+  MAX_HISTORY_SESSION_IDS,
+  MAX_NAME_LENGTH,
   MAX_PANES_PER_TAB,
+  MAX_PATH_LENGTH,
+  MAX_PROFILE_BYTES,
+  MAX_PROFILES,
+  MAX_PROJECTS_PER_WORKSPACE,
   MAX_TAB_TITLE_LENGTH,
   MAX_TABS_PER_WINDOW,
+  MAX_WORKSPACE_BYTES,
+  MAX_WORKSPACES,
+  MIN_HISTORY_LIMIT_BYTES,
   PROTOCOL_VERSION,
   SESSION_STATES,
 } from "./model.js";
-import type { BackendKind, LayoutDocument } from "./model.js";
+import type {
+  BackendKind,
+  LaunchProfile,
+  LayoutDocument,
+  Project,
+  QuitAction,
+  Settings,
+  WindowsShell,
+  Workspace,
+} from "./model.js";
 
 export const MAX_TERMINAL_DIMENSION = 10_000;
 const MAX_CLIENT_KIND_LENGTH = 64;
@@ -324,6 +347,344 @@ const checkEmpty: Check = (value, path) => {
   record(value, path);
 };
 
+// --- Phase 3 (since 1.3) ---------------------------------------------------------------------
+
+/** Names of workspaces, projects, profiles and sessions, and WSL distribution names: 1 to 128 characters, not only spaces. */
+const isName: Check = (value, path) => {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_NAME_LENGTH) {
+    fail(`${path} must be a string of 1 to ${MAX_NAME_LENGTH} characters, not only spaces`);
+  }
+};
+
+const isPath: Check = (value, path) => {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PATH_LENGTH) {
+    fail(`${path} must be a string of 1 to ${MAX_PATH_LENGTH} characters`);
+  }
+  if (value.includes("\u0000")) fail(`${path} must not contain NUL`);
+};
+
+const isWindowsShell = oneOf(["pwsh", "powershell", "cmd"] satisfies WindowsShell[]);
+const isQuitAction = oneOf(["keepSessions", "stopSessions"] satisfies QuitAction[]);
+
+/** `null` removes an optional value in an update; anything else must pass `check`. */
+function nullable(check: Check): Check {
+  return (value, path) => {
+    if (value !== null) check(value, path);
+  };
+}
+
+function required(obj: Rec, key: string, path: string, check: Check): void {
+  check(present(obj, key, path), `${path}.${key}`);
+}
+
+/** Params of a new request: an object without unknown fields. */
+function params(value: unknown, path: string, allowed: readonly string[]): Rec {
+  const obj = record(value, path);
+  onlyKeys(obj, allowed, path);
+  return obj;
+}
+
+/** An update needs at least one field that changes something. */
+function someChange(obj: Rec, keys: readonly string[], path: string): void {
+  if (!keys.some((key) => obj[key] !== undefined))
+    fail(`${path} must change at least one of ${keys.join(", ")}`);
+}
+
+function listOf(check: Check, max: number): Check {
+  return (value, path) => {
+    if (!Array.isArray(value) || value.length > max)
+      fail(`${path} must be an array of at most ${max} entries`);
+    value.forEach((entry, index) => check(entry, `${path}[${index}]`));
+  };
+}
+
+function maxJsonBytes(value: unknown, max: number, path: string): void {
+  const bytes = new TextEncoder().encode(JSON.stringify(value)).length;
+  if (bytes > max) fail(`${path} is ${bytes} bytes, at most ${max} are allowed`);
+}
+
+/** `distro` belongs to backend "wsl", as in `LaunchSpec`. */
+function distroOnlyForWsl(obj: Rec, path: string): void {
+  if (obj["backend"] === "windows" && typeof obj["distro"] === "string") {
+    fail(`${path}.distro is only allowed for backend "wsl"`);
+  }
+}
+
+const checkProject: Check = (value, path) => {
+  const obj = record(value, path);
+  string(obj, "id", path);
+  string(obj, "workspaceId", path);
+  required(obj, "name", path, isName);
+  required(obj, "path", path, isPath);
+  required(obj, "backend", path, isBackendKind);
+  distroOnlyForWsl(obj, path);
+  optional(obj, "distro", path, isName);
+};
+
+const checkWorkspace: Check = (value, path) => {
+  const obj = record(value, path);
+  const id = string(obj, "id", path);
+  required(obj, "name", path, isName);
+  required(obj, "projects", path, listOf(checkProject, MAX_PROJECTS_PER_WORKSPACE));
+  const seen = new Set<unknown>();
+  (obj["projects"] as Rec[]).forEach((project, index) => {
+    const projectPath = `${path}.projects[${index}]`;
+    if (project["workspaceId"] !== id) fail(`${projectPath}.workspaceId must be the id of its workspace`);
+    if (seen.has(project["id"]))
+      fail(`${projectPath}.id "${quote(String(project["id"]))}" is used more than once`);
+    seen.add(project["id"]);
+  });
+  optional(obj, "defaultCwd", path, isPath);
+  maxJsonBytes(value, MAX_WORKSPACE_BYTES, path);
+};
+
+/** A profile's launch spec: like any `LaunchSpec`, plus the path and distro limits of phase 3. */
+const checkProfileLaunch: Check = (value, path) => {
+  checkLaunch(value, path);
+  const obj = value as Rec;
+  required(obj, "cwd", path, isPath);
+  optional(obj, "distro", path, isName);
+};
+
+const checkProfile: Check = (value, path) => {
+  const obj = record(value, path);
+  string(obj, "id", path);
+  required(obj, "name", path, isName);
+  optional(obj, "workspaceId", path, isId);
+  optional(obj, "projectId", path, isId);
+  required(obj, "launch", path, checkProfileLaunch);
+  required(obj, "autostart", path, isBoolean);
+  required(obj, "loggingEnabled", path, isBoolean);
+  maxJsonBytes(value, MAX_PROFILE_BYTES, path);
+};
+
+const isHistoryLimit: Check = (value, path) => {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < MIN_HISTORY_LIMIT_BYTES ||
+    value > MAX_HISTORY_LIMIT_BYTES
+  ) {
+    fail(`${path} must be an integer from ${MIN_HISTORY_LIMIT_BYTES} to ${MAX_HISTORY_LIMIT_BYTES}`);
+  }
+};
+
+const SETTINGS_KEYS = [
+  "defaultDistro",
+  "defaultShell",
+  "defaultCwd",
+  "historyLimitBytes",
+  "historyEnabledByDefault",
+  "confirmQuitWhileRunning",
+  "quitAction",
+] as const satisfies readonly (keyof Settings)[];
+
+const checkSettings: Check = (value, path) => {
+  const obj = record(value, path);
+  optional(obj, "defaultDistro", path, isName);
+  optional(obj, "defaultShell", path, isWindowsShell);
+  optional(obj, "defaultCwd", path, isPath);
+  required(obj, "historyLimitBytes", path, isHistoryLimit);
+  required(obj, "historyEnabledByDefault", path, isBoolean);
+  required(obj, "confirmQuitWhileRunning", path, isBoolean);
+  optional(obj, "quitAction", path, isQuitAction);
+};
+
+const checkSettingsPatch: Check = (value, path) => {
+  const obj = params(value, path, SETTINGS_KEYS);
+  someChange(obj, SETTINGS_KEYS, path);
+  optional(obj, "defaultDistro", path, nullable(isName));
+  optional(obj, "defaultShell", path, nullable(isWindowsShell));
+  optional(obj, "defaultCwd", path, nullable(isPath));
+  optional(obj, "historyLimitBytes", path, isHistoryLimit);
+  optional(obj, "historyEnabledByDefault", path, isBoolean);
+  optional(obj, "confirmQuitWhileRunning", path, isBoolean);
+  optional(obj, "quitAction", path, nullable(isQuitAction));
+};
+
+const checkHit: Check = (value, path) => {
+  const obj = record(value, path);
+  string(obj, "sessionId", path);
+  required(obj, "timestamp", path, isNonNegativeInteger);
+  required(obj, "line", path, (line, linePath) => {
+    if (typeof line !== "string" || line.length > MAX_HISTORY_LINE_LENGTH) {
+      fail(`${linePath} must be a string of at most ${MAX_HISTORY_LINE_LENGTH} characters`);
+    }
+  });
+  required(obj, "offset", path, isNonNegativeInteger);
+  if ((obj["offset"] as number) > (obj["line"] as string).length) fail(`${path}.offset must lie within line`);
+};
+
+function inRange(min: number, max: number): Check {
+  return (value, path) => {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      fail(`${path} must be an integer from ${min} to ${max}`);
+    }
+  };
+}
+
+const checkHistorySearch: Check = (value, path) => {
+  const obj = params(value, path, ["query", "sessionIds", "limit"]);
+  required(obj, "query", path, (query, queryPath) => {
+    if (typeof query !== "string" || query.length === 0 || query.length > MAX_HISTORY_QUERY_LENGTH) {
+      fail(`${queryPath} must be a string of 1 to ${MAX_HISTORY_QUERY_LENGTH} characters`);
+    }
+  });
+  optional(obj, "sessionIds", path, (ids, idsPath) => {
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_HISTORY_SESSION_IDS) {
+      fail(`${idsPath} must be an array of 1 to ${MAX_HISTORY_SESSION_IDS} ids`);
+    }
+    ids.forEach((id, index) => isId(id, `${idsPath}[${index}]`));
+  });
+  optional(obj, "limit", path, inRange(1, MAX_HISTORY_HITS));
+};
+
+/** Params with only `<key>Id`, for list-free deletes and archive. */
+function idOnly(key: string): Check {
+  return (value, path) => string(params(value, path, [key]), key, path);
+}
+
+const checkEmptyParams: Check = (value, path) => {
+  params(value, path, []);
+};
+
+const PHASE_3_PARAMS_CHECK: Record<(typeof PHASE_3_METHODS)[number], Check> = {
+  "workspace.list": checkEmptyParams,
+  "workspace.create": (value, path) => {
+    const obj = params(value, path, ["name", "defaultCwd"]);
+    required(obj, "name", path, isName);
+    optional(obj, "defaultCwd", path, isPath);
+  },
+  "workspace.update": (value, path) => {
+    const obj = params(value, path, ["workspaceId", "name", "defaultCwd"]);
+    string(obj, "workspaceId", path);
+    someChange(obj, ["name", "defaultCwd"], path);
+    optional(obj, "name", path, isName);
+    optional(obj, "defaultCwd", path, nullable(isPath));
+  },
+  "workspace.delete": idOnly("workspaceId"),
+  "project.create": (value, path) => {
+    const obj = params(value, path, ["workspaceId", "name", "path", "backend", "distro"]);
+    string(obj, "workspaceId", path);
+    required(obj, "name", path, isName);
+    required(obj, "path", path, isPath);
+    required(obj, "backend", path, isBackendKind);
+    distroOnlyForWsl(obj, path);
+    optional(obj, "distro", path, isName);
+  },
+  "project.update": (value, path) => {
+    const obj = params(value, path, ["projectId", "name", "path", "backend", "distro"]);
+    string(obj, "projectId", path);
+    someChange(obj, ["name", "path", "backend", "distro"], path);
+    optional(obj, "name", path, isName);
+    optional(obj, "path", path, isPath);
+    optional(obj, "backend", path, isBackendKind);
+    distroOnlyForWsl(obj, path);
+    // The guard does not know the stored distro: switching to "windows" must remove it explicitly.
+    if (obj["backend"] === "windows" && obj["distro"] !== null) {
+      fail(`${path}.distro must be null when backend changes to "windows"`);
+    }
+    optional(obj, "distro", path, nullable(isName));
+  },
+  "project.delete": idOnly("projectId"),
+  "profile.list": checkEmptyParams,
+  "profile.create": (value, path) => {
+    const obj = params(value, path, [
+      "name",
+      "workspaceId",
+      "projectId",
+      "launch",
+      "autostart",
+      "loggingEnabled",
+    ]);
+    required(obj, "name", path, isName);
+    optional(obj, "workspaceId", path, isId);
+    optional(obj, "projectId", path, isId);
+    required(obj, "launch", path, checkProfileLaunch);
+    optional(obj, "autostart", path, isBoolean);
+    optional(obj, "loggingEnabled", path, isBoolean);
+    maxJsonBytes(value, MAX_PROFILE_BYTES, path);
+  },
+  "profile.update": (value, path) => {
+    const changes = ["name", "workspaceId", "projectId", "launch", "autostart", "loggingEnabled"];
+    const obj = params(value, path, ["profileId", ...changes]);
+    string(obj, "profileId", path);
+    someChange(obj, changes, path);
+    optional(obj, "name", path, isName);
+    optional(obj, "workspaceId", path, nullable(isId));
+    optional(obj, "projectId", path, nullable(isId));
+    optional(obj, "launch", path, checkProfileLaunch);
+    optional(obj, "autostart", path, isBoolean);
+    optional(obj, "loggingEnabled", path, isBoolean);
+    maxJsonBytes(value, MAX_PROFILE_BYTES, path);
+  },
+  "profile.delete": idOnly("profileId"),
+  "session.update": (value, path) => {
+    const obj = params(value, path, ["sessionId", "name", "workspaceId", "loggingEnabled"]);
+    string(obj, "sessionId", path);
+    someChange(obj, ["name", "workspaceId", "loggingEnabled"], path);
+    optional(obj, "name", path, isName);
+    optional(obj, "workspaceId", path, nullable(isId));
+    optional(obj, "loggingEnabled", path, isBoolean);
+  },
+  "session.archive": idOnly("sessionId"),
+  "session.delete": idOnly("sessionId"),
+  "settings.get": checkEmptyParams,
+  "settings.set": (value, path) =>
+    required(params(value, path, ["settings"]), "settings", path, checkSettingsPatch),
+  "history.search": checkHistorySearch,
+};
+
+/**
+ * Checks a finished object the way clients will parse it. Request guards only see a patch: the core must check
+ * the merged object before storing it (8 KiB with id and defaults, `distro` only for "wsl"), otherwise one bad
+ * entry makes every client reject the whole list. Never throws on bad input.
+ */
+function validator<T>(check: Check, path: string): (value: unknown) => ParseResult<T> {
+  return (value) => {
+    try {
+      check(value, path);
+      return { ok: true, value: value as T };
+    } catch (error) {
+      return badRequest(error);
+    }
+  };
+}
+
+export const validateProject = validator<Project>(checkProject, "project");
+export const validateWorkspace = validator<Workspace>(checkWorkspace, "workspace");
+export const validateLaunchProfile = validator<LaunchProfile>(checkProfile, "profile");
+export const validateSettings = validator<Settings>(checkSettings, "settings");
+
+/** `{ <key>: <object> }` results and events. */
+function wrapped(key: string, check: Check): Check {
+  return (value, path) => required(record(value, path), key, path, check);
+}
+
+const PHASE_3_RESULT_CHECK: Record<(typeof PHASE_3_METHODS)[number], Check> = {
+  "workspace.list": wrapped("workspaces", listOf(checkWorkspace, MAX_WORKSPACES)),
+  "workspace.create": wrapped("workspace", checkWorkspace),
+  "workspace.update": wrapped("workspace", checkWorkspace),
+  "workspace.delete": checkEmpty,
+  "project.create": wrapped("project", checkProject),
+  "project.update": wrapped("project", checkProject),
+  "project.delete": checkEmpty,
+  "profile.list": wrapped("profiles", listOf(checkProfile, MAX_PROFILES)),
+  "profile.create": wrapped("profile", checkProfile),
+  "profile.update": wrapped("profile", checkProfile),
+  "profile.delete": checkEmpty,
+  "session.update": wrapped("session", checkSessionInfo),
+  "session.archive": checkEmpty,
+  "session.delete": checkEmpty,
+  "settings.get": wrapped("settings", checkSettings),
+  "settings.set": wrapped("settings", checkSettings),
+  "history.search": (value, path) => {
+    const obj = record(value, path);
+    required(obj, "hits", path, listOf(checkHit, MAX_HISTORY_HITS));
+    required(obj, "truncated", path, isBoolean);
+  },
+};
+
 function checkVersion(obj: Rec, path: string): void {
   const version = string(obj, "protocolVersion", path);
   if (!VERSION_FORMAT.test(version))
@@ -341,11 +702,15 @@ const checkHelloParams: Check = (value, path) => {
 };
 
 const PARAMS_CHECK: Record<Method, Check> = {
+  ...PHASE_3_PARAMS_CHECK,
   hello: checkHelloParams,
   "session.create": (value, path) => {
     const obj = record(value, path);
     string(obj, "name", path);
-    checkLaunch(present(obj, "launch", path), `${path}.launch`);
+    // Since 1.3 a profile may supply the launch spec.
+    if (obj["launch"] !== undefined || obj["profileId"] === undefined) {
+      checkLaunch(present(obj, "launch", path), `${path}.launch`);
+    }
     optional(obj, "workspaceId", path, isId);
     optional(obj, "profileId", path, isId);
     optional(obj, "size", path, checkSize);
@@ -377,6 +742,7 @@ const PARAMS_CHECK: Record<Method, Check> = {
 };
 
 const RESULT_CHECK: Record<Method, Check> = {
+  ...PHASE_3_RESULT_CHECK,
   hello: (value, path) => checkVersion(record(value, path), path),
   "session.create": (value, path) =>
     checkSessionInfo(present(record(value, path), "session", path), `${path}.session`),
@@ -436,6 +802,11 @@ const EVENT_CHECK: Record<EventName, Check> = {
   },
   "session.created": (value, path) =>
     checkSessionInfo(present(record(value, path), "session", path), `${path}.session`),
+  "session.updated": wrapped("session", checkSessionInfo),
+  "session.removed": (value, path) => string(record(value, path), "sessionId", path),
+  "workspace.changed": wrapped("workspaces", listOf(checkWorkspace, MAX_WORKSPACES)),
+  "profile.changed": wrapped("profiles", listOf(checkProfile, MAX_PROFILES)),
+  "settings.changed": wrapped("settings", checkSettings),
 };
 
 function checkPayload(rule: PayloadRule, payload: Uint8Array, what: string): void {

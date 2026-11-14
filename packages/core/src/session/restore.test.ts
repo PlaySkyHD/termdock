@@ -221,6 +221,8 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
     expect(result).toEqual({
       sessions: [{ sessionId: "live", from: "Running", to: "Detached" }],
       backendUnavailable: [],
+      // Checked and reached: the autostart does not ask it again (issue #61).
+      backendAvailable: ["wsl"],
     });
     expect(backend.starts).toEqual([]);
     expect(backend.attaches).toEqual([{ id: "live", spec: wsl, size: { cols: 100, rows: 30 } }]);
@@ -280,6 +282,7 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
     expect(result).toEqual({
       sessions: [{ sessionId: "win", from: "Running", to: "Interrupted" }],
       backendUnavailable: [],
+      backendAvailable: [],
     });
     expect(backend.failNextExists).toBe(probe);
     expect(backend.attaches).toEqual([]);
@@ -356,7 +359,7 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
 
     const result = await registry.restore();
 
-    expect(result).toEqual({ sessions: [], backendUnavailable: [] });
+    expect(result).toEqual({ sessions: [], backendUnavailable: [], backendAvailable: [] });
     expect(registry.list()).toEqual(repository.list());
     expect(registry.list()).toEqual(expect.arrayContaining(sessions));
     expect(backend.failNextExists).toBe(probe);

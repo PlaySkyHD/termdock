@@ -9,10 +9,12 @@ import type {
   Project,
   ProfileCreateParams,
   ProfileUpdateParams,
+  SessionCreateParams,
   Settings,
   Workspace,
 } from "@termdock/protocol";
 import { CoreError } from "../session/errors.js";
+import type { CreateSessionInput } from "../session/registry.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
 import { defaultCwd } from "./default-cwd.js";
 import type { WorkspaceService } from "./service.js";
@@ -22,6 +24,12 @@ export const PROFILE_DEFAULT_CWD = "~";
 
 /** Names of `launch.env` variables that obviously hold a secret; a profile does not store them in plain text. */
 const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)$/i;
+
+/** Fields of `session.create` that `ProfileService.sessionInput` combines with the profile. */
+export type ProfileSessionRequest = Pick<
+  SessionCreateParams,
+  "name" | "launch" | "workspaceId" | "size" | "loggingEnabled"
+>;
 
 /** What a new session takes from its profile. */
 export interface ProfileLaunch {
@@ -112,6 +120,30 @@ export class ProfileService {
     const result: ProfileLaunch = { launch, loggingEnabled: profile.loggingEnabled };
     if (profile.workspaceId !== undefined) result.workspaceId = profile.workspaceId;
     return result;
+  }
+
+  /**
+   * Input of `SessionRegistry.create` for a session from the profile, shared by `session.create` with `profileId`
+   * and the autostart: `launchFor`, the `profileId`, the workspace of the profile unless the request names one,
+   * and the logging switch of the request before that of the profile.
+   */
+  sessionInput(
+    profileId: string,
+    request: ProfileSessionRequest,
+    settings: Pick<Settings, "defaultCwd">,
+  ): CreateSessionInput {
+    const fromProfile = this.launchFor(profileId, request.launch, settings);
+    const input: CreateSessionInput = {
+      name: request.name,
+      launch: fromProfile.launch,
+      profileId,
+      loggingEnabled: request.loggingEnabled ?? fromProfile.loggingEnabled,
+    };
+    if (request.size !== undefined) input.size = request.size;
+    // The workspace of the profile (existing: the profile list drops a deleted one) is the default.
+    const workspaceId = request.workspaceId ?? fromProfile.workspaceId;
+    if (workspaceId !== undefined) input.workspaceId = workspaceId;
+    return input;
   }
 
   /**

@@ -42,7 +42,7 @@ Every prompt contains:
 - the checks: `npm run typecheck`, `npm run lint`, `npm test -w <package>`; WSL integration tests with `TERMDOCK_WSL_TESTS=1` (see lessons section 2); never return unfiltered test output,
 - for a bug fix: show the new test fails without the fix and put the red line in the report,
 - for a visible UI change (`apps/desktop`, `poc/` UI): PNG screenshots of every changed state via the app's screenshot mode (`--screenshot <dir>`, `webContents.capturePage()`), before and after for changed behavior, saved outside the repo (`P:/Temp/td-shots/<branch>/`); list the paths in the report, do not commit them,
-- before the push: commit, then run the skill `code-review` with the worktree path in the arguments (`low — local checkout: P:/GitHub/termdock-wt/<branch>, diff origin/main...HEAD`) and fix findings (amend) or state why not. The forked review runs in the session directory, which can be a different clone; a result without findings counts only if the review names files from the diff,
+- before the push: commit, then run the skill `code-review` with the worktree path in the arguments (`medium --max-findings 5 — local checkout: P:/GitHub/termdock-wt/<branch>, diff origin/main...HEAD`) and fix findings (amend) or state why not. The forked review runs in the session directory, which can be a different clone; a result without findings counts only if the review names files from the diff,
 - the commit: Conventional Commits, body ends with `Fixes #<n>` and the Co-Authored-By line,
 - `git push -u origin <branch>`,
 - the report: branch, SHA, what changed, check output, and **Umwege** (anything done differently than expected, missing or wrong skills and rules, failed commands; "keine" if none).

@@ -146,7 +146,8 @@ input {
   overflow: hidden;
 }
 
-/* A reader: the terminal keeps the writer's size; the frame lies on its screen and dims all around it. */
+/* A reader: the terminal keeps the writer's grid, zoomed out to fit (#66); the frame lies on its screen and dims
+   all around it. */
 .reader-frame {
   position: absolute;
   z-index: 1;
@@ -154,17 +155,45 @@ input {
   pointer-events: none;
 }
 
-.reader-hint {
+/* Bottom right of a reading pane: the writer's size and the explicit takeover of the input. */
+.reader-bar {
   position: absolute;
   right: 8px;
   bottom: 8px;
   z-index: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.reader-hint {
   padding: 2px 8px;
   border-radius: 3px;
   background: var(--td-status-reader);
   color: var(--td-status-foreground);
   font-size: 12px;
   pointer-events: none;
+}
+
+.reader-bar__button {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 3px;
+  background: var(--td-status-reader);
+  color: var(--td-status-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reader-bar__button:hover {
+  filter: brightness(1.15);
+}
+
+.reader-bar__button:focus-visible {
+  outline: 1px solid #ffffff;
+  outline-offset: 1px;
 }
 
 /* --- Sidebar --------------------------------------------------------------------------------- */

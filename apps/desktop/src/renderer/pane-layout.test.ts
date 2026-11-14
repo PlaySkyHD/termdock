@@ -1,25 +1,30 @@
 import type { PaneNode } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { isClick, layoutPanes } from "./pane-layout.js";
+import { layoutPanes, takesInput } from "./pane-layout.js";
 
-describe("isClick", () => {
+describe("takesInput (#66: the input moves only on request)", () => {
   const down = { x: 100, y: 50 };
 
-  it("is a click when the pointer stays put and nothing is selected", () => {
-    expect(isClick(down, { x: 102, y: 49, detail: 1, selecting: false })).toBe(true);
+  it("does not take the input on a single click into a reading pane: it only becomes active", () => {
+    expect(takesInput("reader", down, { x: 102, y: 49, detail: 1 })).toBe(false);
   });
 
-  it("is no click after dragging to select text", () => {
-    expect(isClick(down, { x: 160, y: 50, detail: 1, selecting: false })).toBe(false);
+  it("takes the input on a double click into a reading pane, although it selects a word", () => {
+    expect(takesInput("reader", down, { x: 101, y: 50, detail: 2 })).toBe(true);
   });
 
-  it("is no click when the terminal has a selection (double click selects a word)", () => {
-    expect(isClick(down, { x: 100, y: 50, detail: 2, selecting: false })).toBe(false);
-    expect(isClick(down, { x: 100, y: 50, detail: 1, selecting: true })).toBe(false);
+  it("never claims for a pane that writes, connects or lost the core", () => {
+    for (const role of ["writer", "connecting", "closed", "error", undefined] as const)
+      expect(takesInput(role, down, { x: 100, y: 50, detail: 2 }), String(role)).toBe(false);
   });
 
-  it("is no click without a press in the pane", () => {
-    expect(isClick(undefined, { x: 100, y: 50, detail: 1, selecting: false })).toBe(false);
+  it("does not take the input after dragging to select text or without a press in the pane", () => {
+    expect(takesInput("reader", down, { x: 160, y: 50, detail: 2 })).toBe(false);
+    expect(takesInput("reader", undefined, { x: 100, y: 50, detail: 2 })).toBe(false);
+  });
+
+  it("does not take the input again on a triple click", () => {
+    expect(takesInput("reader", down, { x: 100, y: 50, detail: 3 })).toBe(false);
   });
 });
 

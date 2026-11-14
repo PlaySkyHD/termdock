@@ -27,10 +27,8 @@ export interface PaneTreeProps {
   focusSignal: number;
   onStatus: (paneId: string, status: ViewStatus | undefined) => void;
   onController: (paneId: string, controller: TerminalController | undefined) => void;
-  /** A press in the pane: it becomes active. */
+  /** A press in the pane: it becomes active, nothing else (#66). */
   onPanePress: (paneId: string) => void;
-  /** A real click into the pane's terminal (no drag, no selection): a reader takes the writer (App.tsx). */
-  onPaneClick: (paneId: string) => void;
   /** "Pane schließen" of a placeholder. */
   onClosePane: (paneId: string) => void;
   /** A bound key was pressed in a pane's terminal (#28). */
@@ -50,7 +48,6 @@ export function PaneTree({
   onStatus,
   onController,
   onPanePress,
-  onPaneClick,
   onClosePane,
   commands,
   onPanePaste,
@@ -81,7 +78,6 @@ export function PaneTree({
             focusSignal={focusSignal}
             onStatus={(status) => onStatus(paneId, status)}
             onController={(controller) => onController(paneId, controller)}
-            onClick={() => onPaneClick(paneId)}
             onClosePane={() => onClosePane(paneId)}
             commands={commands}
             onContextPaste={() => onPanePaste(paneId)}
@@ -174,7 +170,6 @@ interface PaneViewProps {
   focusSignal: number;
   onStatus: (status: ViewStatus | undefined) => void;
   onController: (controller: TerminalController | undefined) => void;
-  onClick: () => void;
   onClosePane: () => void;
   commands: KeyCommands;
   onContextPaste: () => void;
@@ -193,7 +188,6 @@ function PaneView({
   focusSignal,
   onStatus,
   onController,
-  onClick,
   onClosePane,
   commands,
   onContextPaste,
@@ -213,7 +207,6 @@ function PaneView({
         focusSignal={focusSignal}
         onStatus={onStatus}
         onController={onController}
-        onClick={onClick}
         commands={commands}
         onContextPaste={onContextPaste}
       />

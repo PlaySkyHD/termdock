@@ -15,7 +15,7 @@ export interface TabBarProps {
   /** Panes of the active tab (0 without one) and the limit per tab. */
   panes: number;
   maxPanes: number;
-  /** Splits the active pane; the new pane shows the same session. */
+  /** Splits the active pane; the new pane shows a new session like the active one's (#66). */
   onSplit: (direction: "row" | "column") => void;
   onClosePane: () => void;
   /** Opens the overview of the key bindings. */
@@ -112,7 +112,9 @@ export function TabBar({
             type="button"
             data-action="split-row"
             disabled={full}
-            title={splitTitle("Rechts teilen")}
+            title={splitTitle(
+              "Rechts teilen mit neuer Session (Ctrl+Shift+D)\nDieselbe Session: Umschalt+Klick in der Seitenleiste",
+            )}
             aria-label="Rechts teilen"
             onClick={() => onSplit("row")}
           >
@@ -126,7 +128,9 @@ export function TabBar({
             type="button"
             data-action="split-column"
             disabled={full}
-            title={splitTitle("Unten teilen")}
+            title={splitTitle(
+              "Unten teilen mit neuer Session (Ctrl+Shift+E)\nDieselbe Session: Umschalt+Klick in der Seitenleiste",
+            )}
             aria-label="Unten teilen"
             onClick={() => onSplit("column")}
           >

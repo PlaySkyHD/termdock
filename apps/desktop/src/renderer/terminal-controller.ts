@@ -4,6 +4,7 @@ import type { SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import { handleKey } from "./keymap.js";
 import type { KeyCommands, KeyLike } from "./keymap.js";
+import { MIN_FONT_SIZE, NORMAL_FONT_SIZE, readerFontSize } from "./terminal-size.js";
 
 /** The part of xterm.js and its fit addon the controller uses. */
 export interface TerminalSurface {
@@ -16,6 +17,13 @@ export interface TerminalSurface {
   showCursor(): void;
   /** Size that fills the element; undefined while the element cannot be measured. */
   proposeSize(): TerminalSize | undefined;
+  /** Font size in px; a reader zooms out with it (#66), a writer uses the normal one. */
+  setFontSize(size: number): void;
+  /**
+   * Room of the element in CSS px (without padding and scroll bar), the size of one cell at the normal font size
+   * and as rendered at the current one; undefined while the terminal is not drawn.
+   */
+  measure(): TerminalMeasure | undefined;
   /** Key presses and automatic replies of the emulator; the returned function unsubscribes. */
   onData(listener: (data: string) => void): () => void;
   /**
@@ -30,6 +38,19 @@ export interface TerminalSurface {
    * paste markers when the application asked for them (`ESC [ ? 2004 h`). The result arrives through `onData`.
    */
   paste(text: string): void;
+}
+
+interface Box {
+  width: number;
+  height: number;
+}
+
+export interface TerminalMeasure {
+  area: Box;
+  /** Cell at the normal font size. */
+  cell: Box;
+  /** Cell at the current font size, as rendered (rounded to device pixels). */
+  current: Box;
 }
 
 /** A key event as xterm.js hands it to the custom handler. */
@@ -78,6 +99,8 @@ export class TerminalController {
   private writerFromEvent = false;
   private sizeFromEvent = false;
   private disposed = false;
+  /** Font size the surface has; the terminal starts with the normal one. */
+  private fontSize = NORMAL_FONT_SIZE;
   private readonly unsubscribe: Array<() => void> = [];
   private readonly scheduleLayout: (run: () => void) => () => void;
   /** Set while a fit after a change of the element is planned. */
@@ -180,13 +203,16 @@ export class TerminalController {
 
   /**
    * The element changed size. After a short delay the writer fits and sends its size, once for all changes in
-   * that time (no storm of resizes while a divider is dragged); a reader stays at the writer's size.
+   * that time (no storm of resizes while a divider is dragged); a reader stays at the writer's size and zooms
+   * its font to the new room, without sending anything.
    */
   layoutChanged(): void {
     if (this.cancelLayout || this.disposed) return;
     this.cancelLayout = this.scheduleLayout(() => {
       this.cancelLayout = undefined;
-      if (!this.disposed && this.isWriter()) this.fitAsWriter();
+      if (this.disposed || this.closed || this.viewId === undefined) return;
+      if (this.isWriter()) this.fitAsWriter();
+      else this.zoomAsReader();
     });
   }
 
@@ -241,6 +267,8 @@ export class TerminalController {
   }
 
   private fitAsWriter(): void {
+    // A reader that takes the input may be zoomed out; its grid comes from the normal font.
+    this.useFontSize(NORMAL_FONT_SIZE);
     const fit = this.surface.proposeSize();
     if (fit && (fit.cols !== this.surface.cols || fit.rows !== this.surface.rows))
       this.surface.resize(fit.cols, fit.rows);
@@ -251,12 +279,40 @@ export class TerminalController {
     this.setStatus({ ...this.status, role: "writer", size });
   }
 
-  /** Readers show the terminal in the writer's size; a smaller element clips it (ADR 0006). */
+  /**
+   * Readers show the terminal in the writer's grid and zoom out until it fits; below the minimum font the rest
+   * is clipped (ADR 0006, #66).
+   */
   private showWriterSize(): void {
     const size = this.size;
     if (size && (size.cols !== this.surface.cols || size.rows !== this.surface.rows))
       this.surface.resize(size.cols, size.rows);
+    this.zoomAsReader();
     this.setStatus({ ...this.status, role: "reader", ...(size ? { size } : {}) });
+  }
+
+  private zoomAsReader(): void {
+    const measured = this.surface.measure();
+    if (!measured) return;
+    const { area, cell } = measured;
+    const grid = { cols: this.surface.cols, rows: this.surface.rows };
+    let size = readerFontSize({ grid, area, cell, normal: NORMAL_FONT_SIZE, min: MIN_FONT_SIZE });
+    this.useFontSize(size);
+    // Rendered cells are rounded to device pixels and do not shrink exactly in step with the font: step down
+    // while the grid is still wider or higher than the area (at most down to the minimum, then it clips).
+    const fits = (current: Box): boolean =>
+      grid.cols * current.width <= area.width && grid.rows * current.height <= area.height;
+    for (let now = this.surface.measure(); size > MIN_FONT_SIZE && now && !fits(now.current);) {
+      size--;
+      this.useFontSize(size);
+      now = this.surface.measure();
+    }
+  }
+
+  private useFontSize(size: number): void {
+    if (size === this.fontSize) return;
+    this.fontSize = size;
+    this.surface.setFontSize(size);
   }
 
   private setStatus(status: ViewStatus): void {

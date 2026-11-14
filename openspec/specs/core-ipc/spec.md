@@ -333,7 +333,7 @@ Der Core SHALL nach dem Eintragen einer Session durch `session.create` das Event
 
 ### Requirement: Platzhalter für Methoden der Phase 3
 
-Bis ihre Fachlogik umgesetzt ist, SHALL der Core jede Methode der Phase 3 (`workspace.*`, `project.*`, `profile.*`, `settings.*`, `history.search`) und `session.create` ohne `launch` mit dem Fehler `internal` beantworten, dessen Meldung die Methode und „noch nicht umgesetzt“ nennt. `session.update`, `session.archive` und `session.delete` sind umgesetzt (#57). Die Verbindung MUST offen bleiben und der Core MUST weiter Anfragen bedienen.
+Bis ihre Fachlogik umgesetzt ist, SHALL der Core jede noch nicht umgesetzte Methode der Phase 3 (`profile.*`, `settings.*`, `history.search`) und `session.create` ohne `launch` mit dem Fehler `internal` beantworten, dessen Meldung die Methode und „noch nicht umgesetzt“ nennt. `workspace.*` und `project.*` (Capability `workspaces`) sowie `session.update`, `session.archive` und `session.delete` (#57) sind umgesetzt. Die Verbindung MUST offen bleiben und der Core MUST weiter Anfragen bedienen.
 
 #### Scenario: Stub antwortet mit Fehler
 

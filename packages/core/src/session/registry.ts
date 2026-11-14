@@ -52,6 +52,8 @@ export interface SessionRegistryOptions {
    * the stored row goes. Must be idempotent. Defaults to doing nothing (a registry without data directory).
    */
   removeHistory?: (sessionId: SessionId) => Promise<void>;
+  /** `loggingEnabled` of a new session that does not say; reads the setting `historyEnabledByDefault`. Defaults to true. */
+  defaultLoggingEnabled?: () => boolean;
 }
 
 /** Changes of `update`: a missing field stays, `workspaceId: null` makes the session ungrouped (issue #57). */
@@ -207,6 +209,7 @@ export class SessionRegistry {
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
   private readonly reattachDelaysMs: readonly number[];
   private readonly removeHistory: (sessionId: SessionId) => Promise<void>;
+  private readonly defaultLoggingEnabled: () => boolean;
   private restored = false;
   private restoring = false;
   private unavailableAtRestore: BackendKind[] = [];
@@ -224,6 +227,7 @@ export class SessionRegistry {
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
     this.removeHistory = options.removeHistory ?? (async () => {});
+    this.defaultLoggingEnabled = options.defaultLoggingEnabled ?? (() => true);
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
@@ -298,7 +302,7 @@ export class SessionRegistry {
       state: "Starting",
       launch: input.launch,
       size: { ...(input.size ?? DEFAULT_SIZE) },
-      loggingEnabled: input.loggingEnabled ?? true,
+      loggingEnabled: input.loggingEnabled ?? this.defaultLoggingEnabled(),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -527,6 +531,28 @@ export class SessionRegistry {
       return;
     }
     if (exists) await this.killBackend(entry, backend);
+  }
+
+  /**
+   * Makes every session of the workspace ungrouped (`workspaceId` unset), in memory and in the repository, and
+   * returns the changed sessions. Processes, views and states stay as they are. Memory changes only after the
+   * repository write went through, so a failing write changes nothing. `around` receives that write and must
+   * run it exactly once, e.g. inside the transaction that also deletes the workspace row; if `around` throws,
+   * nothing changes. Sends no event: the caller reports the sessions.
+   */
+  clearWorkspace(workspaceId: string, around?: (write: () => void) => void): SessionInfo[] {
+    this.assertNotRestoring();
+    const affected = [...this.sessions.values()].filter((entry) => entry.info.workspaceId === workspaceId);
+    const updatedAt = this.now().toISOString();
+    // Always, also without a session in memory: a stored row must not keep a deleted workspace.
+    const write = (): void => this.repository?.clearWorkspace(workspaceId, updatedAt);
+    if (around) around(write);
+    else write();
+    return affected.map((entry) => {
+      delete entry.info.workspaceId;
+      entry.info.updatedAt = updatedAt;
+      return snapshotInfo(entry.info);
+    });
   }
 
   /**

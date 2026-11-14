@@ -1,6 +1,7 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
-import type { LayoutDocument, SessionId, SessionInfo } from "@termdock/protocol";
+import { DEFAULT_SETTINGS } from "@termdock/protocol";
+import type { LayoutDocument, SessionId, SessionInfo, Workspace } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -8,10 +9,13 @@ import { CoreError } from "../session/errors.js";
 import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
 import { openStorage, resolveDataDir } from "../storage/database.js";
+import { recordHistory } from "../storage/history-recorder.js";
+import { HistoryStore } from "../storage/history-store.js";
+import type { HistorySettings } from "../storage/history-store.js";
 import type { Storage } from "../storage/database.js";
-import { removeSessionHistory } from "../storage/history-files.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
+import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
 export const ALREADY_RUNNING_EXIT_CODE = 10;
@@ -73,6 +77,10 @@ class StorageRepository implements SessionRepository {
     this.open().delete(sessionId);
   }
 
+  clearWorkspace(workspaceId: string, updatedAt: string): void {
+    this.open().clearWorkspace(workspaceId, updatedAt);
+  }
+
   private open(): SessionRepository {
     if (!this.target) throw new Error("The database is not open yet");
     return this.target;
@@ -97,6 +105,28 @@ class StorageLayoutRepository implements LayoutRepository {
   }
 }
 
+/** Same forwarding for workspaces and projects. */
+class StorageWorkspaceRepository implements WorkspaceRepository {
+  target: WorkspaceRepository | undefined;
+
+  list(): Workspace[] {
+    return this.open().list();
+  }
+
+  save(workspace: Workspace): void {
+    this.open().save(workspace);
+  }
+
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean {
+    return this.open().delete(workspaceId, alsoInTransaction);
+  }
+
+  private open(): WorkspaceRepository {
+    if (!this.target) throw new Error("The database is not open yet");
+    return this.target;
+  }
+}
+
 export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResult> {
   const stderr = options.stderr ?? process.stderr;
   // Only messages: stack traces stay out of logs, as they stay out of IPC answers.
@@ -106,15 +136,20 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
-  // Set with the storage below; requests wait for the reconcile, so a delete always finds it.
-  let dataDir: string | undefined;
+  // TODO(#60): wird mit dem Settings-Repository (#60) verdrahtet; bis dahin gelten die Standardwerte.
+  const getSettings = (): HistorySettings => DEFAULT_SETTINGS;
+  const workspaces = new StorageWorkspaceRepository();
+  // Opened with the storage below; requests wait for the reconcile, so a delete always finds it.
+  let history: HistoryStore | undefined;
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
+    defaultLoggingEnabled: () => getSettings().historyEnabledByDefault,
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
+    // Forgets the session in the store and deletes `history/<id>/` (path check in `historyDir`, ADR 0004).
     removeHistory: async (sessionId) => {
-      if (dataDir === undefined) throw new Error("The data directory is not known yet");
-      await removeSessionHistory(dataDir, sessionId);
+      if (!history) throw new Error("The history store is not open yet");
+      await history.remove(sessionId);
     },
   });
   let markReady: () => void = () => {};
@@ -130,6 +165,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     server = await CoreServer.start({
       registry,
       layouts,
+      workspaces,
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),
@@ -165,6 +201,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       // Also stops a reconcile still running: it changes and saves nothing more and releases late PTYs.
       registry.dispose();
       for (const backend of ownBackends) backend.dispose();
+      // Queued output is written before the process may end.
+      await history?.dispose();
       storage?.dispose();
     })();
     return closing;
@@ -181,11 +219,19 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
   let restore: RestoreResult;
   try {
-    const resolvedDataDir = options.dataDir ?? resolveDataDir();
-    storage = openStorage({ dataDir: resolvedDataDir, onLayoutInvalid: log });
-    dataDir = resolvedDataDir;
+    const dataDir = options.dataDir ?? resolveDataDir();
+    storage = openStorage({ dataDir, onLayoutInvalid: log });
+    history = new HistoryStore({
+      dataDir,
+      getSettings,
+      onError: (error, sessionId) =>
+        log(`could not write history of session ${sessionId}: ${messageOf(error)}`),
+    });
+    // The subscription lives as long as the registry; it ends with `registry.dispose()`.
+    recordHistory(registry, history);
     repository.target = storage.sessions;
     layouts.target = storage.layouts;
+    workspaces.target = storage.workspaces;
     const restoring = registry.restore();
     // After a close nothing waits for the reconcile any more; its outcome no longer matters.
     restoring.catch(() => {});

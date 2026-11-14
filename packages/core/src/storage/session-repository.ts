@@ -16,6 +16,11 @@ export interface SessionRepository {
   save(session: SessionInfo): void;
   /** Removes the stored session; an unknown id is not an error (issue #57). */
   delete(sessionId: SessionId): void;
+  /**
+   * Makes every stored session of the workspace ungrouped (`workspaceId` unset) and stamps `updatedAt`.
+   * `sessions.workspace_id` has no foreign key (ADR 0004), so the Core does this when it deletes a workspace.
+   */
+  clearWorkspace(workspaceId: string, updatedAt: string): void;
 }
 
 /** Repository without a file, for tests and a Core without storage. */
@@ -35,16 +40,28 @@ export class InMemorySessionRepository implements SessionRepository {
   delete(sessionId: SessionId): void {
     this.sessions.delete(sessionId);
   }
+
+  clearWorkspace(workspaceId: string, updatedAt: string): void {
+    for (const [id, session] of this.sessions) {
+      if (session.workspaceId !== workspaceId) continue;
+      const { workspaceId: _removed, ...rest } = session;
+      this.sessions.set(id, { ...rest, updatedAt });
+    }
+  }
 }
 
 export class SqliteSessionRepository implements SessionRepository {
   private readonly selectAll: StatementSync;
   private readonly upsert: StatementSync;
   private readonly deleteOne: StatementSync;
+  private readonly unbindWorkspace: StatementSync;
 
   constructor(db: DatabaseSync) {
     this.selectAll = db.prepare("SELECT * FROM sessions ORDER BY created_at, id");
     this.deleteOne = db.prepare("DELETE FROM sessions WHERE id = ?");
+    this.unbindWorkspace = db.prepare(
+      "UPDATE sessions SET workspace_id = NULL, updated_at = :updated_at WHERE workspace_id = :workspace_id",
+    );
     this.upsert = db.prepare(`
       INSERT INTO sessions (
         id, name, backend, distro, shell, cwd, command, env, state, workspace_id, profile_id,
@@ -64,6 +81,10 @@ export class SqliteSessionRepository implements SessionRepository {
 
   list(): SessionInfo[] {
     return this.selectAll.all().map((row) => fromRow(row));
+  }
+
+  clearWorkspace(workspaceId: string, updatedAt: string): void {
+    this.unbindWorkspace.run({ workspace_id: workspaceId, updated_at: updatedAt });
   }
 
   save(session: SessionInfo): void {

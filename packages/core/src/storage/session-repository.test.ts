@@ -115,4 +115,19 @@ describe.each([
 
     expect(repository.list()).toEqual([minimal]);
   });
+
+  it("clearWorkspace ungroups only the sessions of that workspace and stamps updatedAt", () => {
+    const repository = create();
+    repository.save(full);
+    repository.save({ ...minimal, workspaceId: "ws-2" });
+
+    repository.clearWorkspace("ws-1", "2026-11-14T09:00:00.000Z");
+
+    const { workspaceId: _removed, ...ungrouped } = full;
+    expect(repository.list()).toEqual([
+      { ...ungrouped, updatedAt: "2026-11-14T09:00:00.000Z" },
+      { ...minimal, workspaceId: "ws-2" },
+    ]);
+    expect("workspaceId" in (repository.list()[0] ?? {})).toBe(false);
+  });
 });

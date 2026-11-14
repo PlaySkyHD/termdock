@@ -22,8 +22,35 @@ export { MIGRATIONS, migrate, schemaVersion } from "./storage/migrations.js";
 export type { Migration } from "./storage/migrations.js";
 export { InMemorySessionRepository, SqliteSessionRepository } from "./storage/session-repository.js";
 export type { SessionRepository } from "./storage/session-repository.js";
+export {
+  DEFAULT_FLUSH_DELAY_MS,
+  DEFAULT_MAX_PENDING_BYTES,
+  ENTRY_HEADER_BYTES,
+  HISTORY_SEGMENT_FILES,
+  HistoryStore,
+  MAX_ENTRY_DATA_BYTES,
+  historyDir,
+  historySegmentPath,
+  readHistory,
+  segmentCapBytes,
+} from "./storage/history-store.js";
+export type {
+  HistoryEntry,
+  HistorySettings,
+  HistoryStats,
+  HistoryStoreOptions,
+} from "./storage/history-store.js";
+export { recordHistory } from "./storage/history-recorder.js";
 export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
 export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
+export { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./storage/workspace-repository.js";
+export type { WorkspaceRepository } from "./storage/workspace-repository.js";
+
+// workspaces
+export { defaultCwd } from "./workspace/default-cwd.js";
+export type { DefaultCwdInput } from "./workspace/default-cwd.js";
+export { projectPathProblem } from "./workspace/paths.js";
+export { WorkspaceService } from "./workspace/service.js";
 
 // ipc
 export { defaultPipeName, sanitizePipeUser } from "./ipc/pipe-name.js";

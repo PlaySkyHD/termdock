@@ -17,7 +17,7 @@ You plan, brief, verify, open the pull requests and merge. Subagents only implem
 - Map each issue to the packages and files it changes (`packages/<name>/`).
 - Docs or skill changes of up to about ten lines in one file you make yourself. Longer docs go to a `haiku` subagent. OpenSpec changes go to a `sonnet` subagent or bigger.
 - Disjoint packages: run in parallel. Same file, different places: parallel with exact anchors, check later with `git merge-tree`. Same lines or dependent work: sequential or stacked (branch B on branch A).
-- Shared building blocks (protocol types, backend interface, a helper used by two packages) you build first on `main`, then brief the agents.
+- Shared building blocks (protocol types, backend interface, a helper used by two packages) you build first on `main`, then brief the agents. A contract PR gives each follow-up issue its own anchor in code, specs and tests (one stub `case`, one requirement, one test entry per method); no requirement or test list that every follow-up edits (PR #79: one „Platzhalter“ requirement caused a conflict in every wave-1 merge).
 - Model: set `model` explicitly on every Agent call.
   - Default `sonnet`.
   - `haiku` for docs and skill texts.

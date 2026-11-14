@@ -4,10 +4,14 @@
 // front of the snapshot. Only sequences from the fixed list below are produced, never bytes of the output.
 
 const ESC = 0x1b;
+/** CAN and SUB abort a sequence. */
+const CAN = 0x18;
+const SUB = 0x1a;
 /** An unfinished control sequence longer than this is dropped, so the state stays bounded. */
 const MAX_SEQUENCE_BYTES = 64;
 const MOUSE_PROTOCOLS = new Set([9, 1000, 1002, 1003]);
-const MOUSE_ENCODINGS = new Set([1005, 1006, 1015, 1016]);
+/** SGR and SGR pixels; xterm.js ignores the UTF-8 (1005) and urxvt (1015) encodings, so they are not restored. */
+const MOUSE_ENCODINGS = new Set([1006, 1016]);
 
 type ParserState = "ground" | "escape" | "csi";
 
@@ -18,7 +22,7 @@ interface Modes {
   keypad: boolean;
   /** Mouse tracking protocol (9, 1000, 1002, 1003), 0 when off. */
   mouseProtocol: number;
-  /** Mouse report encoding (1005, 1006, 1015, 1016), 0 for the default. */
+  /** Mouse report encoding (1006, 1016), 0 for the default. */
   mouseEncoding: number;
   /** Focus reports, `CSI ? 1004 h`. */
   focus: boolean;
@@ -45,12 +49,29 @@ export class TerminalModes {
 
   /** Reads one chunk of output; a sequence may continue in the next chunk. */
   feed(data: Uint8Array): void {
-    for (const byte of data) this.step(byte);
+    let i = 0;
+    while (i < data.length) {
+      if (this.state === "ground") {
+        // Text between sequences cannot change a mode: jump to the next ESC.
+        i = data.indexOf(ESC, i);
+        if (i < 0) return;
+      }
+      this.step(data[i]!);
+      i += 1;
+    }
   }
 
   /** Back to the state of a fresh terminal (restart, archive). */
   reset(): void {
     this.modes = initialModes();
+    this.endOfStream();
+  }
+
+  /**
+   * The stream ended (e.g. a new PTY replaces a lost tmux client): an unfinished sequence is dropped, the modes
+   * stay, so a cut-off sequence does not continue with the bytes of the next stream.
+   */
+  endOfStream(): void {
     this.state = "ground";
     this.sequenceBody = "";
   }
@@ -77,6 +98,13 @@ export class TerminalModes {
       this.sequenceBody = "";
       return;
     }
+    if (byte === CAN || byte === SUB) {
+      this.endOfStream();
+      return;
+    }
+    // Other C0 controls inside a sequence are executed by the terminal and do not end it (xterm.js); none of
+    // them changes a mode tracked here.
+    if (byte < 0x20) return;
     switch (this.state) {
       case "ground":
         return;

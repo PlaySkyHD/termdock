@@ -42,7 +42,38 @@ describe("TerminalModes", () => {
 
   it("keeps the last mouse encoding; resetting an encoding falls back to the default", () => {
     expect(after("\x1b[?1000h\x1b[?1006h\x1b[?1016h")).toBe("\x1b[?1000h\x1b[?1016h");
-    expect(after("\x1b[?1015h", "\x1b[?1006h\x1b[?1006l")).toBe("");
+    expect(after("\x1b[?1016h", "\x1b[?1006h\x1b[?1006l")).toBe("");
+  });
+
+  it("ignores the UTF-8 and urxvt mouse encodings, like xterm.js", () => {
+    expect(after("\x1b[?1000h\x1b[?1005h")).toBe("\x1b[?1000h");
+    expect(after("\x1b[?1015h")).toBe("");
+    expect(after("\x1b[?1006h\x1b[?1005l\x1b[?1015l")).toBe("\x1b[?1006h");
+  });
+
+  it("executes control characters inside a sequence and goes on with it, like xterm.js", () => {
+    expect(after("\x1b[?20\r\n04h")).toBe("\x1b[?2004h");
+    expect(after("\x1b[?1", "\x08h")).toBe("\x1b[?1h");
+  });
+
+  it("drops a sequence on CAN or SUB", () => {
+    expect(after("\x1b[?2004\x18h")).toBe("");
+    expect(after("\x1b[?2004\x1ah\x1b[?1h")).toBe("\x1b[?1h");
+  });
+
+  it("skips plain text quickly and still finds every sequence in it", () => {
+    const text = "x".repeat(10_000);
+    expect(after(`${text}\x1b[?1h${text}\x1b=${text}`, `${text}\x1b[?2004h${text}`)).toBe(
+      "\x1b[?1h\x1b=\x1b[?2004h",
+    );
+  });
+
+  it("drops an unfinished sequence when the stream ends but keeps the modes", () => {
+    const modes = new TerminalModes();
+    modes.feed(encoder.encode("\x1b[?1h\x1b[?20"));
+    modes.endOfStream();
+    modes.feed(encoder.encode("04h"));
+    expect(modes.sequence()).toBe("\x1b[?1h");
   });
 
   it("joins a sequence split over chunks, also right after ESC", () => {

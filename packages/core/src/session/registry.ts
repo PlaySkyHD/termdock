@@ -709,6 +709,8 @@ export class SessionRegistry {
 
   private bindPty(entry: SessionEntry, pty: PtyHandle): void {
     entry.pty = pty;
+    // A new stream: a sequence the previous PTY cut off must not continue here; the modes stay (issue #42).
+    entry.modes.endOfStream();
     entry.ptySubscriptions = [
       pty.onData((data) => {
         if (entry.pty !== pty) return;

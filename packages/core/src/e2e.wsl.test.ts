@@ -312,6 +312,45 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     });
   }, 120_000);
 
+  it("keeps the focus reports of a late writer view from the program in the pane (issue #42)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const { session } = (
+      await c1.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const screen = async () =>
+      (await tmux(distro, ["capture-pane", "-p", "-t", `=td-${session.id}:`])).stdout;
+    const first = await c1.request("session.attach", { sessionId: session.id });
+    // `cat -v` shows every byte it gets, a focus report as `^[[I`.
+    await c1.request("session.input", { viewId: first.result.viewId }, new TextEncoder().encode("cat -v\r"));
+    await waitFor(
+      async () =>
+        (
+          await tmux(distro, ["display-message", "-p", "-t", `=td-${session.id}:`, "#{pane_current_command}"])
+        ).stdout.trim() === "cat",
+      "cat in the foreground",
+    );
+
+    // The late view gets focus reports switched on (the ConPTY asked for them) and, as writer, sends what
+    // xterm.js reports on a focus change.
+    const c2 = await client();
+    const second = await c2.request("session.attach", { sessionId: session.id });
+    expect(decoder.decode(second.payload)).toContain("\x1b[?1004h");
+    await c2.request("session.claimWriter", { viewId: second.result.viewId });
+    await c2.request(
+      "session.input",
+      { viewId: second.result.viewId },
+      new TextEncoder().encode("focus-a\x1b[I\x1b[Ofocus-b\x1b[I\x1b[O\r"),
+    );
+
+    // The ConPTY takes the reports itself; `cat` gets only the text.
+    await waitFor(async () => (await screen()).includes("focus-afocus-b\n"), "the echo of cat");
+    expect(await screen()).not.toContain("^[[");
+  }, 120_000);
+
   it("re-attaches when the tmux client is detached from outside and keeps delivering output", async () => {
     freshDataDir();
     await startCore();

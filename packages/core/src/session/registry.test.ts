@@ -344,6 +344,21 @@ describe("SessionRegistry: output", () => {
     );
   });
 
+  it("keeps the modes over a lost client but no sequence cut off by it (issue #42)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("\x1b[?1h\x1b[?20");
+    backend.pty(id).loseClient();
+    await settle();
+    backend.pty(id).emitData("04h");
+    backend.setSnapshot(id, "screen");
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(backend.attaches).toHaveLength(1);
+    expect(decode(snapshot.data)).toBe("\x1b[?1hscreen");
+  });
+
   it("starts without modes after a restart (issue #42)", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });

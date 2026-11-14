@@ -27,14 +27,15 @@ Gesucht sind die äußeren Modi des tmux-Clients, also was der xterm.js einer Vi
 
 Ein reines Modul `packages/core/src/session/terminal-modes.ts` (`TerminalModes`: `feed(bytes)`, `reset()`, `sequence()`) wird in `bindPty` im selben synchronen Schritt gefüttert, in dem `outputSeq` steigt. `attachView` liest `sequence()` im selben Schritt wie die Marke und stellt sie dem Snapshot voran (Backend-Snapshot und Puffer). So passen Modi und Marke exakt zusammen; Ausgabe über der Marke bringt spätere Wechsel live. Die Backend-Schnittstelle (`backend/types.ts`, gemeinsamer Baustein) bleibt unverändert. Verworfen: Verfolgung in `WslPty` (die Registry ruft `snapshot` ohne PTY-Bezug auf, Windows-Puffer bliebe ohne Modi).
 
-Über einen PTY-Wechsel (verlorener Client) läuft der Zustand weiter; der neue tmux-Client setzt seine Modi ohnehin neu. `restart` (mit `clearOutput`) und `archive` setzen ihn mit dem Puffer zurück, weil ein neues Programm mit Grundzustand beginnt.
+Über einen PTY-Wechsel (verlorener Client) laufen die Modi weiter; der neue tmux-Client setzt sie ohnehin neu. Der Parser beginnt beim Binden jeder PTY im Grundzustand (`endOfStream`), damit eine abgeschnittene Sequenz nicht mit Bytes der neuen PTY weiterläuft. `restart` (mit `clearOutput`) und `archive` setzen ihn mit dem Puffer zurück, weil ein neues Programm mit Grundzustand beginnt.
 
 ### Parser und Semantik
 
 Bytezustandsautomat über Chunks hinweg, nur 7-Bit-Sequenzen:
 
 - `ESC =` / `ESC >` und `CSI ? 66 h/l`: Application Keypad.
-- `CSI ? Pm h/l` mit mehreren Parametern: `1` (DECCKM), `9`/`1000`/`1002`/`1003` (Mausprotokoll; Setzen wählt es, Zurücksetzen eines davon schaltet ab, wie xterm.js), `1005`/`1006`/`1015`/`1016` (Kodierung; Zurücksetzen fällt auf Standard), `1004` (Fokus), `2004` (Bracketed Paste).
+- `CSI ? Pm h/l` mit mehreren Parametern: `1` (DECCKM), `9`/`1000`/`1002`/`1003` (Mausprotokoll; Setzen wählt es, Zurücksetzen eines davon schaltet ab, wie xterm.js), `1006`/`1016` (Kodierung; Zurücksetzen fällt auf Standard; `1005` und `1015` ignoriert xterm.js, sie werden nicht verfolgt), `1004` (Fokus), `2004` (Bracketed Paste).
+- C0-Steuerzeichen innerhalb einer Sequenz führt das Terminal aus, die Sequenz läuft weiter; CAN und SUB brechen sie ab, ESC beginnt eine neue (wie xterm.js). Im Grundzustand springt der Parser per `indexOf` zum nächsten ESC.
 - `ESC c` (RIS) setzt alles zurück, `CSI ! p` (DECSTR) alles außer der Maus (wie xterm.js `softReset`).
 - Andere Sequenzen werden übersprungen; eine unvollständige CSI-Sequenz über 64 Bytes wird verworfen (begrenzter Zustand, kein Puffer ohne Obergrenze).
 
@@ -50,7 +51,7 @@ Die Modi stehen in den Snapshot-Bytes der Nutzdaten. `packages/protocol` und `PR
 
 ## Risks / Trade-offs
 
-- [Fokusberichte `?1004` stammen von der ConPTY] → Die erste View hat sie auch; der Schreiber sendet `ESC[I`/`ESC[O`, die ConPTY verarbeitet sie. Leser verwerfen alles aus `onData`.
+- [Fokusberichte `?1004` stammen von der ConPTY] → Die erste View hat sie auch; xterm.js meldet den Fokus sofort beim Setzen, der Schreiber sendet `ESC[I`/`ESC[O`. Gemessen (WSL-Test „keeps the focus reports …“): die ConPTY schluckt sie, `cat -v` im Pane zeigt nur den Text, kein `^[[I`/`^[[O`. Leser verwerfen alles aus `onData`.
 - [Ein Snapshot über 4 MiB wird vorn gekürzt (`server.ts`) und verliert den Präfix] → Puffer 256 KiB und tmux-Bildschirm liegen weit darunter; unverändertes Verhalten.
 - [Sequenzen in DCS-Passthrough oder OSC könnten fälschlich zählen] → tmux schreibt an den Client keine solchen Modus-Sequenzen in Passthrough; Abweichung wäre ein falscher Modus bis zum nächsten Wechsel, kein Sicherheitsproblem, weil nur feste Sequenzen erzeugt werden.
 - [Alternate Screen fehlt der späten View] → bewusst außerhalb, eigener Change, falls nötig.

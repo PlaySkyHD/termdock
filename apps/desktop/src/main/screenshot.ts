@@ -43,6 +43,7 @@ export function screenshotProfileDir(tempDir: string, pid: number): string {
 }
 
 const PROFILE_PREFIX = "termdock-screenshot-profile";
+const PROFILE_PID = new RegExp(`^${PROFILE_PREFIX}-(\\d+)$`);
 
 /**
  * Profiles of earlier screenshot runs in `entries` (names in `tempDir`) whose process has ended, including the
@@ -57,7 +58,7 @@ export function staleProfileDirs(
   return entries
     .filter((name) => {
       if (name === PROFILE_PREFIX) return true;
-      const match = new RegExp(`^${PROFILE_PREFIX}-(\\d+)$`).exec(name);
+      const match = PROFILE_PID.exec(name);
       if (!match) return false;
       const pid = Number(match[1]);
       return pid !== ownPid && !isAlive(pid);

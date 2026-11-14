@@ -55,7 +55,7 @@ if (shotDir !== undefined) {
   shotTemp = mkdtempSync(path.join(tmpdir(), "termdock-shot-"));
   isolated = isolatedCore(shotTemp, process.pid, randomBytes(4).toString("hex"));
   app.setPath("userData", screenshotProfileDir(tmpdir(), process.pid));
-  // Profiles of ended runs are free again; one that is still locked stays for the next run.
+  // Profiles of ended runs are free again. Errors (for example locked files) are ignored; the next run tries again.
   for (const dir of staleProfileDirs(tmpdir(), readdirSync(tmpdir()), process.pid, isAlive)) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -193,8 +193,9 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM: the process exists but belongs to another user or runs elevated.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

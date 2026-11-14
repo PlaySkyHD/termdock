@@ -477,22 +477,19 @@ describe("TerminalController", () => {
     });
   });
 
-  it("switches bracketed paste on after the reset when the session runs in tmux, and only then", async () => {
-    const withTmux = new FakeSurface();
-    const apiA = new FakeApi();
-    const a = new TerminalController(apiA, withTmux, () => {}, { bracketedPaste: true });
-    const openingA = a.open("s1");
-    apiA.answerAttach({ writerViewId: "v1" });
-    await openingA;
-    const without = new FakeSurface();
-    const apiB = new FakeApi();
-    const b = new TerminalController(apiB, without, () => {});
-    const openingB = b.open("s1");
-    apiB.answerAttach({ writerViewId: "v1" });
-    await openingB;
+  it("sets the terminal modes of the snapshot right after the reset and adds none of its own (issue #42)", async () => {
+    const surface = new FakeSurface();
+    const api = new FakeApi();
+    const controller = new TerminalController(api, surface, () => {});
+    const opening = controller.open("s1");
+    // The core puts the modes of the session in front of the screen.
+    api.answerAttach({
+      writerViewId: "v1",
+      snapshot: bytes("\x1b[?1h\x1b=\x1b[?1002h\x1b[?1006h\x1b[?2004hsnap"),
+    });
+    await opening;
 
-    expect(withTmux.screen).toEqual(["<reset>", "\x1b[?2004h", "snap"]);
-    expect(without.screen).toEqual(["<reset>", "snap"]);
+    expect(surface.screen).toEqual(["<reset>", "\x1b[?1h\x1b=\x1b[?1002h\x1b[?1006h\x1b[?2004hsnap"]);
   });
 
   describe("clipboard", () => {

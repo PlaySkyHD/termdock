@@ -216,7 +216,6 @@ function PaneView({
         onClick={onClick}
         commands={commands}
         onContextPaste={onContextPaste}
-        bracketedPaste={session?.launch.backend === "wsl"}
       />
     );
   }

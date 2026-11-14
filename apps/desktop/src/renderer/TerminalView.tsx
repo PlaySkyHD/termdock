@@ -77,8 +77,6 @@ export interface TerminalViewProps {
   commands: KeyCommands;
   /** Right click on the pane: paste (the window decides whether this view may). */
   onContextPaste?: () => void;
-  /** The session runs in tmux (WSL backend): the view asks for bracketed paste itself (TerminalController). */
-  bracketedPaste?: boolean;
 }
 
 export function TerminalView({
@@ -91,7 +89,6 @@ export function TerminalView({
   onClick,
   commands,
   onContextPaste,
-  bracketedPaste = false,
 }: TerminalViewProps) {
   const host = useRef<HTMLDivElement>(null);
   const pressed = useRef<{ x: number; y: number }>(undefined);
@@ -128,7 +125,6 @@ export function TerminalView({
           applies: (command) => callbacks.current.commands.applies(command),
           run: (command) => callbacks.current.commands.run(command),
         },
-        bracketedPaste,
       },
     );
     callbacks.current.onController(current);

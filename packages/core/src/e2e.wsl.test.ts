@@ -56,6 +56,30 @@ async function render(size: TerminalSize, parts: readonly Uint8Array[]): Promise
   }
 }
 
+/** Input modes of a terminal emulator (as a view) after writing `parts` into a fresh terminal. */
+async function modesAfter(size: TerminalSize, parts: readonly Uint8Array[]) {
+  const terminal = new Terminal({ cols: size.cols, rows: size.rows, allowProposedApi: true });
+  try {
+    for (const part of parts) await new Promise<void>((resolve) => terminal.write(part, resolve));
+    const {
+      applicationCursorKeysMode,
+      applicationKeypadMode,
+      bracketedPasteMode,
+      mouseTrackingMode,
+      sendFocusMode,
+    } = terminal.modes;
+    return {
+      applicationCursorKeysMode,
+      applicationKeypadMode,
+      bracketedPasteMode,
+      mouseTrackingMode,
+      sendFocusMode,
+    };
+  } finally {
+    terminal.dispose();
+  }
+}
+
 describe.skipIf(!enabled)("termdock-core end to end", () => {
   const pipePath = `\\\\.\\pipe\\termdock-e2e-${randomUUID()}`;
   let dataDir = "";
@@ -231,6 +255,100 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     for (const view of views) {
       expect(await render(size, [view.snapshot, ...untilDone(view.chunks)!])).toEqual(expected);
     }
+  }, 120_000);
+
+  it("gives a view attached later the same terminal modes as the first one (issue #42)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const size = { cols: 80, rows: 24 };
+    const { session } = (
+      await c1.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" }, size })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const chunksA: Uint8Array[] = [];
+    c1.on("session.output", (_data, payload) => chunksA.push(payload));
+    const first = await c1.request("session.attach", { sessionId: session.id });
+    const textA = () => chunksA.map((chunk) => decoder.decode(chunk)).join("");
+
+    // `mouse on` for this session only (a session option): `-g` would reach other tests on the shared socket.
+    expect(await tmux(distro, ["set-option", "-t", `=td-${session.id}:`, "mouse", "on"])).toMatchObject({
+      code: 0,
+    });
+    await waitFor(() => textA().includes("\x1b[?1002h"), "mouse tracking at the core's client");
+    // A TUI that asks the pane for application cursor keys and keypad.
+    await c1.request(
+      "session.input",
+      { viewId: first.result.viewId },
+      new TextEncoder().encode("less /etc/passwd\r"),
+    );
+    await waitFor(
+      async () =>
+        (
+          await tmux(distro, [
+            "display-message",
+            "-p",
+            "-t",
+            `=td-${session.id}:`,
+            "#{alternate_on} #{keypad_cursor_flag} #{keypad_flag}",
+          ])
+        ).stdout.trim() === "1 1 1",
+      "less with application cursor keys and keypad",
+    );
+
+    const c2 = await client();
+    const second = await c2.request("session.attach", { sessionId: session.id });
+
+    const modesA = await modesAfter(size, [first.payload, ...chunksA]);
+    const modesB = await modesAfter(size, [second.payload]);
+    expect(modesB).toEqual(modesA);
+    expect(modesB).toEqual({
+      applicationCursorKeysMode: true,
+      applicationKeypadMode: true,
+      bracketedPasteMode: true,
+      mouseTrackingMode: "drag",
+      sendFocusMode: true,
+    });
+  }, 120_000);
+
+  it("keeps the focus reports of a late writer view from the program in the pane (issue #42)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const { session } = (
+      await c1.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const screen = async () =>
+      (await tmux(distro, ["capture-pane", "-p", "-t", `=td-${session.id}:`])).stdout;
+    const first = await c1.request("session.attach", { sessionId: session.id });
+    // `cat -v` shows every byte it gets, a focus report as `^[[I`.
+    await c1.request("session.input", { viewId: first.result.viewId }, new TextEncoder().encode("cat -v\r"));
+    await waitFor(
+      async () =>
+        (
+          await tmux(distro, ["display-message", "-p", "-t", `=td-${session.id}:`, "#{pane_current_command}"])
+        ).stdout.trim() === "cat",
+      "cat in the foreground",
+    );
+
+    // The late view gets focus reports switched on (the ConPTY asked for them) and, as writer, sends what
+    // xterm.js reports on a focus change.
+    const c2 = await client();
+    const second = await c2.request("session.attach", { sessionId: session.id });
+    expect(decoder.decode(second.payload)).toContain("\x1b[?1004h");
+    await c2.request("session.claimWriter", { viewId: second.result.viewId });
+    await c2.request(
+      "session.input",
+      { viewId: second.result.viewId },
+      new TextEncoder().encode("focus-a\x1b[I\x1b[Ofocus-b\x1b[I\x1b[O\r"),
+    );
+
+    // The ConPTY takes the reports itself; `cat` gets only the text.
+    await waitFor(async () => (await screen()).includes("focus-afocus-b\n"), "the echo of cat");
+    expect(await screen()).not.toContain("^[[");
   }, 120_000);
 
   it("re-attaches when the tmux client is detached from outside and keeps delivering output", async () => {

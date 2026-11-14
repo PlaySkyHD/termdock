@@ -16,6 +16,7 @@ import type { SessionRepository } from "../storage/session-repository.js";
 import { CoreError } from "./errors.js";
 import { transition } from "./lifecycle.js";
 import { OutputBuffer } from "./output-buffer.js";
+import { TerminalModes } from "./terminal-modes.js";
 
 /** Raw output kept per session as snapshot fallback (ADR 0003). */
 export const OUTPUT_BUFFER_BYTES = 256 * 1024;
@@ -138,6 +139,8 @@ interface SessionEntry {
   output: OutputBuffer;
   /** `seq` of the last output of the session (0 before any). */
   outputSeq: number;
+  /** Terminal modes the output up to `outputSeq` switched on; they lead every snapshot (issue #42). */
+  modes: TerminalModes;
   /** Redraw in progress; `again` asks for one more after it (see `requestRedraw`). */
   redraw: { again: boolean } | undefined;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
@@ -418,6 +421,7 @@ export class SessionRegistry {
     if (entry.info.writerViewId !== undefined) this.setWriter(entry, undefined);
     entry.views.clear();
     entry.output.clear();
+    entry.modes.reset();
     this.setState(entry, "Archived");
     return snapshotInfo(entry.info);
   }
@@ -449,6 +453,9 @@ export class SessionRegistry {
     // Copy the buffer and read the mark in the same synchronous step as the view is registered, so no output
     // falls in between.
     snapshot ??= { data: entry.output.contents() };
+    // The modes of the output up to the mark come first: the view resets its terminal, then sets them, then
+    // shows the screen (issue #42).
+    snapshot = withModes(snapshot, entry.modes.sequence());
     const outputSeq = entry.outputSeq;
     const writer = entry.views.size === 0;
     entry.views.add(viewId);
@@ -630,7 +637,10 @@ export class SessionRegistry {
     // After dispose the PTY is released at once; the backend session stays for the next reconcile.
     if (!this.bindFreshPty(entry, pty, startSize, "start")) throw shutDown();
     // Only now, so a failed restart keeps the old output for the snapshot. No output arrives in between.
-    if (options.clearOutput) entry.output.clear();
+    if (options.clearOutput) {
+      entry.output.clear();
+      entry.modes.reset();
+    }
     this.setState(entry, "Running");
     // ADR 0005 has no Starting → Detached; without a view the session passes through Running.
     if (entry.views.size === 0) this.setState(entry, "Detached");
@@ -699,10 +709,13 @@ export class SessionRegistry {
 
   private bindPty(entry: SessionEntry, pty: PtyHandle): void {
     entry.pty = pty;
+    // A new stream: a sequence the previous PTY cut off must not continue here; the modes stay (issue #42).
+    entry.modes.endOfStream();
     entry.ptySubscriptions = [
       pty.onData((data) => {
         if (entry.pty !== pty) return;
         entry.output.append(data);
+        entry.modes.feed(data);
         entry.outputSeq += 1;
         this.outputListeners.emit({
           sessionId: entry.info.id,
@@ -906,6 +919,16 @@ export class SessionRegistry {
   }
 }
 
+/** The snapshot with the mode sequences in front of its data; the cursor field stays. */
+function withModes(snapshot: TerminalSnapshot, modes: string): TerminalSnapshot {
+  if (modes === "") return snapshot;
+  const prefix = new TextEncoder().encode(modes);
+  const data = new Uint8Array(prefix.byteLength + snapshot.data.byteLength);
+  data.set(prefix);
+  data.set(snapshot.data, prefix.byteLength);
+  return { ...snapshot, data };
+}
+
 function newEntry(info: SessionInfo): SessionEntry {
   return {
     info,
@@ -914,6 +937,7 @@ function newEntry(info: SessionInfo): SessionEntry {
     views: new Set(),
     output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
     outputSeq: 0,
+    modes: new TerminalModes(),
     redraw: undefined,
     busy: undefined,
     endedDuringOp: undefined,

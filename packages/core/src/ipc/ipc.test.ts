@@ -12,11 +12,13 @@ import {
   LAYOUT_VERSION,
   MAX_PATH_LENGTH,
   MAX_PAYLOAD_BYTES,
+  MAX_PROFILE_BYTES,
+  MAX_PROFILES,
   MAX_PROJECTS_PER_WORKSPACE,
   MAX_WORKSPACES,
   PHASE_3_METHODS,
 } from "@termdock/protocol";
-import type { Frame, LayoutDocument, SessionInfo } from "@termdock/protocol";
+import type { Frame, LaunchProfile, LayoutDocument, SessionInfo } from "@termdock/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
 import { SessionRegistry } from "../session/registry.js";
@@ -906,7 +908,7 @@ describe("client library", () => {
 
 describe("phase 3 (issue #55)", () => {
   /** Valid params per phase-3 method; a stub answers each of them with internal. */
-  const stubCalls: Record<(typeof PHASE_3_METHODS)[number], unknown> = {
+  const stubCalls: Record<Exclude<(typeof PHASE_3_METHODS)[number], `settings.${string}`>, unknown> = {
     "workspace.list": {},
     "workspace.create": { name: "TermDock" },
     "workspace.update": { workspaceId: "w1", name: "Neu" },
@@ -921,8 +923,6 @@ describe("phase 3 (issue #55)", () => {
     "session.update": { sessionId: "s1", workspaceId: null },
     "session.archive": { sessionId: "s1" },
     "session.delete": { sessionId: "s1" },
-    "settings.get": {},
-    "settings.set": { settings: { historyEnabledByDefault: false } },
     "history.search": { query: "error" },
   };
   /** Phase-3 methods whose logic is built; their own tests replace the stub check. */
@@ -947,9 +947,10 @@ describe("phase 3 (issue #55)", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     const calls: [string, unknown][] = [
-      ...Object.entries(stubCalls).filter(([method]) => !implemented.has(method)),
-      // Creating from a profile without launch belongs to issue #58.
-      ["session.create", { name: "Claude", profileId: "pr1" }],
+      // profile.* and session.create from a profile are implemented too (issue #58, "launch profiles").
+      ...Object.entries(stubCalls).filter(
+        ([method]) => !implemented.has(method) && !/^profile\./.test(method),
+      ),
     ];
     for (const [method, params] of calls) raw.send({ kind: "request", id: method, method, params });
     raw.send({ kind: "request", id: "list", method: "session.list", params: {} });
@@ -972,7 +973,9 @@ describe("phase 3 (issue #55)", () => {
   });
 
   it("has a stub for every phase-3 method", () => {
-    expect(Object.keys(stubCalls).sort()).toEqual([...PHASE_3_METHODS].sort());
+    // `settings.*` is implemented (issue #60) and tested in "settings (issue #60)".
+    const stubbed = PHASE_3_METHODS.filter((method) => !method.startsWith("settings."));
+    expect(Object.keys(stubCalls).sort()).toEqual([...stubbed].sort());
   });
 
   it("sends the phase-3 events once to each client that listed sessions, never to others", async () => {
@@ -1073,6 +1076,53 @@ describe("layout", () => {
     raw.send({ kind: "request", id: "bad", method: "layout.save", params: { layout: duplicate } });
     await waitFor(() => raw.frames.length === 2, "two responses");
     expect(raw.frames[1]?.header).toMatchObject({ id: "bad", error: { code: "bad_request" } });
+  });
+});
+
+describe("settings (issue #60)", () => {
+  it("answers settings.get with the defaults and settings.set with the merged settings", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
+    const set = await client.request("settings.set", {
+      settings: { confirmQuitWhileRunning: false, quitAction: "stopSessions" },
+    });
+    const expected = { ...DEFAULT_SETTINGS, confirmQuitWhileRunning: false, quitAction: "stopSessions" };
+    expect(set.result.settings).toEqual(expected);
+    expect((await client.request("settings.get", {})).result.settings).toEqual(expected);
+    await client.request("settings.set", { settings: { quitAction: null } });
+    expect((await client.request("settings.get", {})).result.settings.quitAction).toBeUndefined();
+  });
+
+  it("sends settings.changed to every lister, the caller included, and to nobody else", async () => {
+    const { pipePath } = await startCore();
+    const caller = await newClient(pipePath);
+    const other = await newClient(pipePath);
+    const stranger = await newClient(pipePath);
+    const seenByCaller: unknown[] = [];
+    const seenByOther: unknown[] = [];
+    const seenByStranger: unknown[] = [];
+    caller.on("settings.changed", ({ settings }) => seenByCaller.push(settings));
+    other.on("settings.changed", ({ settings }) => seenByOther.push(settings));
+    stranger.on("settings.changed", ({ settings }) => seenByStranger.push(settings));
+    await caller.request("session.list", {});
+    await other.request("session.list", {});
+    await caller.request("settings.set", { settings: { confirmQuitWhileRunning: false } });
+    await waitFor(() => seenByCaller.length === 1 && seenByOther.length === 1, "settings.changed");
+    expect(seenByCaller[0]).toEqual({ ...DEFAULT_SETTINGS, confirmQuitWhileRunning: false });
+    expect(seenByOther[0]).toEqual(seenByCaller[0]);
+    await stranger.request("settings.get", {});
+    expect(seenByStranger).toEqual([]);
+  });
+
+  it("answers an invalid or empty patch with bad_request and keeps the settings", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    expect(await errorCode(client.request("settings.set", { settings: {} }))).toBe("bad_request");
+    expect(await errorCode(client.request("settings.set", { settings: { historyLimitBytes: 1 } }))).toBe(
+      "bad_request",
+    );
+    expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
   });
 });
 
@@ -1353,5 +1403,276 @@ describe("workspaces and projects (issue #56)", () => {
     expect(registry.get(inside.id).workspaceId).toBeUndefined();
     expect((await a.request("workspace.list", {})).result.workspaces.map((w) => w.id)).toEqual([other.id]);
     expect(await errorCode(a.request("workspace.delete", { workspaceId: workspace.id }))).toBe("not_found");
+  });
+});
+
+describe("launch profiles (issue #58)", () => {
+  const claude = { backend: "wsl", cwd: "/home/dev/claude", command: ["claude", "--resume"] } as const;
+
+  async function setup() {
+    const core = await startCore();
+    const a = await newClient(core.pipePath);
+    const b = await newClient(core.pipePath);
+    await a.request("session.list", {});
+    await b.request("session.list", {});
+    return { ...core, a, b };
+  }
+
+  async function workspaceWithProject(client: CoreClient, name = "Web", path = "/home/dev/api") {
+    const { workspace } = (await client.request("workspace.create", { name })).result;
+    const { project } = (
+      await client.request("project.create", { workspaceId: workspace.id, name: "api", path, backend: "wsl" })
+    ).result;
+    return { workspace, project };
+  }
+
+  it("creates, updates, lists and deletes profiles with defaults and a command array", async () => {
+    const { a } = await setup();
+    const { profile } = (await a.request("profile.create", { name: "Claude", launch: claude })).result;
+    expect(profile).toEqual({
+      id: profile.id,
+      name: "Claude",
+      launch: claude,
+      autostart: false,
+      loggingEnabled: true,
+    });
+    const updated = (
+      await a.request("profile.update", { profileId: profile.id, name: "Claude 2", autostart: true })
+    ).result.profile;
+    expect(updated).toEqual({ ...profile, name: "Claude 2", autostart: true });
+    await a.request("profile.create", { name: "Codex", launch: { ...claude, command: ["codex"] } });
+    expect((await a.request("profile.list", {})).result.profiles.map((p) => p.name)).toEqual([
+      "Claude 2",
+      "Codex",
+    ]);
+    await a.request("profile.delete", { profileId: profile.id });
+    expect((await a.request("profile.list", {})).result.profiles.map((p) => p.name)).toEqual(["Codex"]);
+    expect(await errorCode(a.request("profile.delete", { profileId: profile.id }))).toBe("not_found");
+    expect(await errorCode(a.request("profile.update", { profileId: "nope", name: "x" }))).toBe("not_found");
+  });
+
+  it("allows at most 64 profiles and rejects an oversized one without storing anything", async () => {
+    const { a } = await setup();
+    const big = { ...claude, env: { BIG: "x".repeat(MAX_PROFILE_BYTES) } };
+    expect(await errorCode(a.request("profile.create", { name: "big", launch: big }))).toBe("bad_request");
+    for (let i = 0; i < MAX_PROFILES; i += 1)
+      await a.request("profile.create", { name: `p${i}`, launch: claude });
+    expect(await errorCode(a.request("profile.create", { name: "one more", launch: claude }))).toBe(
+      "invalid_state",
+    );
+    expect((await a.request("profile.list", {})).result.profiles).toHaveLength(MAX_PROFILES);
+  });
+
+  it("checks that the project belongs to the workspace and that both exist", async () => {
+    const { a } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const two = (await a.request("workspace.create", { name: "two" })).result.workspace;
+    const bind = (workspaceId?: string, projectId?: string) => ({
+      name: "p",
+      launch: claude,
+      ...(workspaceId === undefined ? {} : { workspaceId }),
+      ...(projectId === undefined ? {} : { projectId }),
+    });
+
+    expect(await errorCode(a.request("profile.create", bind(two.id, one.project.id)))).toBe("bad_request");
+    expect(await errorCode(a.request("profile.create", bind("nope")))).toBe("not_found");
+    expect(await errorCode(a.request("profile.create", bind(one.workspace.id, "nope")))).toBe("not_found");
+    expect((await a.request("profile.list", {})).result.profiles).toEqual([]);
+
+    // The workspace of the project is filled in when missing.
+    const { profile } = (await a.request("profile.create", bind(undefined, one.project.id))).result;
+    expect(profile).toMatchObject({ workspaceId: one.workspace.id, projectId: one.project.id });
+
+    expect(await errorCode(a.request("profile.update", { profileId: profile.id, workspaceId: two.id }))).toBe(
+      "bad_request",
+    );
+    expect(await errorCode(a.request("profile.update", { profileId: profile.id, workspaceId: null }))).toBe(
+      "bad_request",
+    );
+    const moved = (
+      await a.request("profile.update", { profileId: profile.id, workspaceId: two.id, projectId: null })
+    ).result.profile;
+    expect(moved).toMatchObject({ workspaceId: two.id });
+    expect("projectId" in moved).toBe(false);
+    expect((await a.request("profile.list", {})).result.profiles).toEqual([moved]);
+  });
+
+  it("sends profile.changed with the full list to listing clients only, after each change", async () => {
+    const { pipePath, a, b } = await setup();
+    const stranger = await newClient(pipePath);
+    const seenByA: string[] = [];
+    const seenByB: string[][] = [];
+    const seenByStranger: number[] = [];
+    a.on("profile.changed", () => seenByA.push("event"));
+    b.on("profile.changed", ({ profiles }) => seenByB.push(profiles.map((p) => p.name)));
+    stranger.on("profile.changed", ({ profiles }) => seenByStranger.push(profiles.length));
+
+    const { profile } = (await a.request("profile.create", { name: "one", launch: claude })).result;
+    seenByA.push("answer");
+    await a.request("profile.update", { profileId: profile.id, name: "uno" });
+    await errorCode(a.request("profile.delete", { profileId: "nope" }));
+    await a.request("profile.delete", { profileId: profile.id });
+    await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
+
+    expect(seenByA).toEqual(["event", "answer", "event", "event"]);
+    expect(seenByB).toEqual([["one"], ["uno"], []]);
+    expect(seenByStranger).toEqual([]);
+  });
+
+  it("unbinds profiles and sends profile.changed when a workspace or project is deleted", async () => {
+    const { a, b } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const two = await workspaceWithProject(a, "two");
+    const bound = (
+      await a.request("profile.create", { name: "x", launch: claude, projectId: one.project.id })
+    ).result.profile;
+    const kept = (await a.request("profile.create", { name: "y", launch: claude, projectId: two.project.id }))
+      .result.profile;
+    const lists: LaunchProfile[][] = [];
+    b.on("profile.changed", ({ profiles }) => lists.push(profiles));
+
+    await a.request("project.delete", { projectId: two.project.id });
+    await a.request("workspace.delete", { workspaceId: one.workspace.id });
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+
+    const { projectId: _dropped, ...afterProject } = kept;
+    const { workspaceId: _w, projectId: _p, ...afterWorkspace } = bound;
+    expect(lists).toEqual([
+      [bound, afterProject],
+      [afterWorkspace, afterProject],
+    ]);
+    expect((await a.request("profile.list", {})).result.profiles).toEqual(lists[1]);
+  });
+
+  it("creates a session from a profile: its launch spec, logging switch and profile id", async () => {
+    const { a } = await setup();
+    const { profile } = (
+      await a.request("profile.create", { name: "Claude", launch: claude, loggingEnabled: false })
+    ).result;
+    const { session } = (await a.request("session.create", { name: "from profile", profileId: profile.id }))
+      .result;
+    expect(session).toMatchObject({ profileId: profile.id, launch: claude, loggingEnabled: false });
+    const logged = (
+      await a.request("session.create", { name: "logged", profileId: profile.id, loggingEnabled: true })
+    ).result.session;
+    expect(logged.loggingEnabled).toBe(true);
+  });
+
+  it("lets an explicit launch replace the profile's spec as a whole", async () => {
+    const { a } = await setup();
+    const { profile } = (await a.request("profile.create", { name: "Claude", launch: claude })).result;
+    const { session } = (
+      await a.request("session.create", {
+        name: "own",
+        profileId: profile.id,
+        launch: { backend: "wsl", cwd: "/tmp" },
+      })
+    ).result;
+    expect(session.launch).toEqual({ backend: "wsl", cwd: "/tmp" });
+    expect(session.profileId).toBe(profile.id);
+  });
+
+  it("answers an unknown profile with not_found and creates no session", async () => {
+    const { a } = await setup();
+    expect(await errorCode(a.request("session.create", { name: "x", profileId: "nope" }))).toBe("not_found");
+    expect(await errorCode(a.request("session.create", { name: "x", profileId: "nope", launch }))).toBe(
+      "not_found",
+    );
+    expect((await a.request("session.list", {})).result.sessions).toEqual([]);
+  });
+
+  it("takes the workspace of a new project on update when the request names none", async () => {
+    const { a } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const two = await workspaceWithProject(a, "two", "/home/dev/other");
+    const { profile } = (
+      await a.request("profile.create", { name: "p", launch: claude, projectId: one.project.id })
+    ).result;
+    const moved = (await a.request("profile.update", { profileId: profile.id, projectId: two.project.id }))
+      .result.profile;
+    expect(moved).toMatchObject({ workspaceId: two.workspace.id, projectId: two.project.id });
+    // A workspace named in the request still has to match.
+    expect(
+      await errorCode(
+        a.request("profile.update", {
+          profileId: profile.id,
+          workspaceId: one.workspace.id,
+          projectId: two.project.id,
+        }),
+      ),
+    ).toBe("bad_request");
+  });
+
+  it("gives a session from a profile the workspace of the profile unless the request names another", async () => {
+    const { a } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const other = (await a.request("workspace.create", { name: "other" })).result.workspace;
+    const { profile } = (
+      await a.request("profile.create", { name: "p", launch: claude, workspaceId: one.workspace.id })
+    ).result;
+    const plain = (await a.request("profile.create", { name: "plain", launch: claude })).result.profile;
+
+    const inherited = (await a.request("session.create", { name: "s", profileId: profile.id })).result
+      .session;
+    const named = (
+      await a.request("session.create", { name: "s", profileId: profile.id, workspaceId: other.id })
+    ).result.session;
+    const none = (await a.request("session.create", { name: "s", profileId: plain.id })).result.session;
+    expect(inherited.workspaceId).toBe(one.workspace.id);
+    expect(named.workspaceId).toBe(other.id);
+    expect(none.workspaceId).toBeUndefined();
+
+    // A deleted workspace is not inherited.
+    await a.request("workspace.delete", { workspaceId: one.workspace.id });
+    const after = (await a.request("session.create", { name: "s", profileId: profile.id })).result.session;
+    expect(after.workspaceId).toBeUndefined();
+  });
+
+  it("refuses launch.env keys that look like secrets, naming the key but not the value", async () => {
+    const { a } = await setup();
+    const withEnv = (env: Record<string, string>) => ({ name: "p", launch: { ...claude, env } });
+    for (const key of ["GITHUB_TOKEN", "db_password", "OpenAiApiKey", "AWS_SECRET", "API_KEY"]) {
+      const failure = await a
+        .request("profile.create", withEnv({ [key]: "hunter2" }))
+        .catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(IpcError);
+      const { code, message } = failure as IpcError;
+      expect(code).toBe("bad_request");
+      expect(message).toContain(key);
+      expect(message).not.toContain("hunter2");
+    }
+    const { profile } = (await a.request("profile.create", withEnv({ LANG: "C", TOKENS_PER_MIN: "5" })))
+      .result;
+    expect(
+      await errorCode(
+        a.request("profile.update", {
+          profileId: profile.id,
+          launch: { ...claude, env: { NPM_TOKEN: "x" } },
+        }),
+      ),
+    ).toBe("bad_request");
+    expect((await a.request("profile.list", {})).result.profiles).toEqual([profile]);
+  });
+
+  it("fills a profile cwd of ~ in the order project, workspace, setting, ~", async () => {
+    const { a } = await setup();
+    const home = { backend: "wsl", cwd: "~", command: ["bash"] } as const;
+    const { workspace, project } = await workspaceWithProject(a, "Web", "/home/dev/api");
+    await a.request("workspace.update", { workspaceId: workspace.id, defaultCwd: "/srv/web" });
+    const cwdOf = async (profileId: string) =>
+      (await a.request("session.create", { name: "s", profileId })).result.session.launch.cwd;
+    const create = async (binding: Record<string, string>) =>
+      (await a.request("profile.create", { name: "p", launch: home, ...binding })).result.profile.id;
+
+    expect(await cwdOf(await create({ projectId: project.id }))).toBe("/home/dev/api");
+    expect(await cwdOf(await create({ workspaceId: workspace.id }))).toBe("/srv/web");
+    expect(await cwdOf(await create({}))).toBe("~");
+    // The stored setting comes after project and workspace.
+    await a.request("settings.set", { settings: { defaultCwd: "/opt/default" } });
+    expect(await cwdOf(await create({}))).toBe("/opt/default");
+    // A directory of its own is kept as it is.
+    const own = (await a.request("profile.create", { name: "own", launch: claude, projectId: project.id }))
+      .result.profile;
+    expect(await cwdOf(own.id)).toBe("/home/dev/claude");
   });
 });

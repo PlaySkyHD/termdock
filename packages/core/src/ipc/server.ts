@@ -26,8 +26,13 @@ import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput, SessionRegistry } from "../session/registry.js";
 import type { LayoutRepository } from "../storage/layout-repository.js";
+import { InMemoryProfileRepository } from "../storage/profile-repository.js";
+import type { ProfileRepository } from "../storage/profile-repository.js";
+import { InMemorySettingsRepository } from "../storage/settings-repository.js";
+import type { SettingsRepository } from "../storage/settings-repository.js";
 import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
+import { ProfileService } from "../workspace/profile-service.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { defaultPipeName } from "./pipe-name.js";
 
@@ -56,8 +61,12 @@ export interface CoreServerOptions {
   registry: SessionRegistry;
   /** Stored layout behind `layout.get` and `layout.save`. */
   layouts: LayoutRepository;
+  /** Stored settings behind `settings.get` and `settings.set`; defaults to an in-memory repository. */
+  settings?: SettingsRepository;
   /** Stored workspaces and projects behind `workspace.*` and `project.*`; defaults to an in-memory repository. */
   workspaces?: WorkspaceRepository;
+  /** Stored launch profiles behind `profile.*`; defaults to an in-memory repository. */
+  profiles?: ProfileRepository;
   /** Pipe path; defaults to `\\.\pipe\termdock-core-<user>`. Tests pass a unique name. */
   pipePath?: string;
   /** Per-client limit for output the client has not read yet; defaults to 16 MiB. */
@@ -118,7 +127,9 @@ export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
   private readonly layouts: LayoutRepository;
+  private readonly settings: SettingsRepository;
   private readonly workspaces: WorkspaceService;
+  private readonly profiles: ProfileService;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -141,7 +152,9 @@ export class CoreServer {
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.layouts = options.layouts;
+    this.settings = options.settings ?? new InMemorySettingsRepository();
     this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
+    this.profiles = new ProfileService(options.profiles ?? new InMemoryProfileRepository(), this.workspaces);
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -232,6 +245,16 @@ export class CoreServer {
     // would retry a `create` that already happened.
     try {
       this.notifyListers("workspace.changed", { workspaces: this.workspaces.list() });
+    } catch (error) {
+      this.onInternalError(error);
+    }
+  }
+
+  /** Reports the full profile list after a stored change, or after a workspace or project delete unbound some. */
+  private notifyProfiles(): void {
+    // Stored by now, like `notifyWorkspaces`: a failing read must not turn the answer into an error.
+    try {
+      this.notifyListers("profile.changed", { profiles: this.profiles.list() });
     } catch (error) {
       this.onInternalError(error);
     }
@@ -373,13 +396,24 @@ export class CoreServer {
         const { name, launch, size, workspaceId, profileId, loggingEnabled } = request.params;
         // A deleted or unknown workspace must not collect sessions that no delete can ungroup any more.
         if (workspaceId !== undefined) this.workspaces.assertWorkspace(workspaceId);
-        // Stub until issue #58: the launch spec of the profile.
-        if (launch === undefined) throw notImplemented("session.create ohne launch");
-        const input: CreateSessionInput = { name, launch };
+        let resolved = launch;
+        let profileLogging: boolean | undefined;
+        let sessionWorkspaceId = workspaceId;
+        if (profileId !== undefined) {
+          const fromProfile = this.profiles.launchFor(profileId, launch, this.settings.get());
+          resolved = fromProfile.launch;
+          profileLogging = fromProfile.loggingEnabled;
+          // The workspace of the profile (existing: the profile list drops a deleted one) is the default.
+          sessionWorkspaceId ??= fromProfile.workspaceId;
+        }
+        // The parser guarantees a launch spec when there is no profile.
+        if (resolved === undefined) throw new CoreError("bad_request", "params.launch is required");
+        const input: CreateSessionInput = { name, launch: resolved };
         if (size !== undefined) input.size = size;
-        if (workspaceId !== undefined) input.workspaceId = workspaceId;
+        if (sessionWorkspaceId !== undefined) input.workspaceId = sessionWorkspaceId;
         if (profileId !== undefined) input.profileId = profileId;
-        if (loggingEnabled !== undefined) input.loggingEnabled = loggingEnabled;
+        const logging = loggingEnabled ?? profileLogging;
+        if (logging !== undefined) input.loggingEnabled = logging;
         return { result: { session: await registry.create(input) } };
       }
       case "session.list":
@@ -449,6 +483,7 @@ export class CoreServer {
         // Sessions first: no client may see a session of a workspace that `workspace.changed` no longer lists.
         for (const session of ungrouped) this.notifyListers("session.updated", { session });
         this.notifyWorkspaces();
+        this.notifyProfiles();
         return EMPTY_RESULT;
       }
       case "project.create": {
@@ -464,16 +499,25 @@ export class CoreServer {
       case "project.delete":
         this.workspaces.deleteProject(request.params.projectId);
         this.notifyWorkspaces();
+        this.notifyProfiles();
         return EMPTY_RESULT;
       // Launch profiles: issue #58.
       case "profile.list":
-        throw notImplemented(request.method);
-      case "profile.create":
-        throw notImplemented(request.method);
-      case "profile.update":
-        throw notImplemented(request.method);
+        return { result: { profiles: this.profiles.list() } };
+      case "profile.create": {
+        const profile = this.profiles.create(request.params);
+        this.notifyProfiles();
+        return { result: { profile } };
+      }
+      case "profile.update": {
+        const profile = this.profiles.update(request.params);
+        this.notifyProfiles();
+        return { result: { profile } };
+      }
       case "profile.delete":
-        throw notImplemented(request.method);
+        this.profiles.delete(request.params.profileId);
+        this.notifyProfiles();
+        return EMPTY_RESULT;
       // Rename, move, archive, delete: issue #57.
       case "session.update": {
         const { sessionId, ...patch } = request.params;
@@ -498,11 +542,13 @@ export class CoreServer {
         this.notifyListers("session.removed", { sessionId });
         return EMPTY_RESULT;
       }
-      // Settings: issue #64.
       case "settings.get":
-        throw notImplemented(request.method);
-      case "settings.set":
-        throw notImplemented(request.method);
+        return { result: { settings: this.settings.get() } };
+      case "settings.set": {
+        const settings = this.settings.set(request.params.settings);
+        // The event follows the answer; every lister gets it, the caller too.
+        return { result: { settings }, after: () => this.notifyListers("settings.changed", { settings }) };
+      }
       // History search: issue #62.
       case "history.search":
         throw notImplemented(request.method);

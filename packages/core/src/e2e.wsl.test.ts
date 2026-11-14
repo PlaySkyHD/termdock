@@ -391,6 +391,46 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect(states).not.toContain("Interrupted");
   }, 120_000);
 
+  it("starts a session from a profile in the directory of its project, command as argument array (issue #58)", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const workspace = (await c.request("workspace.create", { name: "e2e" })).result.workspace;
+    const project = (
+      await c.request("project.create", {
+        workspaceId: workspace.id,
+        name: "usr",
+        path: "/usr",
+        backend: "wsl",
+      })
+    ).result.project;
+    const command = ["bash", "-lc", "pwd; exec bash"];
+    const fromProject = (
+      await c.request("profile.create", {
+        name: "pwd",
+        launch: { backend: "wsl", cwd: "~", command },
+        projectId: project.id,
+      })
+    ).result.profile;
+    const explicit = (
+      await c.request("profile.create", { name: "var", launch: { backend: "wsl", cwd: "/var", command } })
+    ).result.profile;
+
+    for (const [profile, expected] of [
+      [fromProject, "/usr"],
+      [explicit, "/var"],
+    ] as const) {
+      const { session } = (await c.request("session.create", { name: profile.name, profileId: profile.id }))
+        .result;
+      distros.add(session.launch.distro!);
+      expect(session.launch).toMatchObject({ cwd: expected, command });
+      await waitFor(async () => {
+        const pane = await tmux(session.launch.distro!, ["capture-pane", "-p", "-t", `=td-${session.id}:`]);
+        return pane.stdout.split("\n").some((line) => line.trim() === expected);
+      }, `pwd ${expected}`);
+    }
+  }, 120_000);
+
   it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
     freshDataDir();
     await startCore();

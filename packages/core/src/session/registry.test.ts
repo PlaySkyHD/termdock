@@ -500,6 +500,108 @@ describe("SessionRegistry: output", () => {
     expect(backend.redraws).toEqual([id, id]);
   });
 
+  describe("marks the output of a requested redraw (issue #88)", () => {
+    async function redrawing(options: Partial<SessionRegistryOptions> = {}, backendSnapshot = true) {
+      const { registry, backend } = setup(options);
+      const { id } = await registry.create({ name: "shell", launch: spec });
+      if (backendSnapshot) backend.setSnapshot(id, "screen");
+      const outputs: Array<{ text: string; fromRedraw: boolean; viewIds: readonly string[] }> = [];
+      registry.onOutput((e) =>
+        outputs.push({
+          text: new TextDecoder().decode(e.data),
+          fromRedraw: e.fromRedraw,
+          viewIds: e.viewIds,
+        }),
+      );
+      // Like tmux after `refresh-client`: the repaint arrives through the PTY before the call returns.
+      backend.onRedraw = (sessionId) => backend.pty(sessionId).emitData("repaint");
+      return { registry, backend, id, outputs };
+    }
+
+    it("flags output while the redraw runs and passes it to the views", async () => {
+      const { registry, backend, id, outputs } = await redrawing();
+      await registry.attachView(id, "view-a");
+      await settle();
+      backend.pty(id).emitData("before");
+
+      await registry.attachView(id, "view-b");
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(outputs).toEqual([
+        { text: "repaint", fromRedraw: true, viewIds: ["view-a"] },
+        { text: "before", fromRedraw: false, viewIds: ["view-a"] },
+        { text: "repaint", fromRedraw: true, viewIds: ["view-a", "view-b"] },
+        { text: "after", fromRedraw: false, viewIds: ["view-a", "view-b"] },
+      ]);
+    });
+
+    it("keeps flagging until a merged follow-up redraw has ended", async () => {
+      const { registry, backend, id, outputs } = await redrawing();
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+      await registry.attachView(id, "view-a");
+      await registry.attachView(id, "view-b");
+      backend.pty(id).emitData("waiting");
+
+      backend.redrawGate = undefined;
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "waiting:true",
+        "repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("does not flag the output of a PTY re-attached while the redraw runs", async () => {
+      const { registry, backend, id, outputs } = await redrawing();
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+      await registry.attachView(id, "view-a");
+      const lost = backend.pty(id);
+
+      lost.loseClient();
+      await vi.waitFor(() => expect(backend.pty(id)).not.toBe(lost));
+      backend.pty(id).emitData("fresh");
+      release();
+      await settle();
+
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "fresh:false",
+      ]);
+    });
+
+    it("stops flagging after a redraw failed twice", async () => {
+      const failure = new Error("refresh-client failed");
+      const { registry, backend, id, outputs } = await redrawing({ onRedrawError: () => {} });
+      backend.failNextRedraw = failure;
+      backend.onRedraw = () => (backend.failNextRedraw ??= failure);
+
+      await registry.attachView(id, "view-a");
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs).toEqual([{ text: "after", fromRedraw: false, viewIds: ["view-a"] }]);
+    });
+
+    it("does not flag output when no redraw was requested", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      backend.pty(id).emitData("buffered");
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitData("live");
+
+      expect(backend.redraws).toEqual([]);
+      expect(outputs.map(({ fromRedraw }) => fromRedraw)).toEqual([false, false]);
+    });
+  });
+
   it("drops the backend snapshot when the PTY ends while it is taken", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });

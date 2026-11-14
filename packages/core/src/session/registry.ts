@@ -115,6 +115,12 @@ export interface OutputEvent {
   data: Uint8Array;
   /** Views attached when the output arrived; each of them gets `session.output`. */
   viewIds: readonly ViewId[];
+  /**
+   * Whether the output arrived while a redraw the registry requested ran (`requestRedraw`, from the request to the
+   * end of its retry and merged follow-up). Such output repaints the screen and is not stored in the history
+   * (issue #88). Core-internal: `session.output` does not carry it.
+   */
+  fromRedraw: boolean;
 }
 
 export interface AttachResult {
@@ -148,6 +154,14 @@ type Listener<T> = (event: T) => void;
 
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
+/** A requested redraw while it runs (issue #34). */
+interface RedrawRun {
+  /** Another redraw was requested meanwhile; it follows this one. */
+  again: boolean;
+  /** PTY the current backend call repaints; its output is flagged `fromRedraw` (issue #88). */
+  pty: PtyHandle | undefined;
+}
+
 interface SessionEntry {
   info: SessionInfo;
   pty: PtyHandle | undefined;
@@ -160,7 +174,7 @@ interface SessionEntry {
   /** Terminal modes the output up to `outputSeq` switched on; they lead every snapshot (issue #42). */
   modes: TerminalModes;
   /** Redraw in progress; `again` asks for one more after it (see `requestRedraw`). */
-  redraw: { again: boolean } | undefined;
+  redraw: RedrawRun | undefined;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
   busy: "start" | "kill" | "archive" | "reattach" | "delete" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
@@ -600,18 +614,20 @@ export class SessionRegistry {
       entry.redraw.again = true;
       return;
     }
-    const run = { again: false };
+    const run: RedrawRun = { again: false, pty: entry.pty };
     entry.redraw = run;
     void this.runRedraws(entry, backend, run).finally(() => {
       if (entry.redraw === run) entry.redraw = undefined;
     });
   }
 
-  private async runRedraws(entry: SessionEntry, backend: Backend, run: { again: boolean }): Promise<void> {
+  private async runRedraws(entry: SessionEntry, backend: Backend, run: RedrawRun): Promise<void> {
     do {
       run.again = false;
       let failure: unknown;
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        // Only the output of the PTY this call repaints is flagged; a re-attached PTY counts from its next call.
+        run.pty = entry.pty;
         try {
           await backend.redraw?.(entry.info.id, entry.info.launch);
           failure = undefined;
@@ -851,6 +867,8 @@ export class SessionRegistry {
           seq: entry.outputSeq,
           data,
           viewIds: [...entry.views],
+          // The bytes carry no origin; the repaint arrives before the backend call returns (design, issue #88).
+          fromRedraw: entry.redraw?.pty === pty,
         });
       }),
       pty.onExit(({ exitCode }) => {

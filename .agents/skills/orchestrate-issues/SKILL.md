@@ -34,7 +34,7 @@ Every prompt contains:
 - the worktree setup (worktrees live on P:, not in the main checkout; see lessons section 1): `git -C P:/GitHub/termdock fetch origin`, then `git -C P:/GitHub/termdock worktree add P:/GitHub/termdock-wt/<branch> -b <branch> origin/main` (stacked: base on `origin/<parent-branch>`), then work only inside that worktree with absolute paths; if the fetch fails, stop and report,
 - `npm ci` once in the fresh worktree,
 - the graphify rule: if `graphify-out/graph.json` is missing run `graphify update .` in the worktree, then `graphify query "<question>"` before grep,
-- no `git restore`, `git stash`, `git reset --hard`; no pull request; no push to main; never touch the main checkout `P:/GitHub/termdock` except `fetch` and `worktree add`,
+- no `git restore`, `git stash`, `git reset --hard`, `wsl --shutdown`/`--terminate` (the PreToolUse hook `.claude/hooks/guard-commands.mjs` blocks these and shell writes into the repository; the list is in lessons section 5); no pull request; no push to main; never touch the main checkout `P:/GitHub/termdock` except `fetch` and `worktree add`,
 - file edits through Read, Edit and Write. A script that writes files is allowed only for a mechanical change across many lines (rename, conflict markers) and must be named with its exact command in the report under Umwege; never for logic changes. Formatters (`npm run format`) and generators may write. Commit messages via several `git commit -m`, not a heredoc,
 - "the repository is public: no secrets, personal data or content about other private projects",
 - the exact scope, the OpenSpec change name and capability, and which packages not to touch,

@@ -5,7 +5,14 @@ import { createServer, connect as netConnect } from "node:net";
 import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { encodeFrame, FrameDecoder, LAYOUT_VERSION, MAX_PAYLOAD_BYTES } from "@termdock/protocol";
+import {
+  DEFAULT_SETTINGS,
+  encodeFrame,
+  FrameDecoder,
+  LAYOUT_VERSION,
+  MAX_PAYLOAD_BYTES,
+  PHASE_3_METHODS,
+} from "@termdock/protocol";
 import type { Frame, LayoutDocument, SessionInfo } from "@termdock/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
@@ -125,7 +132,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.2" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -133,7 +140,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.2" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -890,6 +897,115 @@ describe("client library", () => {
     const other = collectOutput(client);
     await waitFor(() => other.length === 1, "second output on a fresh listener");
     expect(seen).toEqual(["one"]);
+  });
+});
+
+describe("phase 3 (issue #55)", () => {
+  /** Valid params per phase-3 method; a stub answers each of them with internal. */
+  const stubCalls: Record<(typeof PHASE_3_METHODS)[number], unknown> = {
+    "workspace.list": {},
+    "workspace.create": { name: "TermDock" },
+    "workspace.update": { workspaceId: "w1", name: "Neu" },
+    "workspace.delete": { workspaceId: "w1" },
+    "project.create": { workspaceId: "w1", name: "api", path: "/home/dev/api", backend: "wsl" },
+    "project.update": { projectId: "p1", name: "web" },
+    "project.delete": { projectId: "p1" },
+    "profile.list": {},
+    "profile.create": { name: "Claude", launch: { ...launch, command: ["claude"] } },
+    "profile.update": { profileId: "pr1", autostart: true },
+    "profile.delete": { profileId: "pr1" },
+    "session.update": { sessionId: "s1", workspaceId: null },
+    "session.archive": { sessionId: "s1" },
+    "session.delete": { sessionId: "s1" },
+    "settings.get": {},
+    "settings.set": { settings: { historyEnabledByDefault: false } },
+    "history.search": { query: "error" },
+  };
+
+  it("answers every phase-3 method with internal 'noch nicht umgesetzt' and keeps serving", async () => {
+    const errors: unknown[] = [];
+    const { pipePath } = await startCore({ onInternalError: (error) => errors.push(error) });
+    const raw = await rawConnect(pipePath);
+    raw.send(hello);
+    const calls: [string, unknown][] = [
+      ...Object.entries(stubCalls),
+      // Creating from a profile without launch belongs to issue #58.
+      ["session.create", { name: "Claude", profileId: "pr1" }],
+    ];
+    for (const [method, params] of calls) raw.send({ kind: "request", id: method, method, params });
+    raw.send({ kind: "request", id: "list", method: "session.list", params: {} });
+    await waitFor(() => raw.frames.length === calls.length + 2, "all responses");
+
+    for (const [index, [method]] of calls.entries()) {
+      const header = raw.frames[index + 1]?.header as {
+        id: string;
+        error?: { code: string; message: string };
+      };
+      expect(header.id).toBe(method);
+      expect(header.error?.code, method).toBe("internal");
+      expect(header.error?.message).toContain(method);
+      expect(header.error?.message).toContain("noch nicht umgesetzt");
+    }
+    expect(raw.frames.at(-1)?.header).toMatchObject({ id: "list", result: { sessions: [] } });
+    expect(raw.closed()).toBe(false);
+    // A stub is a known answer, not a crash.
+    expect(errors).toEqual([]);
+  });
+
+  it("has a stub for every phase-3 method", () => {
+    expect(Object.keys(stubCalls).sort()).toEqual([...PHASE_3_METHODS].sort());
+  });
+
+  it("sends the phase-3 events once to each client that listed sessions, never to others", async () => {
+    const { pipePath, server } = await startCore();
+    const asker = await newClient(pipePath);
+    const other = await newClient(pipePath);
+    const stranger = await newClient(pipePath);
+    await asker.request("session.list", {});
+    await other.request("session.list", {});
+    const names = [
+      "session.updated",
+      "session.removed",
+      "workspace.changed",
+      "profile.changed",
+      "settings.changed",
+    ] as const;
+    const seen = new Map<CoreClient, string[]>([
+      [asker, []],
+      [other, []],
+      [stranger, []],
+    ]);
+    for (const [client, list] of seen) for (const name of names) client.on(name, () => list.push(name));
+    const session: SessionInfo = {
+      id: "s1",
+      name: "x",
+      state: "Detached",
+      launch,
+      size: { cols: 80, rows: 24 },
+      loggingEnabled: true,
+      createdAt: "2026-11-13T10:00:00.000Z",
+      updatedAt: "2026-11-13T10:00:00.000Z",
+    };
+
+    server.notifyListers("session.updated", { session });
+    server.notifyListers("session.removed", { sessionId: "s1" });
+    server.notifyListers("workspace.changed", { workspaces: [{ id: "w1", name: "TermDock", projects: [] }] });
+    server.notifyListers("profile.changed", { profiles: [] });
+    server.notifyListers("settings.changed", { settings: { ...DEFAULT_SETTINGS } });
+    // Events are written before these answers, so nothing is still on its way.
+    for (const client of seen.keys()) await errorCode(client.request("session.kill", { sessionId: "nope" }));
+
+    expect(seen.get(asker)).toEqual([...names]);
+    expect(seen.get(other)).toEqual([...names]);
+    expect(seen.get(stranger)).toEqual([]);
+  });
+
+  it("accepts a client with protocol 1.2 and answers 1.3", async () => {
+    const { pipePath } = await startCore();
+    const raw = await rawConnect(pipePath);
+    raw.send({ ...hello, params: helloParams("1.2") });
+    await waitFor(() => raw.frames.length === 1, "hello response");
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
   });
 });
 

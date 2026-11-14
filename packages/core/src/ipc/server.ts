@@ -16,6 +16,7 @@ import type {
   EventMap,
   EventName,
   Frame,
+  ListerEventName,
   ParsedRequest,
   SessionAttachResult,
   SessionId,
@@ -198,20 +199,29 @@ export class CoreServer {
         const data = writerViewId === undefined ? { sessionId } : { sessionId, writerViewId };
         this.route(viewIds, [], eventFrame("view.writerChanged", data));
       }),
-      this.registry.onCreated(({ session }) => {
-        // Like `session.stateChanged`: clients that list sessions. One that never lists would see the session
-        // in `Starting` for ever. Older clients drop events they do not know.
-        const listers = [...this.connections].filter((conn) => conn.listSubscriber);
-        this.route([], listers, eventFrame("session.created", { session }));
-      }),
+      this.registry.onCreated(({ session }) => this.notifyListers("session.created", { session })),
       this.registry.onStateChange(({ sessionId, session }) => {
         const viewIds = [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
-        const listers = [...this.connections].filter((conn) => conn.listSubscriber);
+        const listers = this.listers();
         const data: EventMap["session.stateChanged"] = { sessionId, state: session.state };
         if (session.lastExitCode !== undefined) data.lastExitCode = session.lastExitCode;
         this.route(viewIds, listers, eventFrame("session.stateChanged", data));
       }),
     ];
+  }
+
+  /**
+   * Sends a session, workspace, profile or settings event to every connection that used `session.list`, also
+   * the one that caused it. Like `session.stateChanged`: a client that never lists would see stale state.
+   * Older clients drop events they do not know (ADR 0002).
+   */
+  notifyListers<E extends ListerEventName>(event: E, data: EventMap[E]): void {
+    this.route([], this.listers(), eventFrame(event, data));
+  }
+
+  /** Connections that used `session.list`. */
+  private listers(): Connection[] {
+    return [...this.connections].filter((conn) => conn.listSubscriber);
   }
 
   /** Sends one event to each connection that owns one of the views or is in `extra`, at most once. */
@@ -343,6 +353,8 @@ export class CoreServer {
         throw new CoreError("bad_request", "hello was already sent");
       case "session.create": {
         const { name, launch, size, workspaceId, profileId, loggingEnabled } = request.params;
+        // Stub until issue #58: the launch spec of the profile.
+        if (launch === undefined) throw notImplemented("session.create ohne launch");
         const input: CreateSessionInput = { name, launch };
         if (size !== undefined) input.size = size;
         if (workspaceId !== undefined) input.workspaceId = workspaceId;
@@ -393,6 +405,46 @@ export class CoreServer {
         };
       case "core.shutdown":
         return this.shutdown(request.params.stopSessions === true);
+      // --- Phase 3 stubs (issue #55). Each issue replaces only its own cases. ---------------------------
+      // Workspaces and projects: issue #56.
+      case "workspace.list":
+        throw notImplemented(request.method);
+      case "workspace.create":
+        throw notImplemented(request.method);
+      case "workspace.update":
+        throw notImplemented(request.method);
+      case "workspace.delete":
+        throw notImplemented(request.method);
+      case "project.create":
+        throw notImplemented(request.method);
+      case "project.update":
+        throw notImplemented(request.method);
+      case "project.delete":
+        throw notImplemented(request.method);
+      // Launch profiles: issue #58.
+      case "profile.list":
+        throw notImplemented(request.method);
+      case "profile.create":
+        throw notImplemented(request.method);
+      case "profile.update":
+        throw notImplemented(request.method);
+      case "profile.delete":
+        throw notImplemented(request.method);
+      // Rename, move, archive, delete: issue #57.
+      case "session.update":
+        throw notImplemented(request.method);
+      case "session.archive":
+        throw notImplemented(request.method);
+      case "session.delete":
+        throw notImplemented(request.method);
+      // Settings: issue #64.
+      case "settings.get":
+        throw notImplemented(request.method);
+      case "settings.set":
+        throw notImplemented(request.method);
+      // History search: issue #62.
+      case "history.search":
+        throw notImplemented(request.method);
     }
   }
 
@@ -537,6 +589,11 @@ export class CoreServer {
     for (const conn of [...this.connections]) this.endConnection(conn);
     await stopped;
   }
+}
+
+/** Answer of a phase-3 method whose logic is not built yet: `internal`, the connection stays (spec core-ipc). */
+function notImplemented(what: string): CoreError {
+  return new CoreError("internal", `${what}: noch nicht umgesetzt`);
 }
 
 function eventFrame<E extends EventName>(event: E, data: EventMap[E], payload?: Uint8Array): Uint8Array {

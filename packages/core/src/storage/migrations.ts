@@ -65,6 +65,47 @@ export const MIGRATIONS: readonly Migration[] = [
     // Revision of the stored layout: 0 for a row without saves, +1 per save (layout.save, baseRevision).
     sql: `ALTER TABLE layouts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    version: 3,
+    // Phase 3 (issue #55): project backends, workspace default directory, launch profiles, settings.
+    sql: `
+      ALTER TABLE workspaces ADD COLUMN default_cwd TEXT;
+
+      -- Existing projects were all WSL folders.
+      ALTER TABLE projects ADD COLUMN backend TEXT NOT NULL DEFAULT 'wsl' CHECK (backend IN ('wsl', 'windows'));
+      ALTER TABLE projects ADD COLUMN distro TEXT;
+
+      -- LaunchSpec in columns as in sessions; command and env as JSON. Deleting a workspace or project
+      -- unbinds the profile (deleting a workspace cascades to its projects).
+      CREATE TABLE launch_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        workspace_id TEXT REFERENCES workspaces (id) ON DELETE SET NULL,
+        project_id TEXT REFERENCES projects (id) ON DELETE SET NULL,
+        backend TEXT NOT NULL CHECK (backend IN ('wsl', 'windows')),
+        distro TEXT,
+        shell TEXT,
+        cwd TEXT NOT NULL,
+        command TEXT,
+        env TEXT,
+        autostart INTEGER NOT NULL CHECK (autostart IN (0, 1)),
+        logging_enabled INTEGER NOT NULL CHECK (logging_enabled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX launch_profiles_workspace ON launch_profiles (workspace_id);
+      CREATE INDEX launch_profiles_project ON launch_profiles (project_id);
+
+      -- One row per key of Settings with a JSON value; a missing key has its default.
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) STRICT;
+
+      -- Autostart looks up the sessions of a profile (ADR 0005). No foreign key: a session keeps its profile id.
+      CREATE INDEX sessions_profile ON sessions (profile_id);
+    `,
+  },
 ];
 
 /** Highest applied migration; 0 for an empty database. */

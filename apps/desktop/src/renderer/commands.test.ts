@@ -68,7 +68,8 @@ function setup(sessions: Array<string | SessionInfo> = []) {
       created.push(params);
       await answer;
       if (createFailure) throw createFailure;
-      return { ...session(`new${created.length}`), name: params.name, launch: params.launch };
+      const base = session(`new${created.length}`);
+      return { ...base, name: params.name, launch: params.launch ?? base.launch };
     },
     showForm: () => calls.push("showForm"),
     shortcutsOpen: false,

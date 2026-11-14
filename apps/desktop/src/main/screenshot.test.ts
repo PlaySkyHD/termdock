@@ -4,6 +4,7 @@ import {
   QuietWatch,
   screenshotDir,
   screenshotProfileDir,
+  staleProfileDirs,
   stopIsolatedCore,
 } from "./screenshot.js";
 
@@ -20,19 +21,36 @@ describe("screenshotDir", () => {
 });
 
 describe("isolatedCore", () => {
-  it("uses its own pipe, the given data directory and the tmux test socket", () => {
+  it("uses its own pipe, the given data directory and a tmux socket of its own", () => {
     const core = isolatedCore("C:\\Temp\\td-shot-1", 4242, "ab12");
 
     expect(core.pipePath).toBe("\\\\.\\pipe\\termdock-core-shot-4242-ab12");
     expect(core.env).toEqual({
       TERMDOCK_PIPE: "\\\\.\\pipe\\termdock-core-shot-4242-ab12",
       TERMDOCK_DATA_DIR: "C:\\Temp\\td-shot-1",
-      TERMDOCK_TMUX_SOCKET: "termdock-test",
+      TERMDOCK_TMUX_SOCKET: "termdock-test-4242-ab12",
     });
   });
 
-  it("keeps the Electron profile of screenshot runs in one fixed temp folder", () => {
-    expect(screenshotProfileDir("C:\\Temp")).toBe("C:\\Temp\\termdock-screenshot-profile");
+  it("keeps the Electron profile of a screenshot run in a temp folder of its process", () => {
+    expect(screenshotProfileDir("C:\\Temp", 4242)).toBe("C:\\Temp\\termdock-screenshot-profile-4242");
+  });
+
+  it("finds the profiles of earlier runs whose process has ended", () => {
+    const entries = [
+      "termdock-screenshot-profile-1",
+      "termdock-screenshot-profile-2",
+      "termdock-screenshot-profile-4242",
+      "termdock-screenshot-profile",
+      "termdock-shot-abc",
+      "other",
+    ];
+    const alive = new Set([2, 4242]);
+
+    expect(staleProfileDirs("C:\\Temp", entries, 4242, (pid) => alive.has(pid))).toEqual([
+      "C:\\Temp\\termdock-screenshot-profile-1",
+      "C:\\Temp\\termdock-screenshot-profile",
+    ]);
   });
 });
 

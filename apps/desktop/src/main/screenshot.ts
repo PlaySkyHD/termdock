@@ -17,22 +17,53 @@ export interface IsolatedCore {
   env: { TERMDOCK_PIPE: string; TERMDOCK_DATA_DIR: string; TERMDOCK_TMUX_SOCKET: string };
 }
 
-/** Own pipe, the database in `dataDir` (a fresh temp directory), tmux socket `termdock-test` (as the WSL tests). */
+/**
+ * Own pipe, the database in `dataDir` (a fresh temp directory) and a tmux socket of this run
+ * (`termdock-test-<pid>-<nonce>`), so parallel runs and the WSL tests on `termdock-test` do not meet.
+ */
 export function isolatedCore(dataDir: string, pid: number, nonce: string): IsolatedCore {
   const pipePath = `\\\\.\\pipe\\termdock-core-shot-${pid}-${nonce}`;
   return {
     pipePath,
-    env: { TERMDOCK_PIPE: pipePath, TERMDOCK_DATA_DIR: dataDir, TERMDOCK_TMUX_SOCKET: "termdock-test" },
+    env: {
+      TERMDOCK_PIPE: pipePath,
+      TERMDOCK_DATA_DIR: dataDir,
+      TERMDOCK_TMUX_SOCKET: `termdock-test-${pid}-${nonce}`,
+    },
   };
 }
 
 /**
- * Electron profile (`userData`) of screenshot runs: one fixed folder below the temp directory, reused by every
- * run. It keeps runs apart from a running app (own single-instance lock) and cannot be removed by the run
- * itself, because Electron holds its files open until the process has ended.
+ * Electron profile (`userData`) of a screenshot run: a folder of its process below the temp directory. It keeps
+ * the run apart from a running app (own single-instance lock) and from parallel runs. The run cannot remove it
+ * itself, because Electron holds its files open until the process has ended; a later run does (`staleProfileDirs`).
  */
-export function screenshotProfileDir(tempDir: string): string {
-  return path.win32.join(tempDir, "termdock-screenshot-profile");
+export function screenshotProfileDir(tempDir: string, pid: number): string {
+  return path.win32.join(tempDir, `${PROFILE_PREFIX}-${pid}`);
+}
+
+const PROFILE_PREFIX = "termdock-screenshot-profile";
+const PROFILE_PID = new RegExp(`^${PROFILE_PREFIX}-(\\d+)$`);
+
+/**
+ * Profiles of earlier screenshot runs in `entries` (names in `tempDir`) whose process has ended, including the
+ * fixed folder of older versions. The profile of `ownPid` and of live processes stays.
+ */
+export function staleProfileDirs(
+  tempDir: string,
+  entries: readonly string[],
+  ownPid: number,
+  isAlive: (pid: number) => boolean,
+): string[] {
+  return entries
+    .filter((name) => {
+      if (name === PROFILE_PREFIX) return true;
+      const match = PROFILE_PID.exec(name);
+      if (!match) return false;
+      const pid = Number(match[1]);
+      return pid !== ownPid && !isAlive(pid);
+    })
+    .map((name) => path.win32.join(tempDir, name));
 }
 
 export interface StopCoreDeps {
@@ -51,7 +82,7 @@ const CORE_EXIT_WAIT_MS = 5_000;
 
 /**
  * Ends the core of a screenshot run that failed before or right after it connected: first by
- * `core.shutdown { stopSessions: true }` (also ends its tmux sessions on `termdock-test`), otherwise by killing
+ * `core.shutdown { stopSessions: true }` (also ends its tmux sessions on the run's socket), otherwise by killing
  * the process. Waits until the process is gone, so its database can be removed afterwards.
  */
 export async function stopIsolatedCore(

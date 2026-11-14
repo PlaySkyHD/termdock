@@ -21,7 +21,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **Distro:** `Ubuntu` (26.04), Standardbenutzer `nic`, tmux 3.6. Aufruf aus Windows: `wsl.exe -d Ubuntu -- <befehl>`.
 - **Nicht aus einem Windows-Verzeichnis starten, das WSL nicht übersetzen kann.** Ein `wsl`-Aufruf aus einem unbekannten Arbeitsverzeichnis meldet `Failed to translate`. Im Code immer `--cd <linux-pfad>` oder `--cd ~` übergeben.
 - **`wsl -l -v` gibt UTF-16 aus.** In Node `wsl.exe` mit `env: { WSL_UTF8: '1' }` aufrufen, sonst stehen Nullbytes zwischen den Zeichen.
-- **Eigener tmux-Socket:** Produktiv `-L termdock`, Tests `-L termdock-test`. Tests räumen ihre Sessions mit `kill-session` auf; nie `kill-server` auf dem Produktiv-Socket.
+- **Eigener tmux-Socket:** Produktiv `-L termdock`, Tests `-L termdock-test`, jeder Screenshot-Lauf der Desktop-App `-L termdock-test-<pid>-<nonce>` (parallele Läufe teilten sich sonst den Server und beendeten sich gegenseitig die Sessions). Tests räumen ihre Sessions mit `kill-session` auf; nie `kill-server` auf dem Produktiv-Socket.
 - **WSL-Integrationstests** laufen nur mit `TERMDOCK_WSL_TESTS=1` und nur lokal; GitHub-Runner haben keine Distro.
 - **`wsl.exe -- <args>` geht durch die Login-Shell** (`$HOME` wird expandiert, `;` trennt Befehle). Für Argument-Arrays `wsl.exe -d Ubuntu --cd ~ --exec <programm> ...` nutzen.
 - **WSL beendet die Distro samt tmux-Server**, wenn ca. 8–20 s kein `wsl.exe`-Prozess läuft. Wer eine tmux-Session über eine Pause ohne PTY retten will, hält `wsl.exe -d Ubuntu --exec sleep infinity` offen (ADR 0003).

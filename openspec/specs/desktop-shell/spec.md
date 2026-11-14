@@ -223,12 +223,18 @@ Eine lesende View SHALL ihre Rolle anzeigen und eine Schaltfläche „Schreibrec
 
 ### Requirement: Screenshot-Modus gegen isolierten Core
 
-Mit `--screenshot <dir>` SHALL die App einen eigenen Core starten (eigene Pipe, Datenverzeichnis in einem Temp-Verzeichnis, tmux-Socket `termdock-test`), Sessions in den Zuständen `Running`, `Detached`, `Exited` und `Interrupted` mit mehreren Tabs, eine eingeklappte Sidebar, ein leeres Fenster und einen Leser aufnehmen (`capturePage()`, PNG in `<dir>`), danach alle Sessions und den Core beenden, das Datenverzeichnis entfernen und mit Code 0 enden; bei Fehler mit Code 1.
+Mit `--screenshot <dir>` SHALL die App einen eigenen Core starten (eigene Pipe, Datenverzeichnis in einem Temp-Verzeichnis, tmux-Socket `termdock-test-<pid>-<nonce>` dieses Laufs), Sessions in den Zuständen `Running`, `Detached`, `Exited` und `Interrupted` mit mehreren Tabs, eine eingeklappte Sidebar, ein leeres Fenster und einen Leser aufnehmen (PNG in `<dir>`), danach Sessions und Core beenden, das Datenverzeichnis entfernen und mit Code 0 enden; bei Fehler mit Code 1.
 
 #### Scenario: Aufnahme
 
 - **WHEN** die App mit `--screenshot <dir>` startet
-- **THEN** enthält `<dir>` PNG-Dateien mit der Sidebar in allen vier Zuständen und mehreren Tabs, mit eingeklappter Sidebar, mit leerem Fenster und geöffnetem Formular und mit einem Leser samt „Schreibrecht übernehmen“, und auf dem Socket `termdock-test` bleibt keine Session dieses Laufs
+- **THEN** enthält `<dir>` PNG-Dateien mit der Sidebar in allen vier Zuständen und mehreren Tabs, mit eingeklappter Sidebar, mit leerem Fenster und geöffnetem Formular und mit einem Leser samt „Schreibrecht übernehmen“, und auf dem Socket des Laufs bleibt keine Session
+
+#### Scenario: Parallele Läufe
+
+- **GIVEN** ein Screenshot-Lauf oder WSL-Integrationstests auf `termdock-test` laufen
+- **WHEN** ein zweiter Screenshot-Lauf startet
+- **THEN** nutzt er einen eigenen tmux-Socket und ein eigenes Electron-Profil, und keiner der Läufe beendet Sessions des anderen
 
 #### Scenario: Verbindung zum isolierten Core scheitert
 

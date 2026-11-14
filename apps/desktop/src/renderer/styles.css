@@ -758,3 +758,246 @@ input {
   outline: 1px solid var(--td-accent);
   outline-offset: 1px;
 }
+
+/* --- Workspaces, archive, drag and drop, context menu (#63) -------------------------------------- */
+
+.sidebar__group {
+  /* A drop target: the frame is always there, so lighting it up moves nothing. */
+  margin: 0 6px 6px;
+  padding-bottom: 2px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+
+.sidebar__group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+}
+
+.sidebar__group-header .sidebar__group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__group-menu {
+  width: 22px;
+  height: 20px;
+  font-size: 14px;
+  color: var(--td-muted);
+}
+
+.sidebar__group .sidebar__list {
+  margin-bottom: 2px;
+}
+
+.sidebar__group-title {
+  padding-left: 14px;
+}
+
+.sidebar__group .session-item,
+.sidebar__group .sidebar__empty,
+.project-item {
+  padding-left: 14px;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 22px;
+  padding-right: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--td-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-item:hover {
+  background: var(--td-hover);
+}
+
+.project-item:focus-visible,
+.archive-toggle:focus-visible,
+.session-row__delete:focus-visible,
+.sidebar__add:focus-visible,
+.context-menu__item:focus-visible {
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.project-icon {
+  flex: none;
+  width: 10px;
+  height: 8px;
+  border: 1px solid var(--td-muted);
+  border-radius: 1px;
+}
+
+.project-item .session-item__state {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+}
+
+.session-row .session-item {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.session-row__delete {
+  flex: none;
+  height: 20px;
+  margin-right: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--td-border);
+  border-radius: 2px;
+  background: transparent;
+  color: #f48771;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.session-row__delete:hover {
+  background: rgba(244, 135, 113, 0.15);
+}
+
+.archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.archive-toggle__count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--td-input);
+  font-weight: 400;
+}
+
+.sidebar__footer {
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--td-border);
+}
+
+.sidebar__add {
+  width: 100%;
+  height: 24px;
+  border: 1px dashed var(--td-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--td-muted);
+  cursor: pointer;
+}
+
+.sidebar__add:hover {
+  color: var(--td-foreground);
+  background: var(--td-hover);
+}
+
+/* While a session is dragged: every valid target gets a dashed frame, the one under the pointer a solid one. */
+.drop-target--valid {
+  border-color: var(--td-accent);
+  border-style: dashed;
+  background: rgba(0, 122, 204, 0.08);
+}
+
+.drop-target--over {
+  border-style: solid;
+  background: rgba(0, 122, 204, 0.25);
+}
+
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.drag-ghost {
+  position: fixed;
+  z-index: 30;
+  max-width: 220px;
+  padding: 2px 8px;
+  border: 1px solid var(--td-accent);
+  border-radius: 3px;
+  background: var(--td-selected);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 200px;
+  padding: 4px 0;
+  border: 1px solid var(--td-border);
+  border-radius: 3px;
+  background: var(--td-sidebar);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.context-menu__item {
+  display: block;
+  width: 100%;
+  height: 24px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.context-menu__item:hover:not([aria-disabled="true"]),
+.context-menu__item:focus {
+  background: var(--td-accent);
+  color: var(--td-status-foreground);
+}
+
+.context-menu__item--danger {
+  color: #f48771;
+}
+
+.context-menu__item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.context-menu__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--td-border);
+}
+
+.dialog__field {
+  margin-bottom: 10px;
+}

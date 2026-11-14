@@ -9,31 +9,6 @@ import type {
 
 export const NO_GROUP_LABEL = "Ohne Gruppe";
 
-export interface SessionGroup {
-  /** The workspace id; empty for the group without workspace. */
-  key: string;
-  label: string;
-  sessions: SessionInfo[];
-}
-
-/**
- * Sessions per workspace, headed by the workspace id (names come with workspaces in phase 3), sorted by id, and
- * always followed by the group without workspace. Archived sessions are not shown.
- */
-export function groupSessions(sessions: readonly SessionInfo[]): SessionGroup[] {
-  const byWorkspace = new Map<string, SessionInfo[]>();
-  const ungrouped: SessionInfo[] = [];
-  for (const session of sessions) {
-    if (session.state === "Archived") continue;
-    if (session.workspaceId === undefined) ungrouped.push(session);
-    else byWorkspace.set(session.workspaceId, [...(byWorkspace.get(session.workspaceId) ?? []), session]);
-  }
-  const groups = [...byWorkspace]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, list]) => ({ key, label: key, sessions: list }));
-  return [...groups, { key: "", label: NO_GROUP_LABEL, sessions: ungrouped }];
-}
-
 /** Only `Running` is shown as running; `Detached` lives without a view, `Exited` and `Interrupted` do not live. */
 export function isRunning(state: SessionState): boolean {
   return state === "Running";

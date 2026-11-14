@@ -1,6 +1,7 @@
 import { MAX_PANES_PER_TAB, MAX_TABS_PER_WINDOW, validateLayoutDocument } from "@termdock/protocol";
 import type { LayoutTab, SessionInfo, SessionState } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { paneContent } from "./pane-placeholder.js";
 import { activeTab, MAX_PANES, MAX_TABS, paneCount, tabSessionId, UiStore } from "./ui-store.js";
 
 function session(
@@ -565,6 +566,76 @@ describe("UiStore loadWindow and sessionsLoaded (#29)", () => {
     const store = newStore();
     store.setSessions([], false);
     expect(store.getState().sessionsLoaded).toBe(false);
+  });
+});
+
+describe("UiStore workspaces and session edits (#63)", () => {
+  it("takes a renamed and moved session without touching its state or exit code", () => {
+    const store = newStore();
+    store.setSessions([{ ...session("s1", "Exited"), lastExitCode: 2 }]);
+
+    // The update carries an older state; only name, workspace, logging and updatedAt count.
+    store.sessionUpdated({
+      ...session("s1", "Running"),
+      name: "Neu",
+      workspaceId: "w1",
+      loggingEnabled: true,
+      updatedAt: "2026-11-14T11:00:00Z",
+    });
+
+    expect(store.getState().sessions[0]).toMatchObject({
+      name: "Neu",
+      workspaceId: "w1",
+      loggingEnabled: true,
+      state: "Exited",
+      lastExitCode: 2,
+      updatedAt: "2026-11-14T11:00:00Z",
+    });
+  });
+
+  it("makes a session ungrouped when the update has no workspaceId", () => {
+    const store = newStore();
+    store.setSessions([{ ...session("s1"), workspaceId: "w1" }]);
+
+    store.sessionUpdated(session("s1"));
+
+    expect(store.getState().sessions[0]?.workspaceId).toBeUndefined();
+  });
+
+  it("adds a session that an update names and the store does not know", () => {
+    const store = newStore();
+    store.sessionUpdated(session("s9"));
+    expect(store.getState().sessions.map((s) => s.id)).toEqual(["s9"]);
+  });
+
+  it("removes a deleted session and keeps its tab, whose pane then falls back to the placeholder", () => {
+    const store = newStore();
+    store.setSessions([session("s1"), session("s2")]);
+    store.openSession("s1");
+
+    store.sessionRemoved("s1");
+
+    expect(store.getState().sessions.map((s) => s.id)).toEqual(["s2"]);
+    expect(sessionsOfTabs(store)).toEqual(["s1"]);
+    const content = paneContent(undefined, store.getState().sessionsLoaded);
+    expect(content).toMatchObject({ kind: "placeholder", title: "Session nicht gefunden" });
+  });
+
+  it("ignores the removal of an unknown session without notifying", () => {
+    const store = newStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.sessionRemoved("nope");
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("holds the workspaces of the core in its order", () => {
+    const store = newStore();
+    store.setWorkspaces([
+      { id: "w2", name: "B", projects: [] },
+      { id: "w1", name: "A", projects: [] },
+    ]);
+    expect(store.getState().workspaces.map((w) => w.name)).toEqual(["B", "A"]);
   });
 });
 

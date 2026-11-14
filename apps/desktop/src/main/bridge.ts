@@ -81,6 +81,15 @@ export class DesktopBridge {
         }),
       ),
       core.on("session.created", ({ session }) => this.toAll({ kind: "sessionCreated", session })),
+      core.on("session.updated", ({ session }) => this.toAll({ kind: "sessionUpdated", session })),
+      core.on("session.removed", ({ sessionId }) => {
+        // The session is gone for good; neither its output counter nor a view record may outlive it (the core has
+        // dropped the views already, and the window's detach of a dead view then ends with `not_found` here).
+        this.outputSeq.delete(sessionId);
+        for (const [viewId, view] of this.views) if (view.sessionId === sessionId) this.views.delete(viewId);
+        this.toAll({ kind: "sessionRemoved", sessionId });
+      }),
+      core.on("workspace.changed", ({ workspaces }) => this.toAll({ kind: "workspaceChanged", workspaces })),
       core.onClose(() => this.toAll({ kind: "coreClosed" })),
     ];
   }
@@ -167,6 +176,43 @@ export class DesktopBridge {
       case "claimWriter":
         this.ownView(windowId, call.viewId);
         await core.request("session.claimWriter", { viewId: call.viewId });
+        return null;
+      // Workspaces and sessions (#63): the windows learn the outcome from the core's events, which it sends to
+      // this client before the answer; only the new name of a session comes back.
+      case "listWorkspaces":
+        return (await core.request("workspace.list", {})).result.workspaces;
+      case "createWorkspace":
+        await core.request("workspace.create", { name: call.name });
+        return null;
+      case "updateWorkspace":
+        await core.request("workspace.update", { workspaceId: call.workspaceId, name: call.name });
+        return null;
+      case "deleteWorkspace":
+        await core.request("workspace.delete", { workspaceId: call.workspaceId });
+        return null;
+      case "createProject":
+        await core.request("project.create", {
+          workspaceId: call.workspaceId,
+          name: call.name,
+          path: call.path,
+          backend: call.backend,
+        });
+        return null;
+      case "updateProject":
+        await core.request("project.update", { projectId: call.projectId, name: call.name });
+        return null;
+      case "deleteProject":
+        await core.request("project.delete", { projectId: call.projectId });
+        return null;
+      case "updateSession": {
+        const { method: _method, ...params } = call;
+        return (await core.request("session.update", params)).result.session;
+      }
+      case "archiveSession":
+        await core.request("session.archive", { sessionId: call.sessionId });
+        return null;
+      case "deleteSession":
+        await core.request("session.delete", { sessionId: call.sessionId });
         return null;
       case "windowLayout": {
         const window = this.layouts?.windowOf(windowId);
@@ -272,6 +318,54 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "resize", viewId: text(raw["viewId"], "viewId"), size: size(raw["size"]) };
     case "claimWriter":
       return { method: "claimWriter", viewId: text(raw["viewId"], "viewId") };
+    case "listWorkspaces":
+      return { method: "listWorkspaces" };
+    case "createWorkspace":
+      return { method: "createWorkspace", name: text(raw["name"], "name") };
+    case "updateWorkspace":
+      return {
+        method: "updateWorkspace",
+        workspaceId: text(raw["workspaceId"], "workspaceId"),
+        name: text(raw["name"], "name"),
+      };
+    case "deleteWorkspace":
+      return { method: "deleteWorkspace", workspaceId: text(raw["workspaceId"], "workspaceId") };
+    case "createProject": {
+      const backend = raw["backend"];
+      if (backend !== "wsl" && backend !== "windows") throw new BadRequest("backend must be wsl or windows");
+      return {
+        method: "createProject",
+        workspaceId: text(raw["workspaceId"], "workspaceId"),
+        name: text(raw["name"], "name"),
+        path: text(raw["path"], "path"),
+        backend,
+      };
+    }
+    case "updateProject":
+      return {
+        method: "updateProject",
+        projectId: text(raw["projectId"], "projectId"),
+        name: text(raw["name"], "name"),
+      };
+    case "deleteProject":
+      return { method: "deleteProject", projectId: text(raw["projectId"], "projectId") };
+    case "updateSession": {
+      const call: Extract<BridgeCall, { method: "updateSession" }> = {
+        method: "updateSession",
+        sessionId: text(raw["sessionId"], "sessionId"),
+      };
+      // `undefined` counts as absent (a structured clone keeps the key), `null` is "ungrouped".
+      if (raw["name"] !== undefined) call.name = text(raw["name"], "name");
+      if (raw["workspaceId"] !== undefined)
+        call.workspaceId = raw["workspaceId"] === null ? null : text(raw["workspaceId"], "workspaceId");
+      if (call.name === undefined && call.workspaceId === undefined)
+        throw new BadRequest("updateSession needs a name or a workspaceId");
+      return call;
+    }
+    case "archiveSession":
+      return { method: "archiveSession", sessionId: text(raw["sessionId"], "sessionId") };
+    case "deleteSession":
+      return { method: "deleteSession", sessionId: text(raw["sessionId"], "sessionId") };
     case "windowLayout":
       return { method: "windowLayout" };
     case "reportLayout":

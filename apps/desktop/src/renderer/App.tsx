@@ -14,7 +14,7 @@ import { connectStore } from "./session-sync.js";
 import { QuitDialog } from "./QuitDialog.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
-import type { OpenMode } from "./Sidebar.js";
+import type { OpenMode, SidebarActions } from "./Sidebar.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabBar } from "./TabBar.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
@@ -114,6 +114,29 @@ export function App({ api }: { api: TermdockApi }) {
     [api, store, open],
   );
 
+  // What the sidebar may ask of the core (#63). The windows learn the outcome from the core's events; a session
+  // that comes back in an answer is merged on top, which is idempotent (metadata only, the state is the events').
+  const sidebarActions = useMemo<SidebarActions>(
+    () => ({
+      moveSession: async (sessionId, workspaceId) =>
+        store.sessionUpdated(await api.updateSession(sessionId, { workspaceId })),
+      renameSession: async (sessionId, name) =>
+        store.sessionUpdated(await api.updateSession(sessionId, { name })),
+      archiveSession: (sessionId) => api.archiveSession(sessionId),
+      deleteSession: async (sessionId) => {
+        await api.deleteSession(sessionId);
+        store.sessionRemoved(sessionId);
+      },
+      createWorkspace: (name) => api.createWorkspace(name),
+      renameWorkspace: (workspaceId, name) => api.updateWorkspace(workspaceId, name),
+      deleteWorkspace: (workspaceId) => api.deleteWorkspace(workspaceId),
+      createProject: (workspaceId, name, path) => api.createProject(workspaceId, name, path, "wsl"),
+      renameProject: (projectId, name) => api.updateProject(projectId, name),
+      deleteProject: (projectId) => api.deleteProject(projectId),
+    }),
+    [api, store],
+  );
+
   const setStatus = useCallback((paneId: string, status: ViewStatus | undefined) => {
     setStatuses((current) => {
       if (status === undefined) {
@@ -196,6 +219,9 @@ export function App({ api }: { api: TermdockApi }) {
     const onKeyDown = (event: KeyboardEvent): void => {
       // The terminal has handled a bound key already (and prevented it).
       if (event.defaultPrevented || quitOpenRef.current) return;
+      // The dialogs and menus of the sidebar (#63) are modal too: their keys are theirs.
+      if (event.target instanceof Element && event.target.closest('[aria-modal="true"], [role="menu"]'))
+        return;
       // The form's fields keep copy and paste.
       const command = resolveKey(event);
       if ((command === "copy" || command === "paste") && isTextField(event.target)) return;
@@ -212,7 +238,10 @@ export function App({ api }: { api: TermdockApi }) {
       {sidebarVisible && (
         <Sidebar
           sessions={state.sessions}
+          workspaces={state.workspaces}
           activeSessionId={activeSessionId}
+          actions={sidebarActions}
+          onNotice={setNotice}
           formOpen={formOpen}
           creating={creating}
           createError={createError}

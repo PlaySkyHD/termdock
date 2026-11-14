@@ -77,3 +77,5 @@ Run the `retro` skill once after the last PR of a round. Feed it the agents' Umw
 ## 7. Report
 
 Tell the user per issue: PR, merge commit, what changed, and any Umwege that became new issues.
+
+Before handing over for a manual test, prepare the main checkout as described in `docs/agent-lessons-learned.md`, section 1 („Vor einem manuellen Test“).

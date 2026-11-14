@@ -27,6 +27,8 @@ export type SplitDirection = LayoutSplit["direction"];
 export interface UiState {
   /** Sessions as the core reports them, oldest first. */
   readonly sessions: readonly SessionInfo[];
+  /** The first list of sessions has arrived; before that a pane cannot tell a missing session from an unknown one. */
+  readonly sessionsLoaded: boolean;
   readonly window: LayoutWindow;
   readonly coreStatus: CoreStatusResult | undefined;
   /** The connection to the core ended; final. */
@@ -47,6 +49,7 @@ export class UiStore {
     this.newId = options.newId;
     this.state = {
       sessions: [],
+      sessionsLoaded: false,
       window: { id: options.newId(), sidebarVisible: true, tabs: [] },
       coreStatus: undefined,
       coreClosed: false,
@@ -63,8 +66,14 @@ export class UiStore {
 
   // --- Sessions -------------------------------------------------------------------------------
 
-  setSessions(sessions: readonly SessionInfo[]): void {
-    this.set({ sessions: byCreation(sessions) });
+  /** `loaded: false` for a list that could not be fetched: the sessions are then unknown, not missing. */
+  setSessions(sessions: readonly SessionInfo[], loaded = true): void {
+    this.set({ sessions: byCreation(sessions), sessionsLoaded: loaded });
+  }
+
+  /** Takes over the window the main process holds for this one (layout restore, #29); id and tabs come from it. */
+  loadWindow(window: LayoutWindow): void {
+    this.setWindow(window);
   }
 
   /**

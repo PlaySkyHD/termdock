@@ -422,3 +422,89 @@ describe("DesktopBridge events", () => {
     expect(b.events).toEqual([{ kind: "coreClosed" }]);
   });
 });
+
+describe("DesktopBridge layout calls (#29)", () => {
+  const part = {
+    sidebarVisible: false,
+    tabs: [{ id: "t1", root: { kind: "pane", id: "p1", sessionId: "s1" }, activePaneId: "p1" }],
+    activeTabId: "t1",
+  };
+
+  /** Stand-in for the coordinator: one window per window id, the report is recorded or rejected. */
+  function withLayouts() {
+    const { core, a, b } = setup();
+    const reports: Array<[number, unknown]> = [];
+    const layouts = {
+      windowOf: (windowId: number) => (windowId === a.id ? { id: "w-a", tabs: [] } : undefined),
+      report: (windowId: number, reported: unknown) => {
+        if (JSON.stringify(reported).includes("bad")) throw new IpcError("bad_request", "layout is invalid");
+        reports.push([windowId, reported]);
+      },
+    };
+    const bridge = new DesktopBridge(core, layouts);
+    bridge.addWindow(a);
+    bridge.addWindow(b);
+    return { core, bridge, a, b, reports };
+  }
+
+  it("gives a window the layout the main process holds for it, without asking the core", async () => {
+    const { core, bridge, a } = withLayouts();
+
+    const result = await bridge.call(a.id, { method: "windowLayout" });
+
+    expect(result).toEqual({ ok: true, value: { id: "w-a", tabs: [] } });
+    expect(core.requests).toEqual([]);
+  });
+
+  it("answers not_found for a window without layout", async () => {
+    const { bridge, b } = withLayouts();
+    expect(await bridge.call(b.id, { method: "windowLayout" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+  });
+
+  it("hands a reported part to the main process under the id of the calling window", async () => {
+    const { bridge, a, reports } = withLayouts();
+
+    const result = await bridge.call(a.id, { method: "reportLayout", window: part });
+
+    expect(result).toEqual({ ok: true, value: null });
+    expect(reports).toEqual([[a.id, part]]);
+  });
+
+  it("passes the rejection of an invalid layout on as bad_request", async () => {
+    const { bridge, a, reports } = withLayouts();
+
+    const result = await bridge.call(a.id, {
+      method: "reportLayout",
+      window: { ...part, tabs: [{ id: "bad" }] },
+    });
+
+    expect(result).toEqual({ ok: false, error: { code: "bad_request", message: "layout is invalid" } });
+    expect(reports).toEqual([]);
+  });
+
+  it.each([
+    ["a missing window", { method: "reportLayout" }],
+    ["a window that is not an object", { method: "reportLayout", window: "x" }],
+    ["tabs that are not an array", { method: "reportLayout", window: { tabs: 3 } }],
+    ["an id of the window", { method: "reportLayout", window: { id: "other", tabs: [] } }],
+    ["bounds of the window", { method: "reportLayout", window: { tabs: [], bounds: {} } }],
+    ["maximized", { method: "reportLayout", window: { tabs: [], maximized: true } }],
+    ["an unknown key", { method: "reportLayout", window: { tabs: [], extra: 1 } }],
+  ])("refuses %s with bad_request", async (_name, call) => {
+    const { bridge, a, reports } = withLayouts();
+
+    expect(await bridge.call(a.id, call)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(reports).toEqual([]);
+  });
+
+  it("refuses the layout calls of a bridge without layouts", async () => {
+    const { bridge, a } = setup();
+    expect(await bridge.call(a.id, { method: "windowLayout" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+  });
+});

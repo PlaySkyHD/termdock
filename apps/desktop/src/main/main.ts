@@ -1,6 +1,6 @@
 // Electron main (ADR 0006): one process owns all windows, connects to the core or starts it, and serves the
 // bridge. Start: `npm start -w apps/desktop` (in agent shells first `unset ELECTRON_RUN_AS_NODE`).
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,9 +8,12 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { connect, defaultPipeName } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
-import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
+import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
+import type { LayoutWindow } from "@termdock/protocol";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
+import type { WindowLayouts } from "./bridge.js";
 import {
   connectOrStartCore,
   READY_TIMEOUT_MS,
@@ -19,6 +22,7 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
+import { LayoutCoordinator } from "./layout-coordinator.js";
 import {
   isolatedCore,
   QuietWatch,
@@ -29,12 +33,16 @@ import {
 } from "./screenshot.js";
 import type { IsolatedCore } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
+import type { ScenarioControl } from "./screenshot-scenario.js";
+import { fitBounds } from "./window-geometry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
 const RENDERER = path.join(here, "..", "renderer", "index.html");
 /** Upper bound of a whole screenshot run, including the start of the core and WSL. */
-const SCREENSHOT_TIMEOUT_MS = 360_000;
+const SCREENSHOT_TIMEOUT_MS = 480_000;
+/** Longest wait for the last `layout.save` when the app quits. */
+const QUIT_SAVE_TIMEOUT_MS = 3_000;
 
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
 
@@ -122,13 +130,60 @@ async function main(): Promise<void> {
     return;
   }
 
-  const bridge = new DesktopBridge(withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS));
+  const port = withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
+  // The layout of all windows (#29): the renderers report their parts, this process adds the geometry and saves.
+  // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
+  const newCoordinator = (): LayoutCoordinator => new LayoutCoordinator({ core: port, log });
+  let coordinator = newCoordinator();
+  const layouts: WindowLayouts = {
+    windowOf: (windowId) => coordinator.windowOf(windowId),
+    report: (windowId, part) => coordinator.report(windowId, part),
+  };
+  const bridge = new DesktopBridge(port, layouts);
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
-  const createWindow = (width = 1000, height = 640): BrowserWindow => {
+  // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
+  // scenario can ask to forget them.
+  let quitting = false;
+  let forgetOnClose = false;
+
+  /** Every open window stays in the layout with its current geometry (quit, end of the Windows session). */
+  const retainAll = (): void => {
+    quitting = true;
+    for (const win of BrowserWindow.getAllWindows()) {
+      const id = win.webContents.id;
+      coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
+      coordinator.closeWindow(id, { keep: true });
+    }
+  };
+
+  /** The last save, then the end of the connection; once, however often it is asked for. */
+  let finishing: Promise<void> | undefined;
+  const finishLayoutAndClient = (): Promise<void> =>
+    (finishing ??= (async () => {
+      await Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]);
+      await client.close().catch(() => {});
+    })());
+
+  const createWindow = (width = 1000, height = 640, restored?: LayoutWindow): BrowserWindow | undefined => {
+    // The layout document holds at most this many windows, windows that stay in it included; a further one could
+    // never be saved.
+    if (coordinator.size() >= MAX_LAYOUT_WINDOWS) {
+      log(`at most ${MAX_LAYOUT_WINDOWS} windows`);
+      return undefined;
+    }
+    // A saved position that no screen shows any more would open a window nobody can reach.
+    const fitted =
+      restored?.bounds &&
+      fitBounds(
+        restored.bounds,
+        screen.getAllDisplays().map((display) => display.workArea),
+        screen.getPrimaryDisplay().workArea,
+      );
     const win = new BrowserWindow({
-      width,
-      height,
+      ...(fitted ?? {}),
+      width: fitted?.width ?? width,
+      height: fitted?.height ?? height,
       backgroundColor: "#1e1e1e",
       title: "TermDock",
       autoHideMenuBar: true,
@@ -151,8 +206,50 @@ async function main(): Promise<void> {
     contents.on("render-process-gone", () => void bridge.resetWindow(id));
     contents.on("destroyed", () => void bridge.removeWindow(id));
     win.on("closed", () => void bridge.removeWindow(id));
+
+    coordinator.addWindow(
+      id,
+      restored ? { ...restored, ...(fitted ? { bounds: fitted } : {}) } : { id: randomUUID(), tabs: [] },
+      { restored: restored !== undefined },
+    );
+    const geometry = (): void =>
+      coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
+    if (restored?.maximized) win.maximize();
+    else if (!restored) geometry();
+    win.on("resize", geometry);
+    win.on("move", geometry);
+    win.on("maximize", geometry);
+    win.on("unmaximize", geometry);
+    // Windows logoff or shutdown: the windows get no `before-quit`, the system ends the session. Treat it like a
+    // quit: all windows stay in the layout, and what is not saved yet is saved now.
+    win.on("session-end", () => {
+      retainAll();
+      void finishLayoutAndClient();
+    });
+    win.on("close", () => {
+      geometry();
+      coordinator.closeWindow(id, { keep: !forgetOnClose && (quitting || coordinator.openWindows() <= 1) });
+    });
     void win.loadFile(RENDERER);
     return win;
+  };
+
+  /** Opens the windows of the stored layout; a window in its start state without one (also when it is unusable). */
+  const openStartWindows = async (): Promise<BrowserWindow[]> => {
+    const saved = (await coordinator.load()).slice(0, MAX_LAYOUT_WINDOWS);
+    const opened = saved.map((window) => createWindow(undefined, undefined, window));
+    const list = opened.filter((win): win is BrowserWindow => win !== undefined);
+    return list.length > 0 ? list : [createWindow()].filter((win) => win !== undefined);
+  };
+
+  /** Closes all windows and waits until they are gone (`forget`: they also leave the layout). */
+  const closeAllWindows = async (forget: boolean): Promise<void> => {
+    forgetOnClose = forget;
+    quitting = !forget;
+    for (const win of BrowserWindow.getAllWindows()) win.close();
+    while (BrowserWindow.getAllWindows().length > 0) await sleep(50);
+    quitting = false;
+    forgetOnClose = false;
   };
 
   // The menu replaces the default one, also in the screenshot run (key bindings of #28 hang on it).
@@ -178,14 +275,46 @@ async function main(): Promise<void> {
   );
 
   if (shotDir !== undefined) {
-    await runScreenshot(shotDir, client, bridge, createWindow);
+    // The scenario closes and reopens windows itself; that must not end the app.
+    app.on("window-all-closed", () => {});
+    await runScreenshot(shotDir, client, bridge, {
+      createWindow: (width, height) => {
+        const win = createWindow(width, height);
+        if (!win) throw new Error("Too many windows");
+        return win;
+      },
+      closeAllWindows,
+      // Like a restart of the UI: save, drop all state of this process's layout, read it back from the core.
+      restartUi: async () => {
+        await closeAllWindows(false);
+        await coordinator.flush();
+        coordinator = newCoordinator();
+        return openStartWindows();
+      },
+      flushLayout: () => coordinator.flush(),
+    });
     return;
   }
 
-  // Closing the UI keeps the sessions (ADR 0001): only the connection ends, the core keeps running.
-  app.on("window-all-closed", () => void client.close().finally(() => app.quit()));
+  // Closing the UI keeps the sessions (ADR 0001): only the connection ends, the core keeps running. The layout is
+  // saved first, but never waits for long.
+  let quitReady = false;
+  const quitAfterSave = (): void =>
+    void finishLayoutAndClient().finally(() => {
+      quitReady = true;
+      app.quit();
+    });
+  // `app.quit()` ("Beenden", Ctrl+Q) closes the windows without `window-all-closed`: stop it once, keep the
+  // windows in the layout, save and close the connection, then quit for real.
+  app.on("before-quit", (event) => {
+    retainAll();
+    if (quitReady) return;
+    event.preventDefault();
+    quitAfterSave();
+  });
+  app.on("window-all-closed", quitAfterSave);
   windows.open = () => void createWindow();
-  createWindow();
+  await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
 }
 
@@ -204,7 +333,7 @@ async function runScreenshot(
   dir: string,
   client: CoreClient,
   bridge: DesktopBridge,
-  createWindow: (width?: number, height?: number) => BrowserWindow,
+  control: ScenarioControl,
 ) {
   const watch = new QuietWatch();
   client.on("session.output", () => watch.saw());
@@ -232,9 +361,9 @@ async function runScreenshot(
   try {
     const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
     if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
-    await runScenario({ dir, bridge, watch, createWindow, log, tmuxSocket });
+    await runScenario({ dir, bridge, watch, log, tmuxSocket, core: client, ...control });
   } catch (error) {
-    log(`screenshot failed: ${error instanceof Error ? error.message : String(error)}`);
+    log(`screenshot failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     exitCode = 1;
   }
   await finish();

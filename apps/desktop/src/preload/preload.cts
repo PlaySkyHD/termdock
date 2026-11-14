@@ -35,6 +35,8 @@ const api: TermdockApi = {
   input: async (viewId, data) => void (await call({ method: "input", viewId, data })),
   resize: async (viewId, size) => void (await call({ method: "resize", viewId, size })),
   claimWriter: async (viewId) => void (await call({ method: "claimWriter", viewId })),
+  windowLayout: () => call({ method: "windowLayout" }),
+  reportLayout: async (window) => void (await call({ method: "reportLayout", window })),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

@@ -6,7 +6,8 @@ import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import { layoutPanes } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
-import { endedNotice, isAttachable } from "./session-display.js";
+import { paneContent } from "./pane-placeholder.js";
+import { isAttachable } from "./session-display.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
 import { MIN_SHARE } from "./ui-store.js";
@@ -18,6 +19,8 @@ export interface PaneTreeProps {
   api: TermdockApi;
   tab: LayoutTab;
   sessions: readonly SessionInfo[];
+  /** The first list of sessions has arrived (a pane of an unknown session is then a placeholder). */
+  sessionsLoaded: boolean;
   /** The tab is the visible one. */
   active: boolean;
   focusSignal: number;
@@ -27,6 +30,8 @@ export interface PaneTreeProps {
   onPanePress: (paneId: string) => void;
   /** A real click into the pane's terminal (no drag, no selection): a reader takes the writer (App.tsx). */
   onPaneClick: (paneId: string) => void;
+  /** "Pane schließen" of a placeholder. */
+  onClosePane: (paneId: string) => void;
   onMoveDivider: (splitId: string, index: number, delta: number, minShare: number) => void;
 }
 
@@ -34,12 +39,14 @@ export function PaneTree({
   api,
   tab,
   sessions,
+  sessionsLoaded,
   active,
   focusSignal,
   onStatus,
   onController,
   onPanePress,
   onPaneClick,
+  onClosePane,
   onMoveDivider,
 }: PaneTreeProps) {
   const area = useRef<HTMLDivElement>(null);
@@ -54,6 +61,7 @@ export function PaneTree({
           style={rectStyle(rect)}
           data-pane-id={paneId}
           data-active-pane={paneId === tab.activePaneId}
+          data-session-id={sessionId}
           // Capture phase: xterm.js handles mouse events itself when a program (vim, htop) asks for them.
           onMouseDownCapture={() => onPanePress(paneId)}
         >
@@ -61,11 +69,13 @@ export function PaneTree({
             api={api}
             sessionId={sessionId}
             session={sessions.find((session) => session.id === sessionId)}
+            sessionsLoaded={sessionsLoaded}
             active={active && paneId === tab.activePaneId}
             focusSignal={focusSignal}
             onStatus={(status) => onStatus(paneId, status)}
             onController={(controller) => onController(paneId, controller)}
             onClick={() => onPaneClick(paneId)}
+            onClosePane={() => onClosePane(paneId)}
           />
         </div>
       ))}
@@ -150,11 +160,13 @@ interface PaneViewProps {
   api: TermdockApi;
   sessionId: SessionId;
   session: SessionInfo | undefined;
+  sessionsLoaded: boolean;
   active: boolean;
   focusSignal: number;
   onStatus: (status: ViewStatus | undefined) => void;
   onController: (controller: TerminalController | undefined) => void;
   onClick: () => void;
+  onClosePane: () => void;
 }
 
 /**
@@ -165,11 +177,13 @@ function PaneView({
   api,
   sessionId,
   session,
+  sessionsLoaded,
   active,
   focusSignal,
   onStatus,
   onController,
   onClick,
+  onClosePane,
 }: PaneViewProps) {
   const attachable = session !== undefined && isAttachable(session.state);
   const [attached, setAttached] = useState(attachable);
@@ -190,11 +204,27 @@ function PaneView({
       />
     );
   }
-  const notice = session ? endedNotice(session) : undefined;
+  const content = paneContent(session, sessionsLoaded);
+  if (content.kind !== "placeholder")
+    return (
+      <div className="empty-state" data-view="loading">
+        <p>Sessions werden geladen …</p>
+      </div>
+    );
+  // Restored panes of sessions that are not alive (ADR 0005): state and exit code, never "running".
   return (
-    <div className="empty-state" data-view="notice">
-      <h1 className="empty-state__title">{notice?.title ?? "Session nicht gefunden"}</h1>
-      <p>{notice?.detail ?? "Der Core kennt diese Session nicht (mehr)."}</p>
+    <div className="empty-state" data-view="notice" data-state={content.state}>
+      <h1 className="empty-state__title">{content.title}</h1>
+      <p>{content.detail}</p>
+      <dl className="placeholder-facts">
+        <dt>Zustand</dt>
+        <dd data-fact="state">{content.state}</dd>
+        <dt>Letzter Exit-Code</dt>
+        <dd data-fact="exit-code">{content.exitCode}</dd>
+      </dl>
+      <button className="button" type="button" data-action="close-pane-placeholder" onClick={onClosePane}>
+        Pane schließen
+      </button>
     </div>
   );
 }

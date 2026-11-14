@@ -163,7 +163,10 @@ describe("connectStore", () => {
     const api = new FakeApi();
     const errors: string[] = [];
     const s = store();
-    const connection = connectStore(s, api, (message) => errors.push(message));
+    const connection = connectStore(s, api, (message) => errors.push(message), {
+      retryDelaysMs: [1_000],
+      sleep: () => new Promise(() => {}), // the retry never comes in this test
+    });
 
     api.fail(new Error("[timeout] Request session.list timed out"));
     await connection.ready;
@@ -171,6 +174,93 @@ describe("connectStore", () => {
 
     expect(errors).toEqual(["[timeout] Request session.list timed out"]);
     expect(states(s)).toEqual([["a", "Detached"]]);
+    // A list that failed does not make panes of unknown sessions "missing" (#29).
+    expect(s.getState().sessionsLoaded).toBe(false);
+  });
+
+  it("retries a failed list and loads the sessions when it answers", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const waits: number[] = [];
+    const connection = connectStore(s, api, () => {}, {
+      retryDelaysMs: [100, 200],
+      sleep: async (ms) => void waits.push(ms),
+    });
+
+    api.fail(new Error("[timeout] session.list"));
+    await connection.ready;
+    expect(s.getState().sessionsLoaded).toBe(false);
+    await settle();
+    api.answer([session("a", "Exited")]);
+    await settle();
+
+    expect(waits).toEqual([100]);
+    expect(states(s)).toEqual([["a", "Exited"]]);
+    expect(s.getState().sessionsLoaded).toBe(true);
+  });
+
+  it("gives up after the last retry and lets panes show the not-found placeholder", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {}, { retryDelaysMs: [1, 2], sleep: async () => {} });
+
+    api.fail(new Error("first"));
+    await connection.ready;
+    for (const message of ["second", "third"]) {
+      await settle();
+      api.fail(new Error(message));
+    }
+    await settle();
+
+    expect(s.getState().sessionsLoaded).toBe(true);
+    expect(s.getState().sessions).toEqual([]);
+  });
+
+  it("keeps a session that an event added while the list kept failing", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {}, { retryDelaysMs: [1], sleep: async () => {} });
+    api.fail(new Error("first"));
+    await connection.ready;
+    api.emit({ kind: "sessionCreated", session: session("a") });
+    await settle();
+    api.answer([session("a", "Exited"), session("b")]);
+    await settle();
+
+    expect(states(s)).toEqual([
+      ["a", "Exited"],
+      ["b", "Detached"],
+    ]);
+  });
+
+  it("stops retrying after dispose", async () => {
+    const api = new FakeApi();
+    const s = store();
+    let listed = 0;
+    const list = api.listSessions.bind(api);
+    api.listSessions = () => (listed++, list());
+    const connection = connectStore(s, api, () => {}, {
+      retryDelaysMs: [1],
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms * 5)),
+    });
+    api.fail(new Error("first"));
+    await connection.ready;
+    connection.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(listed).toBe(1);
+  });
+
+  it("marks the sessions as loaded once the list has arrived", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    expect(s.getState().sessionsLoaded).toBe(false);
+
+    api.answer([]);
+    await connection.ready;
+
+    expect(s.getState().sessionsLoaded).toBe(true);
   });
 
   it("works without the core status", async () => {

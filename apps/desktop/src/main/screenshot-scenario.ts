@@ -11,7 +11,9 @@ import { promisify } from "node:util";
 import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import type { DesktopBridge } from "./bridge.js";
+import type { CorePort } from "./core-connection.js";
 import type { QuietWatch } from "./screenshot.js";
+import { restoreScenes } from "./screenshot-restore.js";
 
 const run = promisify(execFile);
 
@@ -32,11 +34,23 @@ async function wsl(args: readonly string[]): Promise<string> {
   }
 }
 
-export interface ScenarioDeps {
+/** What the scenario may do with the windows of the app (main.ts). */
+export interface ScenarioControl {
+  createWindow(width: number, height: number): BrowserWindow;
+  /** Closes every window; `forget`: they also leave the layout (otherwise they stay, as when the app quits). */
+  closeAllWindows(forget: boolean): Promise<void>;
+  /** Restart of the UI: closes the windows, saves the layout and opens what `layout.get` returns (#29). */
+  restartUi(): Promise<BrowserWindow[]>;
+  /** Saves the layout now. */
+  flushLayout(): Promise<void>;
+}
+
+export interface ScenarioDeps extends ScenarioControl {
   dir: string;
   bridge: DesktopBridge;
   watch: QuietWatch;
-  createWindow(width: number, height: number): BrowserWindow;
+  /** The core connection, to read the saved layout back. */
+  core: Pick<CorePort, "request">;
   log(text: string): void;
   /** Tmux socket of the isolated core (`isolated.env.TERMDOCK_TMUX_SOCKET`). */
   tmuxSocket: string;
@@ -47,14 +61,8 @@ const sessionSelector = (name: string): string => `[data-session-name=${JSON.str
 const stateSelector = (name: string, state: string): string =>
   `document.querySelector(${JSON.stringify(`${sessionSelector(name)}[data-state="${state}"]`)})`;
 
-export async function runScenario({
-  dir,
-  bridge,
-  watch,
-  createWindow,
-  log,
-  tmuxSocket,
-}: ScenarioDeps): Promise<void> {
+export async function runScenario(deps: ScenarioDeps): Promise<void> {
+  const { dir, bridge, watch, createWindow, log, tmuxSocket } = deps;
   mkdirSync(dir, { recursive: true });
   const main = createWindow(1100, 680);
   const mainId = main.webContents.id;
@@ -192,7 +200,8 @@ export async function runScenario({
   await waitFor(second, `document.querySelector('.status-bar--reader')`, "the reader role");
   await capture(second, "05-reader.png");
 
-  await splitScenes({ dir, bridge, watch, createWindow, log, tmuxSocket }, capture, session("Notes"));
+  await splitScenes(deps, capture, session("Notes"));
+  await restoreScenes(deps, wsl);
 }
 
 // --- Split panes (#27) ------------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 import type {
   CoreStatusResult,
   ErrorCode,
+  LayoutWindow,
   SessionCreateParams,
   SessionId,
   SessionInfo,
@@ -10,6 +11,7 @@ import type {
   TerminalSize,
   ViewId,
 } from "@termdock/protocol";
+import type { LayoutWindowPart } from "./layout-mapping.js";
 
 /** `ipcRenderer.invoke` channel for every call of the bridge. */
 export const CALL_CHANNEL = "termdock:call";
@@ -25,7 +27,11 @@ export type BridgeCall =
   | { method: "detach"; viewId: ViewId }
   | { method: "input"; viewId: ViewId; data: string }
   | { method: "resize"; viewId: ViewId; size: TerminalSize }
-  | { method: "claimWriter"; viewId: ViewId };
+  | { method: "claimWriter"; viewId: ViewId }
+  /** The layout of this window as the main process holds it (restore, #29). */
+  | { method: "windowLayout" }
+  /** The tabs and sidebar of this window after a change; the main process bundles and saves the layout. */
+  | { method: "reportLayout"; window: LayoutWindowPart };
 
 export type BridgeMethod = BridgeCall["method"];
 
@@ -48,6 +54,8 @@ export interface BridgeResults {
   input: null;
   resize: null;
   claimWriter: null;
+  windowLayout: LayoutWindow;
+  reportLayout: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -84,6 +92,8 @@ export interface TermdockApi {
   input(viewId: ViewId, data: string): Promise<void>;
   resize(viewId: ViewId, size: TerminalSize): Promise<void>;
   claimWriter(viewId: ViewId): Promise<void>;
+  windowLayout(): Promise<LayoutWindow>;
+  reportLayout(window: LayoutWindowPart): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

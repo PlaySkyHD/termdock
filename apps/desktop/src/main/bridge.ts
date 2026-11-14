@@ -2,9 +2,16 @@
 // and routes core events to the windows that show the session. Free of Electron so it runs in tests.
 import { IpcError } from "@termdock/core";
 import type { Disposable } from "@termdock/core";
-import type { SessionCreateParams, SessionId, TerminalSize, ViewId } from "@termdock/protocol";
+import type { LayoutWindow, SessionCreateParams, SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeCall, BridgeErrorBody, BridgeEvent, BridgeResult } from "../shared/bridge.js";
+import type { LayoutWindowPart } from "../shared/layout-mapping.js";
 import type { CorePort } from "./core-connection.js";
+
+/** The layout of the windows, as the bridge needs it (`LayoutCoordinator` fits). `report` throws `IpcError`. */
+export interface WindowLayouts {
+  windowOf(windowId: number): LayoutWindow | undefined;
+  report(windowId: number, part: LayoutWindowPart): void;
+}
 
 /** A window as the bridge sees it; `id` is the `webContents` id. */
 export interface BridgeWindow {
@@ -35,7 +42,10 @@ export class DesktopBridge {
   private readonly subscriptions: Disposable[];
   private readonly encoder = new TextEncoder();
 
-  constructor(private readonly core: CorePort) {
+  constructor(
+    private readonly core: CorePort,
+    private readonly layouts?: WindowLayouts,
+  ) {
     this.subscriptions = [
       core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
         // The core's number (protocol 1.1); a 1.0 core sends none, then the main counts itself.
@@ -143,6 +153,15 @@ export class DesktopBridge {
         this.ownView(windowId, call.viewId);
         await core.request("session.claimWriter", { viewId: call.viewId });
         return null;
+      case "windowLayout": {
+        const window = this.layouts?.windowOf(windowId);
+        if (!window) throw new IpcError("not_found", "This window has no layout");
+        return window;
+      }
+      case "reportLayout":
+        // The main process checks the whole document; the id of the window is the caller's, never a parameter.
+        this.layouts?.report(windowId, call.window);
+        return null;
     }
   }
 
@@ -231,9 +250,26 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "resize", viewId: text(raw["viewId"], "viewId"), size: size(raw["size"]) };
     case "claimWriter":
       return { method: "claimWriter", viewId: text(raw["viewId"], "viewId") };
+    case "windowLayout":
+      return { method: "windowLayout" };
+    case "reportLayout":
+      return { method: "reportLayout", window: layoutPart(raw["window"]) };
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }
+}
+
+const PART_KEYS = ["sidebarVisible", "sidebarWidth", "tabs", "activeTabId"];
+
+/**
+ * Shape only: what a renderer may report of its window. Id, position, size and maximization are the main
+ * process's; the rest (limits, unique ids) is checked on the whole document by the coordinator.
+ */
+function layoutPart(raw: unknown): LayoutWindowPart {
+  if (!isRecord(raw) || !Array.isArray(raw["tabs"])) throw new BadRequest("window needs tabs");
+  const unknown = Object.keys(raw).find((key) => !PART_KEYS.includes(key));
+  if (unknown !== undefined) throw new BadRequest(`window.${unknown} is not reported by a renderer`);
+  return raw as unknown as LayoutWindowPart;
 }
 
 /** Shape only; the core checks the launch spec itself with its guards. */

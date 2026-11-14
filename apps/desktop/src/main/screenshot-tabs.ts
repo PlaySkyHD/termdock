@@ -124,7 +124,8 @@ export async function tabScenes(deps: ScenarioDeps): Promise<void> {
   await sleep(800);
   let panes = await visiblePanes();
   log(`B after the drop: ${JSON.stringify(panes)}`);
-  expect((await tabOrder()).join() === "Tab C,Tab B", "Tab A did not close after its drop");
+  // B's tab is titled after its active pane, which is the moved one of A now.
+  expect((await tabOrder()).join() === "Tab C,Tab A", `Tab A did not close: ${(await tabOrder()).join()}`);
   expect(panes[0]?.session === b.id && panes[1]?.session === a.id, "A is not right of B");
   expect(
     panes.every((pane) => pane.role === "writer"),

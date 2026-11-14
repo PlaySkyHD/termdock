@@ -4,7 +4,7 @@
 // targets and reuse everything else. Native HTML5 dragging is not used: it runs a loop of the operating system
 // that `webContents.sendInputEvent` cannot drive, and it has no key to abort.
 
-/** What is dragged. `kind` tells the targets what they get (today `session`; `tab` and `pane` follow in #67). */
+/** What is dragged. `kind` tells the targets what they get (`session`, `tab`, `pane`). */
 export interface DragPayload {
   kind: string;
   id: string;

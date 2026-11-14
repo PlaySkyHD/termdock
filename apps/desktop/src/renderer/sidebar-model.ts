@@ -190,7 +190,8 @@ export const SIDEBAR_FOCUS: FocusPlan = { selector: '.sidebar [data-action="new-
 export const NEW_WORKSPACE_FOCUS: FocusPlan = { selector: '.sidebar [data-action="new-workspace"]' };
 
 export const sessionFocus = (sessionId: string, waitFor?: FocusPlan["waitFor"]): FocusPlan => ({
-  selector: `[data-session-id=${JSON.stringify(sessionId)}]`,
+  // Not `data-session-id`: the panes of the tabs carry that one.
+  selector: `[data-row-session-id=${JSON.stringify(sessionId)}]`,
   ...(waitFor ? { waitFor } : {}),
 });
 export const workspaceFocus = (workspaceId: string): FocusPlan => ({

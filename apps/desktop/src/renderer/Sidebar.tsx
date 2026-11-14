@@ -559,7 +559,7 @@ function SessionRow({
         }`}
         type="button"
         data-session-name={session.name}
-        data-session-id={session.id}
+        data-row-session-id={session.id}
         data-state={session.state}
         aria-haspopup="menu"
         title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace oder das Archiv, Rechtsklick oder Menütaste für Aktionen`}

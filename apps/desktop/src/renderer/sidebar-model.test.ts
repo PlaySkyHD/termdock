@@ -234,13 +234,13 @@ describe("sessionMenu", () => {
 
 describe("focus plans", () => {
   it("names the row, the workspace button and the project row by id", () => {
-    expect(sessionFocus("s1").selector).toBe('[data-session-id="s1"]');
+    expect(sessionFocus("s1").selector).toBe('[data-row-session-id="s1"]');
     expect(workspaceFocus("w1").selector).toBe('[data-workspace-id="w1"] [data-action="workspace-menu"]');
     expect(projectFocus("p1").selector).toBe('[data-project-id="p1"]');
   });
 
   it("quotes an id, so it cannot leave the attribute selector", () => {
-    expect(sessionFocus('x"] , body [a="').selector).toBe('[data-session-id="x\\"] , body [a=\\""]');
+    expect(sessionFocus('x"] , body [a="').selector).toBe('[data-row-session-id="x\\"] , body [a=\\""]');
   });
 
   it("is ready at once without a wait", () => {

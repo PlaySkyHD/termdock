@@ -3,7 +3,7 @@
 import type { SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import { handleKey } from "./keymap.js";
-import type { CommandId, KeyLike } from "./keymap.js";
+import type { KeyCommands, KeyLike } from "./keymap.js";
 
 /** The part of xterm.js and its fit addon the controller uses. */
 export interface TerminalSurface {
@@ -54,15 +54,16 @@ export interface ControllerOptions {
   /** Runs `run` once after the layout delay; the returned function cancels it. Tests pass a manual one. */
   scheduleLayout?: (run: () => void) => () => void;
   /**
-   * Runs a command whose key was pressed in this terminal (#28). The key never reaches the shell; every key that
-   * is not bound does. Without it the terminal takes all keys.
+   * Commands of the key map (#28). A bound key whose command applies runs it and never reaches the shell; every
+   * other key does. Without it the terminal takes all keys.
    */
-  onCommand?: (command: CommandId) => void;
+  commands?: KeyCommands;
   /**
    * The session runs in tmux, which switches bracketed paste on at its terminal once, when its client starts, and
    * strips or keeps the markers for the pane as the application wants. That one sequence went to the core's client
    * long before this view exists and a snapshot carries no modes, so the view asks for it itself. Without it a
-   * late view would paste multi-line text as typed lines.
+   * late view would paste multi-line text as typed lines. A workaround: the other terminal modes (mouse tracking,
+   * DECCKM) are missing in late views too; the real fix is modes in the attach answer, issue #42.
    */
   bracketedPaste?: boolean;
 }
@@ -102,8 +103,8 @@ export class TerminalController {
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
     this.bracketedPaste = options.bracketedPaste ?? false;
-    const { onCommand } = options;
-    if (onCommand) this.surface.onKey((event) => handleKey(event, onCommand));
+    const { commands } = options;
+    if (commands) this.surface.onKey((event) => handleKey(event, commands));
   }
 
   /** Text of the terminal's selection (a reader has one too). */

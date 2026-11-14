@@ -20,7 +20,25 @@ Das Fenster SHALL alle Tastenkürzel aus einer Tabelle Befehl → Kürzel bezieh
 
 ### Requirement: Kürzel vor xterm.js
 
-Eine gebundene Taste SHALL im Terminal als Befehl laufen (`attachCustomKeyEventHandler`) und weder von xterm.js noch von der Shell verarbeitet werden; ihr Befehl SHALL einmal je Tastendruck laufen. Jede andere Taste SHALL unverändert an xterm.js gehen. Außerhalb des Terminals (Sidebar, leeres Fenster) SHALL ein Fenster-Listener dieselbe Tabelle anwenden. „Neues Fenster“ SHALL dem Menü-Accelerator bleiben.
+Eine gebundene Taste SHALL im Terminal als Befehl laufen (`attachCustomKeyEventHandler`), einmal je Tastendruck, und weder von xterm.js noch von der Shell verarbeitet werden. Hat der Befehl nichts zu tun (`Alt+Links` in einem Pane), SHALL die Taste unverändert an xterm.js gehen, ebenso jede andere. Buchstaben SHALL nach dem Zeichen der Belegung gelten, nicht nach der physischen Taste. Ein Fenster-Listener SHALL außerhalb des Terminals dasselbe tun. „Neues Fenster“ SHALL dem Menü bleiben.
+
+#### Scenario: Taste ohne Wirkung
+
+- **GIVEN** ein Tab mit einem Pane
+- **WHEN** der Benutzer `Alt+Links` oder `Ctrl+Tab` drückt
+- **THEN** erhält xterm.js die Taste unverändert
+
+#### Scenario: Andere Tastaturbelegung
+
+- **GIVEN** eine AZERTY-Belegung
+- **WHEN** der Benutzer die Taste mit dem Zeichen W und `Ctrl+Shift` drückt
+- **THEN** schließt sich der Tab
+
+#### Scenario: Übersicht offen
+
+- **GIVEN** die Übersicht der Kürzel ist offen
+- **WHEN** der Benutzer `Alt+Rechts`, `Ctrl+2` oder `Ctrl+Shift+W` drückt
+- **THEN** ändert sich darunter nichts, und xterm.js erhält die Taste nicht; `Ctrl+Shift+H` und Escape schließen die Übersicht, und das Terminal hat wieder den Fokus
 
 #### Scenario: Tab per Kürzel
 

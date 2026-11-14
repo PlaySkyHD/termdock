@@ -5,7 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import type { CommandId } from "./keymap.js";
+import type { KeyCommands } from "./keymap.js";
 import { isClick } from "./pane-layout.js";
 import { TerminalController } from "./terminal-controller.js";
 import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
@@ -74,7 +74,7 @@ export interface TerminalViewProps {
   /** A real click into the terminal: no drag, no selection (see `isClick`). */
   onClick?: () => void;
   /** A bound key was pressed in the terminal (keymap.ts); the window runs the command. */
-  onCommand: (command: CommandId) => void;
+  commands: KeyCommands;
   /** Right click on the pane: paste (the window decides whether this view may). */
   onContextPaste?: () => void;
   /** The session runs in tmux (WSL backend): the view asks for bracketed paste itself (TerminalController). */
@@ -89,7 +89,7 @@ export function TerminalView({
   onStatus,
   onController,
   onClick,
-  onCommand,
+  commands,
   onContextPaste,
   bracketedPaste = false,
 }: TerminalViewProps) {
@@ -97,8 +97,8 @@ export function TerminalView({
   const pressed = useRef<{ x: number; y: number }>(undefined);
   const terminal = useRef<Terminal>(undefined);
   // The callbacks of the parent change on every render; the view must not attach again for that.
-  const callbacks = useRef({ onStatus, onController, onCommand });
-  callbacks.current = { onStatus, onController, onCommand };
+  const callbacks = useRef({ onStatus, onController, commands });
+  callbacks.current = { onStatus, onController, commands };
   const activeNow = useRef(active);
   activeNow.current = active;
   const [status, setStatus] = useState<ViewStatus>();
@@ -123,7 +123,13 @@ export function TerminalView({
         setStatus(next);
         callbacks.current.onStatus(next);
       },
-      { onCommand: (command) => callbacks.current.onCommand(command), bracketedPaste },
+      {
+        commands: {
+          applies: (command) => callbacks.current.commands.applies(command),
+          run: (command) => callbacks.current.commands.run(command),
+        },
+        bracketedPaste,
+      },
     );
     callbacks.current.onController(current);
     void current.open(sessionId);

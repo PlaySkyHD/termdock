@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { pasteInto, runCommand } from "./commands.js";
+import { canRun, pasteInto, runCommand } from "./commands.js";
 import type { CommandDeps } from "./commands.js";
 import { handleKey, resolveKey } from "./keymap.js";
-import type { CommandId } from "./keymap.js";
+import type { KeyCommands } from "./keymap.js";
 import { startLayoutSync } from "./layout-sync.js";
 import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
@@ -147,13 +147,24 @@ export function App({ api }: { api: TermdockApi }) {
     activeController: () => (tab ? controllers.current.get(tab.activePaneId) : undefined),
     split: (direction) => activeSessionId !== undefined && split(direction, activeSessionId),
     showForm,
-    toggleShortcuts: () => setShortcutsOpen((shown) => !shown),
+    shortcutsOpen,
+    toggleShortcuts: () => {
+      setShortcutsOpen(!shortcutsOpen);
+      // Closing by key gives the terminal the focus back, like Escape and the button do.
+      if (shortcutsOpen) refocus();
+    },
     notify: setNotice,
     refocus,
   };
   const commandRef = useRef(commandDeps);
   commandRef.current = commandDeps;
-  const run = useCallback((command: CommandId) => void runCommand(command, commandRef.current), []);
+  const keyCommands = useMemo<KeyCommands>(
+    () => ({
+      applies: (command) => canRun(command, commandRef.current),
+      run: (command) => void runCommand(command, commandRef.current),
+    }),
+    [],
+  );
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       // The terminal has handled a bound key already (and prevented it).
@@ -161,11 +172,11 @@ export function App({ api }: { api: TermdockApi }) {
       // The form's fields keep copy and paste.
       const command = resolveKey(event);
       if ((command === "copy" || command === "paste") && isTextField(event.target)) return;
-      handleKey(event, run);
+      handleKey(event, keyCommands);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [run]);
+  }, [keyCommands]);
 
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
@@ -237,7 +248,7 @@ export function App({ api }: { api: TermdockApi }) {
                       void controllers.current.get(paneId)?.claimWriter();
                   }}
                   onClosePane={(paneId) => store.closePane(each.id, paneId)}
-                  onCommand={run}
+                  commands={keyCommands}
                   onPanePaste={(paneId) => {
                     const controller = controllers.current.get(paneId);
                     if (controller) void pasteInto(controller, navigator.clipboard, setNotice);

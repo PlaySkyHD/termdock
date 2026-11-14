@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import type { CommandId } from "./keymap.js";
+import type { KeyCommands } from "./keymap.js";
 import { layoutPanes } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
@@ -34,7 +34,7 @@ export interface PaneTreeProps {
   /** "Pane schließen" of a placeholder. */
   onClosePane: (paneId: string) => void;
   /** A bound key was pressed in a pane's terminal (#28). */
-  onCommand: (command: CommandId) => void;
+  commands: KeyCommands;
   /** Right click on a pane: paste into its view (App). */
   onPanePaste: (paneId: string) => void;
   onMoveDivider: (splitId: string, index: number, delta: number, minShare: number) => void;
@@ -52,7 +52,7 @@ export function PaneTree({
   onPanePress,
   onPaneClick,
   onClosePane,
-  onCommand,
+  commands,
   onPanePaste,
   onMoveDivider,
 }: PaneTreeProps) {
@@ -83,7 +83,7 @@ export function PaneTree({
             onController={(controller) => onController(paneId, controller)}
             onClick={() => onPaneClick(paneId)}
             onClosePane={() => onClosePane(paneId)}
-            onCommand={onCommand}
+            commands={commands}
             onContextPaste={() => onPanePaste(paneId)}
           />
         </div>
@@ -176,7 +176,7 @@ interface PaneViewProps {
   onController: (controller: TerminalController | undefined) => void;
   onClick: () => void;
   onClosePane: () => void;
-  onCommand: (command: CommandId) => void;
+  commands: KeyCommands;
   onContextPaste: () => void;
 }
 
@@ -195,7 +195,7 @@ function PaneView({
   onController,
   onClick,
   onClosePane,
-  onCommand,
+  commands,
   onContextPaste,
 }: PaneViewProps) {
   const attachable = session !== undefined && isAttachable(session.state);
@@ -214,7 +214,7 @@ function PaneView({
         onStatus={onStatus}
         onController={onController}
         onClick={onClick}
-        onCommand={onCommand}
+        commands={commands}
         onContextPaste={onContextPaste}
         bracketedPaste={session?.launch.backend === "wsl"}
       />

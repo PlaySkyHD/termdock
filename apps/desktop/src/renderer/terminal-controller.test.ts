@@ -423,6 +423,7 @@ describe("TerminalController", () => {
   describe("key bindings", () => {
     const key = (code: string, modifiers: Partial<KeyEvent> = {}): KeyEvent => ({
       type: "keydown",
+      key: code.startsWith("Key") ? code.slice(3) : code,
       code,
       ctrlKey: false,
       shiftKey: false,
@@ -437,7 +438,9 @@ describe("TerminalController", () => {
       const api = new FakeApi();
       const surface = new FakeSurface();
       const commands: string[] = [];
-      new TerminalController(api, surface, () => {}, { onCommand: (command) => commands.push(command) });
+      new TerminalController(api, surface, () => {}, {
+        commands: { applies: () => true, run: (command) => commands.push(command) },
+      });
 
       const forTerminal = surface.pressKey(key("KeyD", { ctrlKey: true, shiftKey: true }));
 
@@ -445,11 +448,26 @@ describe("TerminalController", () => {
       expect(commands).toEqual(["splitRow"]);
     });
 
+    it("lets xterm.js process a bound key whose command has nothing to do (Alt+Left in a single pane)", () => {
+      const api = new FakeApi();
+      const surface = new FakeSurface();
+      const commands: string[] = [];
+      new TerminalController(api, surface, () => {}, {
+        commands: { applies: () => false, run: (command) => commands.push(command) },
+      });
+
+      expect(surface.pressKey(key("ArrowLeft", { altKey: true }))).toBe(true);
+
+      expect(commands).toEqual([]);
+    });
+
     it("passes Ctrl+C, Ctrl+B and letters on to the shell", () => {
       const api = new FakeApi();
       const surface = new FakeSurface();
       const commands: string[] = [];
-      new TerminalController(api, surface, () => {}, { onCommand: (command) => commands.push(command) });
+      new TerminalController(api, surface, () => {}, {
+        commands: { applies: () => true, run: (command) => commands.push(command) },
+      });
 
       expect(surface.pressKey(key("KeyC", { ctrlKey: true }))).toBe(true);
       expect(surface.pressKey(key("KeyB", { ctrlKey: true }))).toBe(true);

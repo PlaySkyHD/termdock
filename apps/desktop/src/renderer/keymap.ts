@@ -92,9 +92,14 @@ export const COMMAND_LABELS: Readonly<Record<CommandId, string>> = {
  */
 const MENU_COMMANDS: ReadonlySet<CommandId> = new Set(["newWindow"]);
 
-/** The part of a `KeyboardEvent` the map looks at. `code` is the physical key, so it does not depend on the layout. */
+/**
+ * The part of a `KeyboardEvent` the map looks at. Letters match by `key` (the character the layout produces, so
+ * Ctrl+Shift+W is the key labelled W on AZERTY too, like the menu accelerator); digits, arrows and Tab match by
+ * `code`, because `key` of a digit is a symbol on layouts that need Shift for it.
+ */
 export interface KeyLike {
   type: string;
+  key: string;
   code: string;
   ctrlKey: boolean;
   shiftKey: boolean;
@@ -108,6 +113,8 @@ interface Chord {
   shift: boolean;
   alt: boolean;
   code: string;
+  /** Lower-case letter for letter shortcuts. */
+  letter?: string;
 }
 
 const KEY_CODES: Readonly<Record<string, string>> = {
@@ -126,7 +133,19 @@ function parseShortcut(shortcut: string): Chord {
     KEY_CODES[key] ?? (/^[A-Z]$/.test(key) ? `Key${key}` : /^[0-9]$/.test(key) ? `Digit${key}` : "");
   const unknown = parts.filter((part) => part !== "Ctrl" && part !== "Shift" && part !== "Alt");
   if (code === "" || unknown.length > 0) throw new Error(`Unknown shortcut ${shortcut}`);
-  return { ctrl: modifiers.has("Ctrl"), shift: modifiers.has("Shift"), alt: modifiers.has("Alt"), code };
+  return {
+    ctrl: modifiers.has("Ctrl"),
+    shift: modifiers.has("Shift"),
+    alt: modifiers.has("Alt"),
+    code,
+    ...(/^[A-Z]$/.test(key) ? { letter: key.toLowerCase() } : {}),
+  };
+}
+
+function sameKey(chord: Chord, event: KeyLike): boolean {
+  if (chord.letter === undefined) return chord.code === event.code;
+  // A layout without Latin letters (Cyrillic, Greek) has none to compare: the physical key stands in.
+  return /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() === chord.letter : chord.code === event.code;
 }
 
 const compiled = new WeakMap<Keymap, Array<[Chord, CommandId]>>();
@@ -145,7 +164,7 @@ export function resolveKey(event: KeyLike, keymap: Keymap = DEFAULT_KEYMAP): Com
   if (event.isComposing || event.metaKey) return undefined;
   return compile(keymap).find(
     ([chord]) =>
-      chord.code === event.code &&
+      sameKey(chord, event) &&
       chord.ctrl === event.ctrlKey &&
       chord.shift === event.shiftKey &&
       chord.alt === event.altKey,
@@ -153,21 +172,32 @@ export function resolveKey(event: KeyLike, keymap: Keymap = DEFAULT_KEYMAP): Com
 }
 
 /**
+ * What a bound key can do right now. `applies` is asked for every event of the key and must not change anything;
+ * a command that has nothing to do (Alt+Left in a single pane, Ctrl+Tab with one tab) does not apply, and its key
+ * belongs to the terminal after all (readline word jumps, tmux `bind -n M-Left`).
+ */
+export interface KeyCommands {
+  applies(command: CommandId): boolean;
+  run(command: CommandId): void;
+}
+
+/**
  * Handles one key event of xterm.js or the window. Returns whether the terminal may process the key: false for
- * every event of a bound key (key down, press and up), true for all others, which stay untouched. A bound key
- * runs its command once, on key down, and is kept from the browser (Ctrl+Shift+V would otherwise paste a second
- * time through the text area of xterm.js).
+ * every event of a bound key whose command applies (key down, press and up), true for all others, which stay
+ * untouched. Such a key runs its command once, on key down, and is kept from the browser (Ctrl+Shift+V would
+ * otherwise paste a second time through the text area of xterm.js).
  */
 export function handleKey(
   event: KeyLike & { preventDefault(): void },
-  run: (command: CommandId) => void,
+  commands: KeyCommands,
   keymap: Keymap = DEFAULT_KEYMAP,
 ): boolean {
   const command = resolveKey(event, keymap);
   if (command === undefined) return true;
   if (MENU_COMMANDS.has(command)) return false;
+  if (!commands.applies(command)) return true;
   event.preventDefault();
-  if (event.type === "keydown") run(command);
+  if (event.type === "keydown") commands.run(command);
   return false;
 }
 

@@ -8,8 +8,11 @@ function press(
   modifiers: Partial<Omit<KeyLike, "code" | "type">> = {},
   type = "keydown",
 ): KeyLike {
+  const letter = code.startsWith("Key") ? code.slice(3) : undefined;
   return {
     type,
+    // QWERTY: the key names its own letter; others pass `key` to say what the layout produces.
+    key: letter === undefined ? code : modifiers.shiftKey ? letter : letter.toLowerCase(),
     code,
     ctrlKey: false,
     shiftKey: false,
@@ -74,6 +77,24 @@ describe("resolveKey", () => {
     expect(resolveKey(press("ArrowLeft", { ctrlKey: true, altKey: true }))).toBeUndefined();
   });
 
+  it("matches letters by the character of the layout, not by the physical key", () => {
+    // AZERTY: the key at the QWERTY position of W is labelled Z, and the W sits where QWERTY has Z.
+    expect(resolveKey(press("KeyZ", { ...ctrlShift, key: "W" }))).toBe("closeTab");
+    expect(resolveKey(press("KeyW", { ...ctrlShift, key: "Z" }))).toBeUndefined();
+    expect(resolveKey(press("KeyM", { ...ctrlShift, key: "N" }))).toBe("newWindow");
+    // Case does not matter (Caps Lock).
+    expect(resolveKey(press("KeyD", { ...ctrlShift, key: "d" }))).toBe("splitRow");
+  });
+
+  it("falls back to the physical key where the layout has no Latin letters", () => {
+    expect(resolveKey(press("KeyD", { ...ctrlShift, key: "В" }))).toBe("splitRow");
+  });
+
+  it("matches digits by the physical key, also where Shift is needed for the digit", () => {
+    // AZERTY: Ctrl+& is Ctrl+1; `key` is the symbol.
+    expect(resolveKey(press("Digit1", { ctrlKey: true, key: "&" }))).toBe("gotoTab1");
+  });
+
   it("ignores keys while an input method composes", () => {
     expect(resolveKey(press("KeyT", { ...ctrlShift, isComposing: true }))).toBeUndefined();
   });
@@ -131,41 +152,55 @@ describe("overviewRows", () => {
 
 describe("handleKey", () => {
   const event = (key: KeyLike) => ({ ...key, preventDefault: vi.fn() });
+  const commands = (applies = true) => ({ applies: vi.fn(() => applies), run: vi.fn() });
 
   it("runs the command on key down and keeps the key from xterm.js and the browser", () => {
-    const run = vi.fn();
+    const run = commands();
     const key = event(press("KeyD", ctrlShift));
 
     const forTerminal = handleKey(key, run);
 
     expect(forTerminal).toBe(false);
-    expect(run).toHaveBeenCalledExactlyOnceWith("splitRow");
+    expect(run.run).toHaveBeenCalledExactlyOnceWith("splitRow");
     expect(key.preventDefault).toHaveBeenCalled();
   });
 
   it("swallows the other events of a bound key without running it again", () => {
-    const run = vi.fn();
+    const run = commands();
 
     expect(handleKey(event(press("KeyD", ctrlShift, "keyup")), run)).toBe(false);
     expect(handleKey(event(press("KeyD", ctrlShift, "keypress")), run)).toBe(false);
-    expect(run).not.toHaveBeenCalled();
+    expect(run.run).not.toHaveBeenCalled();
   });
 
   it("passes unbound keys on untouched", () => {
-    const run = vi.fn();
+    const run = commands();
     const key = event(press("KeyC", { ctrlKey: true }));
 
     expect(handleKey(key, run)).toBe(true);
-    expect(run).not.toHaveBeenCalled();
+    expect(run.run).not.toHaveBeenCalled();
     expect(key.preventDefault).not.toHaveBeenCalled();
   });
 
+  it("gives a bound key to the terminal when its command has nothing to do", () => {
+    // Alt+Left in a single pane: the shell's word jump.
+    const run = commands(false);
+
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      const key = event(press("ArrowLeft", { altKey: true }, type));
+      expect(handleKey(key, run)).toBe(true);
+      expect(key.preventDefault).not.toHaveBeenCalled();
+    }
+    expect(run.applies).toHaveBeenCalledWith("focusLeft");
+    expect(run.run).not.toHaveBeenCalled();
+  });
+
   it("leaves new window to the application menu, which needs the event unprevented", () => {
-    const run = vi.fn();
+    const run = commands();
     const key = event(press("KeyN", ctrlShift));
 
     expect(handleKey(key, run)).toBe(false);
-    expect(run).not.toHaveBeenCalled();
+    expect(run.run).not.toHaveBeenCalled();
     expect(key.preventDefault).not.toHaveBeenCalled();
   });
 });

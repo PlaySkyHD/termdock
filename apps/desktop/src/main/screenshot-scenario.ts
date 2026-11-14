@@ -201,6 +201,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await capture(second, "05-reader.png");
 
   await splitScenes(deps, capture, session("Notes"));
+  await keymapScenes(deps, capture);
   await restoreScenes(deps, wsl);
 }
 
@@ -529,4 +530,223 @@ async function splitScenes(
   await watch.quiet(800, 15_000).catch(() => {}); // vim may have nothing to redraw
   await expectCursor("Vim", 0, "vim after the drag");
   await capture(win, "14-vim-after-drag.png");
+}
+
+// --- Key bindings and clipboard (#28) ----------------------------------------------------------------
+
+/**
+ * Drives the window with real key events (`webContents.sendInputEvent`), so what is checked is the whole way from
+ * the keyboard through xterm.js and the key map to the store: Ctrl+C reaches the shell, the overview opens,
+ * Ctrl+Shift+V pastes with bracketed paste (umlauts, two lines, nothing runs), copying fills the clipboard,
+ * Ctrl+Shift+D/E split, Alt+arrows move the focus, a reading pane refuses to paste, Ctrl+Shift+B hides the sidebar.
+ */
+async function keymapScenes(
+  { bridge, createWindow, log }: ScenarioDeps,
+  capture: (win: BrowserWindow, name: string) => Promise<void>,
+): Promise<void> {
+  const win = createWindow(1280, 800);
+  const windowId = win.webContents.id;
+  // Windows of earlier scenes lie below; a window that is covered or in the background stops painting, and the
+  // terminal rows this scene reads from the DOM would stay empty.
+  win.webContents.setBackgroundThrottling(false);
+  win.show();
+  win.moveTop();
+  const evaluate = <T>(expression: string): Promise<T> =>
+    win.webContents.executeJavaScript(expression, true) as Promise<T>;
+  const waitFor = async (expression: string, what: string, timeoutMs = 30_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await evaluate<boolean>(`Boolean(${expression})`).catch(() => false))) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+      await sleep(100);
+    }
+  };
+  const panes = (): Promise<PaneShot[]> => evaluate<PaneShot[]>(PANES_EXPRESSION);
+  const key = async (
+    keyCode: string,
+    modifiers: Array<"control" | "shift" | "alt"> = [],
+    wait = 400,
+  ): Promise<void> => {
+    win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+    await sleep(wait);
+  };
+  const ctrlShift = ["control" as const, "shift" as const];
+  const ACTIVE_PANE = `.tab-panel[data-active="true"] [data-active-pane="true"]`;
+  const notice = (): Promise<string | null> =>
+    evaluate(`document.querySelector('.status-bar__item--warning')?.textContent ?? null`);
+  const writeClipboard = (text: string): Promise<void> =>
+    evaluate(`navigator.clipboard.writeText(${JSON.stringify(text)})`);
+  const readClipboard = (): Promise<string> => evaluate(`navigator.clipboard.readText()`);
+
+  const created = await bridge.call(windowId, {
+    method: "createSession",
+    params: { name: "Keys", launch: { backend: "wsl", cwd: "/" } },
+  });
+  if (!created.ok) throw new Error(`createSession Keys: ${created.error.message}`);
+  const keys = created.value as SessionInfo;
+  const selector = `[data-session-name="Keys"]`;
+  await waitFor(`document.querySelector(${JSON.stringify(selector)})`, "the Keys session");
+  await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const viewId = async (): Promise<string> => {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const found = bridge.viewsOf(windowId).find((view) => bridge.sessionOf(windowId, view) === keys.id);
+      if (found !== undefined) return found;
+      if (Date.now() > deadline) throw new Error("Keys was not attached");
+      await sleep(100);
+    }
+  };
+  const view = await viewId();
+  await sleep(1_000); // snapshot and first fit
+  win.focus();
+  const type = async (data: string): Promise<void> => {
+    const result = await bridge.call(windowId, { method: "input", viewId: view, data });
+    if (!result.ok) throw new Error(`input: ${result.error.message}`);
+  };
+  const rows = async (index = 0): Promise<string[]> => (await panes())[index]?.rows ?? [];
+  // The output of a key press is not "after" a moment taken later; a fixed pause is enough for these short lines.
+  const settle = (): Promise<void> => sleep(1_200);
+
+  /** Polls the rows of the first pane until `found` holds (the shell of a new session may still be starting). */
+  const waitRows = async (found: (rows: string[]) => boolean, what: string, timeoutMs = 20_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const current = await rows();
+      if (found(current)) return;
+      if (Date.now() > deadline) {
+        // The picture of the failed state helps more than the message alone.
+        await capture(win, "failed-keymap.png").catch(() => {});
+        throw new Error(`Timed out waiting for ${what}: ${JSON.stringify(current.filter((r) => r.trim()))}`);
+      }
+      await sleep(200);
+    }
+  };
+
+  await type("PS1='$ '; clear\r");
+  await waitRows((current) => current.some((row) => row.startsWith("$ ")), "the short prompt");
+
+  // Ctrl+C is not bound: it reaches the shell and interrupts the command.
+  await type("sleep 100\r");
+  await waitRows((current) => current.some((row) => row.includes("sleep 100")), "the command");
+  await sleep(500);
+  await key("C", ["control"]);
+  await waitRows((current) => current.some((row) => row.includes("^C")), "Ctrl+C to reach the shell");
+  log("Ctrl+C reached the shell");
+
+  // The overview of the key bindings.
+  await key("H", ctrlShift);
+  await waitFor(
+    `document.querySelector('[data-dialog="shortcuts"] [data-command="splitRow"]')`,
+    "the overview",
+  );
+  await capture(win, "20-shortcuts-overview.png");
+  await key("Escape");
+  await waitFor(`!document.querySelector('[data-dialog="shortcuts"]')`, "the overview to close");
+  log("overview opened with Ctrl+Shift+H and closed with Escape");
+
+  // Paste: two lines with umlauts. The shell asks for bracketed paste, so it keeps both lines for editing.
+  // This view attached long after tmux switched bracketed paste on at the core's client; the view asks for it
+  // itself (TerminalController `bracketedPaste`), otherwise the first line would run.
+  await type("clear\r");
+  await waitRows((current) => current.every((row) => !row.includes("clear")), "the screen to clear");
+  await waitRows((current) => current.some((row) => row.startsWith("$ ")), "the prompt after clear");
+  await sleep(700);
+  await writeClipboard("echo Grüße äöü ß\necho zweite Zeile");
+  await key("V", ctrlShift, 1_000);
+  const pasted = await rows();
+  log(`after paste: ${JSON.stringify(pasted.filter((row) => row.trim() !== ""))}`);
+  if (
+    !pasted.some((row) => row.includes("echo Grüße äöü ß")) ||
+    !pasted.some((row) => row.includes("echo zweite Zeile"))
+  )
+    throw new Error(`the pasted lines are missing: ${JSON.stringify(pasted)}`);
+  if (pasted.some((row) => row.trim() === "Grüße äöü ß" || row.trim() === "zweite Zeile"))
+    throw new Error("the pasted lines ran: the shell did not get bracketed paste");
+  await capture(win, "21-paste-bracketed.png");
+
+  // Copy: select a row with the mouse, Ctrl+Shift+C, the clipboard holds the text.
+  await writeClipboard("vorher");
+  let copied = "";
+  // A drag with injected mouse events is timing sensitive; try again before giving up.
+  for (let attempt = 1; attempt <= 3 && !copied.includes("echo Gr"); attempt++) {
+    const row = await evaluate<{ x: number; y: number } | null>(`(() => {
+      const target = [...document.querySelectorAll('${ACTIVE_PANE} .xterm-rows > div')].find((r) => (r.textContent ?? '').includes('echo Gr'));
+      if (!target) return null;
+      const box = target.getBoundingClientRect();
+      return { x: box.left, y: box.top + box.height / 2 };
+    })()`);
+    if (!row) throw new Error("no row to select");
+    const mouse = (type: "mouseDown" | "mouseUp" | "mouseMove", x: number): void =>
+      win.webContents.sendInputEvent({
+        type,
+        x: Math.round(x),
+        y: Math.round(row.y),
+        button: "left",
+        clickCount: 1,
+        ...(type === "mouseMove" ? { modifiers: ["leftbuttondown" as const] } : {}),
+      });
+    const start = row.x + 2;
+    const reach = 336; // a row of text is about 160 px wide; the selection ends at the last character
+    mouse("mouseDown", start);
+    await sleep(100);
+    for (let step = 1; step <= 8; step++) {
+      mouse("mouseMove", start + (reach * step) / 8);
+      await sleep(30);
+    }
+    mouse("mouseUp", start + reach);
+    await sleep(400);
+    await key("C", ctrlShift);
+    copied = await readClipboard();
+    log(`copied (attempt ${attempt}): ${JSON.stringify(copied)}`);
+  }
+  if (!copied.includes("echo Gr"))
+    throw new Error(`copy did not fill the clipboard: ${JSON.stringify(copied)}`);
+  await key("C", ["control"]); // cancels the pasted lines in the shell
+  await settle();
+
+  // Split with the keys: right, then the left pane downwards; the new views read, the first pane keeps writing.
+  await key("D", ctrlShift, 1_500);
+  await waitFor(
+    `document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 2`,
+    "two panes",
+  );
+  await key("E", ctrlShift, 1_500);
+  await waitFor(
+    `document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 3`,
+    "three panes",
+  );
+  let shot = await panes();
+  if (shot.filter((pane) => pane.active).length !== 1 || !shot[0]?.active || shot[0].role !== "writer")
+    throw new Error(
+      `the writing pane must stay active: ${JSON.stringify(shot.map((p) => [p.role, p.active]))}`,
+    );
+
+  // Alt+Right moves the focus into the right pane (a reader); pasting there is refused.
+  await key("Right", ["alt"], 600);
+  shot = await panes();
+  const rightPane = shot[2];
+  if (!rightPane?.active)
+    throw new Error(`Alt+Right did not focus the right pane: ${JSON.stringify(shot.map((p) => p.active))}`);
+  await writeClipboard("darf nicht ankommen");
+  await key("V", ctrlShift, 800);
+  const refusal = await notice();
+  log(`notice after paste into a reader: ${refusal}`);
+  if (!refusal?.includes("Einfügen nur im schreibenden Pane"))
+    throw new Error(`no refusal notice: ${refusal}`);
+  await settle();
+  if ((await rows(0)).some((row) => row.includes("darf nicht ankommen")))
+    throw new Error("the reader pasted into the session");
+  await capture(win, "22-paste-refused-in-reader.png");
+
+  // Alt+Left goes back (the first pane of the two on the left), Ctrl+Shift+B hides the sidebar.
+  await key("Left", ["alt"], 600);
+  if (!(await panes())[0]?.active) throw new Error("Alt+Left did not focus the first pane");
+  await key("B", ctrlShift, 1_000);
+  await waitFor(`!document.querySelector('.sidebar')`, "the sidebar to hide");
+  await capture(win, "23-keyboard-split-sidebar-hidden.png");
+
+  // Ctrl+Shift+W closes the tab with all its panes.
+  await key("W", ctrlShift, 800);
+  await waitFor(`document.querySelector('[data-view="empty"]')`, "the empty window after closing the tab");
+  log("keymap scenes done");
 }

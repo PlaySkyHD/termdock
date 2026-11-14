@@ -2,6 +2,8 @@
 // Free of DOM and React; `TerminalView.tsx` connects it to xterm.js, split panes (#27) reuse it per pane.
 import type { SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
+import { handleKey } from "./keymap.js";
+import type { CommandId, KeyLike } from "./keymap.js";
 
 /** The part of xterm.js and its fit addon the controller uses. */
 export interface TerminalSurface {
@@ -16,7 +18,22 @@ export interface TerminalSurface {
   proposeSize(): TerminalSize | undefined;
   /** Key presses and automatic replies of the emulator; the returned function unsubscribes. */
   onData(listener: (data: string) => void): () => void;
+  /**
+   * Installs the handler xterm.js asks before it processes a key event (`attachCustomKeyEventHandler`): false
+   * keeps the key from the terminal. Called once; a later call replaces the handler.
+   */
+  onKey(handler: (event: KeyEvent) => boolean): void;
+  /** Selected text of the terminal, empty without a selection. */
+  getSelection(): string;
+  /**
+   * Writes pasted text like typing: xterm.js turns line breaks into CR and wraps the text in the bracketed
+   * paste markers when the application asked for them (`ESC [ ? 2004 h`). The result arrives through `onData`.
+   */
+  paste(text: string): void;
 }
+
+/** A key event as xterm.js hands it to the custom handler. */
+export type KeyEvent = KeyLike & { preventDefault(): void };
 
 export type ViewRole = "connecting" | "writer" | "reader" | "closed" | "error";
 
@@ -27,12 +44,27 @@ export interface ViewStatus {
   error?: string;
 }
 
+/** `ESC [ ? 2004 h`: the application wants pasted text in `ESC [ 200 ~` ... `ESC [ 201 ~`. */
+const BRACKETED_PASTE_ON = "\x1b[?2004h";
+
 /** Delay between a change of the element and the fit; bounds resizes while a divider is dragged (#27). */
 export const LAYOUT_DELAY_MS = 60;
 
 export interface ControllerOptions {
   /** Runs `run` once after the layout delay; the returned function cancels it. Tests pass a manual one. */
   scheduleLayout?: (run: () => void) => () => void;
+  /**
+   * Runs a command whose key was pressed in this terminal (#28). The key never reaches the shell; every key that
+   * is not bound does. Without it the terminal takes all keys.
+   */
+  onCommand?: (command: CommandId) => void;
+  /**
+   * The session runs in tmux, which switches bracketed paste on at its terminal once, when its client starts, and
+   * strips or keeps the markers for the pane as the application wants. That one sequence went to the core's client
+   * long before this view exists and a snapshot carries no modes, so the view asks for it itself. Without it a
+   * late view would paste multi-line text as typed lines.
+   */
+  bracketedPaste?: boolean;
 }
 
 function delayLayout(run: () => void): () => void {
@@ -57,6 +89,7 @@ export class TerminalController {
   private sizeFromEvent = false;
   private disposed = false;
   private readonly unsubscribe: Array<() => void> = [];
+  private readonly bracketedPaste: boolean;
   private readonly scheduleLayout: (run: () => void) => () => void;
   /** Set while a fit after a change of the element is planned. */
   private cancelLayout: (() => void) | undefined;
@@ -68,6 +101,30 @@ export class TerminalController {
     options: ControllerOptions = {},
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
+    this.bracketedPaste = options.bracketedPaste ?? false;
+    const { onCommand } = options;
+    if (onCommand) this.surface.onKey((event) => handleKey(event, onCommand));
+  }
+
+  /** Text of the terminal's selection (a reader has one too). */
+  selectedText(): string {
+    return this.surface.getSelection();
+  }
+
+  /** Only the writing view takes input (ADR 0003), so only it may paste. */
+  canPaste(): boolean {
+    return this.isWriter();
+  }
+
+  /**
+   * Pastes into the session as typed input. Refuses (false) in a reader, before the view is attached, after the
+   * core is gone and for an empty text. The terminal decides the form: line breaks as CR, bracketed paste when
+   * the application asked for it; the data then takes the same way as typing, through `onData`.
+   */
+  paste(text: string): boolean {
+    if (text === "" || !this.canPaste()) return false;
+    this.surface.paste(text);
+    return true;
   }
 
   /** Attaches a new view to the session and shows it. Subscribes first, so no output is lost. */
@@ -106,6 +163,7 @@ export class TerminalController {
     if (view.size.cols !== this.surface.cols || view.size.rows !== this.surface.rows)
       this.surface.resize(view.size.cols, view.size.rows);
     this.surface.reset();
+    if (this.bracketedPaste) this.surface.write(BRACKETED_PASTE_ON);
     this.surface.write(trimTrailingBlankLines(view.snapshot));
     // A reader pane may never get the focus; it still shows where the writer's cursor is.
     this.surface.showCursor();

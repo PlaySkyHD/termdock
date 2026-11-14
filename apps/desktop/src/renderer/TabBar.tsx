@@ -18,6 +18,8 @@ export interface TabBarProps {
   /** Splits the active pane; the new pane shows the same session. */
   onSplit: (direction: "row" | "column") => void;
   onClosePane: () => void;
+  /** Opens the overview of the key bindings. */
+  onShowShortcuts: () => void;
 }
 
 export function TabBar({
@@ -32,6 +34,7 @@ export function TabBar({
   maxPanes,
   onSplit,
   onClosePane,
+  onShowShortcuts,
 }: TabBarProps) {
   const full = panes >= maxPanes;
   const splitTitle = (text: string): string => (full ? `Höchstens ${maxPanes} Panes je Tab` : text);
@@ -86,6 +89,21 @@ export function TabBar({
             </div>
           );
         })}
+      </div>
+      <div className="tab-bar__actions">
+        <button
+          className="icon-button"
+          type="button"
+          data-action="show-shortcuts"
+          title="Tastenkürzel (Ctrl+Shift+H)"
+          aria-label="Tastenkürzel anzeigen"
+          onClick={onShowShortcuts}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="3.5" width="13" height="9" rx="1" fill="none" stroke="currentColor" />
+            <path d="M4 6.5h1M7 6.5h1M10 6.5h1M4 9.5h8" stroke="currentColor" />
+          </svg>
+        </button>
       </div>
       {panes > 0 && (
         <div className="tab-bar__actions">

@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import type { CommandId } from "./keymap.js";
 import { isClick } from "./pane-layout.js";
 import { TerminalController } from "./terminal-controller.js";
 import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
@@ -54,6 +55,9 @@ function surfaceOf(term: Terminal, fit: FitAddon): TerminalSurface {
       const subscription = term.onData(listener);
       return () => subscription.dispose();
     },
+    onKey: (handler) => term.attachCustomKeyEventHandler(handler),
+    getSelection: () => term.getSelection(),
+    paste: (text) => term.paste(text),
   };
 }
 
@@ -69,6 +73,12 @@ export interface TerminalViewProps {
   onController: (controller: TerminalController | undefined) => void;
   /** A real click into the terminal: no drag, no selection (see `isClick`). */
   onClick?: () => void;
+  /** A bound key was pressed in the terminal (keymap.ts); the window runs the command. */
+  onCommand: (command: CommandId) => void;
+  /** Right click on the pane: paste (the window decides whether this view may). */
+  onContextPaste?: () => void;
+  /** The session runs in tmux (WSL backend): the view asks for bracketed paste itself (TerminalController). */
+  bracketedPaste?: boolean;
 }
 
 export function TerminalView({
@@ -79,13 +89,16 @@ export function TerminalView({
   onStatus,
   onController,
   onClick,
+  onCommand,
+  onContextPaste,
+  bracketedPaste = false,
 }: TerminalViewProps) {
   const host = useRef<HTMLDivElement>(null);
   const pressed = useRef<{ x: number; y: number }>(undefined);
   const terminal = useRef<Terminal>(undefined);
   // The callbacks of the parent change on every render; the view must not attach again for that.
-  const callbacks = useRef({ onStatus, onController });
-  callbacks.current = { onStatus, onController };
+  const callbacks = useRef({ onStatus, onController, onCommand });
+  callbacks.current = { onStatus, onController, onCommand };
   const activeNow = useRef(active);
   activeNow.current = active;
   const [status, setStatus] = useState<ViewStatus>();
@@ -103,10 +116,15 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(element);
     terminal.current = term;
-    const current = new TerminalController(api, surfaceOf(term, fit), (next) => {
-      setStatus(next);
-      callbacks.current.onStatus(next);
-    });
+    const current = new TerminalController(
+      api,
+      surfaceOf(term, fit),
+      (next) => {
+        setStatus(next);
+        callbacks.current.onStatus(next);
+      },
+      { onCommand: (command) => callbacks.current.onCommand(command), bracketedPaste },
+    );
     callbacks.current.onController(current);
     void current.open(sessionId);
     const observer = new ResizeObserver(() => current.layoutChanged());
@@ -172,6 +190,12 @@ export function TerminalView({
           selecting: terminal.current?.hasSelection() ?? false,
         };
         if (event.button === 0 && isClick(down, up)) onClick?.();
+      }}
+      onContextMenu={(event) => {
+        // A program that tracks the mouse (vim, htop) gets the right click; Shift forces the paste, like in xterm.
+        if (terminal.current?.modes.mouseTrackingMode !== "none" && !event.shiftKey) return;
+        event.preventDefault();
+        onContextPaste?.();
       }}
     >
       <div className="terminal-view" ref={host} />

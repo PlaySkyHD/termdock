@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import { pasteInto, runCommand } from "./commands.js";
+import type { CommandDeps } from "./commands.js";
+import { handleKey, resolveKey } from "./keymap.js";
+import type { CommandId } from "./keymap.js";
 import { startLayoutSync } from "./layout-sync.js";
 import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
+import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { OpenMode } from "./Sidebar.js";
 import { StatusBar } from "./StatusBar.js";
@@ -133,6 +138,35 @@ export function App({ api }: { api: TermdockApi }) {
     setFormOpen(true);
   };
 
+  // Key bindings (#28): the terminal hands bound keys to `run` (attachCustomKeyEventHandler), the window catches
+  // them while the focus is elsewhere (sidebar, empty window). The latest closures are read through the ref.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const commandDeps: CommandDeps = {
+    store,
+    clipboard: navigator.clipboard,
+    activeController: () => (tab ? controllers.current.get(tab.activePaneId) : undefined),
+    split: (direction) => activeSessionId !== undefined && split(direction, activeSessionId),
+    showForm,
+    toggleShortcuts: () => setShortcutsOpen((shown) => !shown),
+    notify: setNotice,
+    refocus,
+  };
+  const commandRef = useRef(commandDeps);
+  commandRef.current = commandDeps;
+  const run = useCallback((command: CommandId) => void runCommand(command, commandRef.current), []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      // The terminal has handled a bound key already (and prevented it).
+      if (event.defaultPrevented) return;
+      // The form's fields keep copy and paste.
+      const command = resolveKey(event);
+      if ((command === "copy" || command === "paste") && isTextField(event.target)) return;
+      handleKey(event, run);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [run]);
+
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
   return (
@@ -167,6 +201,7 @@ export function App({ api }: { api: TermdockApi }) {
           }}
           onClose={(tabId) => store.closeTab(tabId)}
           onSplit={(direction) => activeSessionId !== undefined && split(direction, activeSessionId)}
+          onShowShortcuts={() => setShortcutsOpen(true)}
           onClosePane={() => {
             if (tab) store.closePane(tab.id, tab.activePaneId);
             setNotice(undefined);
@@ -202,6 +237,11 @@ export function App({ api }: { api: TermdockApi }) {
                       void controllers.current.get(paneId)?.claimWriter();
                   }}
                   onClosePane={(paneId) => store.closePane(each.id, paneId)}
+                  onCommand={run}
+                  onPanePaste={(paneId) => {
+                    const controller = controllers.current.get(paneId);
+                    if (controller) void pasteInto(controller, navigator.clipboard, setNotice);
+                  }}
                   onMoveDivider={(splitId, index, delta, minShare) =>
                     store.moveDivider(each.id, splitId, index, delta, minShare)
                   }
@@ -219,7 +259,24 @@ export function App({ api }: { api: TermdockApi }) {
         // claimWriter never rejects; a refusal arrives as the error of the view status.
         onClaimWriter={() => void (tab && controllers.current.get(tab.activePaneId)?.claimWriter())}
       />
+      {shortcutsOpen && (
+        <ShortcutsDialog
+          onClose={() => {
+            setShortcutsOpen(false);
+            refocus();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** An input field of the page; the text area of xterm.js is none, its keys are the terminal's. */
+function isTextField(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    !target.classList.contains("xterm-helper-textarea") &&
+    (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
   );
 }
 

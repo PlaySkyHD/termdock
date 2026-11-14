@@ -2,7 +2,7 @@ import type { TerminalSize } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { AttachedView, BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import { TerminalController } from "./terminal-controller.js";
-import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
+import type { KeyEvent, TerminalSurface, ViewStatus } from "./terminal-controller.js";
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (data: Uint8Array | string): string =>
@@ -40,6 +40,27 @@ class FakeSurface implements TerminalSurface {
   /** What xterm.js does on a key press or on an automatic reply (DA1, cursor position). */
   emitData(data: string): void {
     this.listener?.(data);
+  }
+
+  private keyHandler: ((event: KeyEvent) => boolean) | undefined;
+  onKey(handler: (event: KeyEvent) => boolean): void {
+    this.keyHandler = handler;
+  }
+  /** What xterm.js asks its custom handler before it processes a key; true means it may. */
+  pressKey(event: KeyEvent): boolean {
+    return this.keyHandler?.(event) ?? true;
+  }
+
+  selection = "";
+  /** The application asked for bracketed paste (`ESC [ ? 2004 h`). */
+  bracketedPaste = false;
+  getSelection(): string {
+    return this.selection;
+  }
+  /** What `Terminal.paste` of xterm.js does: line breaks become CR, bracketed paste wraps; the result is data. */
+  paste(text: string): void {
+    const data = text.replace(/\r?\n/g, "\r");
+    this.emitData(this.bracketedPaste ? `\x1b[200~${data}\x1b[201~` : data);
   }
 }
 
@@ -396,6 +417,124 @@ describe("TerminalController", () => {
     expect(statuses.at(-1)).toMatchObject({
       role: "reader",
       error: "[not_found] View v1 does not belong to this window",
+    });
+  });
+
+  describe("key bindings", () => {
+    const key = (code: string, modifiers: Partial<KeyEvent> = {}): KeyEvent => ({
+      type: "keydown",
+      code,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      isComposing: false,
+      preventDefault: () => {},
+      ...modifiers,
+    });
+
+    it("runs a bound key as command before xterm.js sees it and keeps it from the shell", () => {
+      const api = new FakeApi();
+      const surface = new FakeSurface();
+      const commands: string[] = [];
+      new TerminalController(api, surface, () => {}, { onCommand: (command) => commands.push(command) });
+
+      const forTerminal = surface.pressKey(key("KeyD", { ctrlKey: true, shiftKey: true }));
+
+      expect(forTerminal).toBe(false);
+      expect(commands).toEqual(["splitRow"]);
+    });
+
+    it("passes Ctrl+C, Ctrl+B and letters on to the shell", () => {
+      const api = new FakeApi();
+      const surface = new FakeSurface();
+      const commands: string[] = [];
+      new TerminalController(api, surface, () => {}, { onCommand: (command) => commands.push(command) });
+
+      expect(surface.pressKey(key("KeyC", { ctrlKey: true }))).toBe(true);
+      expect(surface.pressKey(key("KeyB", { ctrlKey: true }))).toBe(true);
+      expect(surface.pressKey(key("KeyA"))).toBe(true);
+
+      expect(commands).toEqual([]);
+    });
+  });
+
+  it("switches bracketed paste on after the reset when the session runs in tmux, and only then", async () => {
+    const withTmux = new FakeSurface();
+    const apiA = new FakeApi();
+    const a = new TerminalController(apiA, withTmux, () => {}, { bracketedPaste: true });
+    const openingA = a.open("s1");
+    apiA.answerAttach({ writerViewId: "v1" });
+    await openingA;
+    const without = new FakeSurface();
+    const apiB = new FakeApi();
+    const b = new TerminalController(apiB, without, () => {});
+    const openingB = b.open("s1");
+    apiB.answerAttach({ writerViewId: "v1" });
+    await openingB;
+
+    expect(withTmux.screen).toEqual(["<reset>", "\x1b[?2004h", "snap"]);
+    expect(without.screen).toEqual(["<reset>", "snap"]);
+  });
+
+  describe("clipboard", () => {
+    it("as writer pastes through the terminal, so line breaks and bracketed paste follow the application", async () => {
+      const { api, surface, controller } = await opened({ writerViewId: "v1" });
+
+      expect(controller.paste("Grüße\nzweite Zeile")).toBe(true);
+      surface.bracketedPaste = true;
+      expect(controller.paste("a\r\nb")).toBe(true);
+
+      expect(api.inputs).toEqual([
+        ["v1", "Grüße\rzweite Zeile"],
+        ["v1", "\x1b[200~a\rb\x1b[201~"],
+      ]);
+    });
+
+    it("as reader refuses to paste and sends nothing", async () => {
+      const { api, controller } = await opened({ writerViewId: "v0" });
+
+      expect(controller.canPaste()).toBe(false);
+      expect(controller.paste("text")).toBe(false);
+
+      expect(api.inputs).toEqual([]);
+    });
+
+    it("does not paste before the view is attached", () => {
+      const api = new FakeApi();
+      const controller = new TerminalController(api, new FakeSurface(), () => {});
+      void controller.open("s1");
+
+      expect(controller.paste("text")).toBe(false);
+
+      expect(api.inputs).toEqual([]);
+    });
+
+    it("does not paste an empty text or after the core is gone", async () => {
+      const { api, controller } = await opened({ writerViewId: "v1" });
+
+      expect(controller.paste("")).toBe(false);
+      api.emit({ kind: "coreClosed" });
+      expect(controller.paste("text")).toBe(false);
+
+      expect(api.inputs).toEqual([]);
+    });
+
+    it("hands out the selection, also as reader", async () => {
+      const { surface, controller } = await opened({ writerViewId: "v0" });
+      surface.selection = "Umlaute äöü\nzweite Zeile";
+
+      expect(controller.selectedText()).toBe("Umlaute äöü\nzweite Zeile");
+    });
+
+    it("becomes able to paste when it takes the writer", async () => {
+      const { api, controller } = await opened({ writerViewId: "v0" });
+
+      expect(controller.canPaste()).toBe(false);
+      api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
+
+      expect(controller.canPaste()).toBe(true);
+      expect(controller.paste("x")).toBe(true);
     });
   });
 

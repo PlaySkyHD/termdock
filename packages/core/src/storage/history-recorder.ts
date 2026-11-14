@@ -7,7 +7,7 @@ import type { HistoryStore } from "./history-store.js";
 /** The part of `SessionRegistry` the recorder uses. */
 export interface HistorySource {
   onOutput(
-    listener: (event: { sessionId: SessionId; data: Uint8Array; fromRedraw?: boolean }) => void,
+    listener: (event: { sessionId: SessionId; data: Uint8Array; fromRedraw: boolean }) => void,
   ): Disposable;
   /** Throws for an unknown session. */
   get(sessionId: SessionId): { loggingEnabled: boolean };

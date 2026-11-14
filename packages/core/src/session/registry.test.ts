@@ -536,7 +536,7 @@ describe("SessionRegistry: output", () => {
       ]);
     });
 
-    it("keeps flagging until a merged follow-up redraw has ended", async () => {
+    it("flags output during each call, also of a merged follow-up redraw", async () => {
       const { registry, backend, id, outputs } = await redrawing();
       let release = () => {};
       backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
@@ -558,7 +558,7 @@ describe("SessionRegistry: output", () => {
       ]);
     });
 
-    it("does not flag the output of a PTY re-attached while the redraw runs", async () => {
+    it("does not flag the first output of a PTY re-attached during a redraw call (known limit)", async () => {
       const { registry, backend, id, outputs } = await redrawing();
       let release = () => {};
       backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
@@ -574,6 +574,68 @@ describe("SessionRegistry: output", () => {
       expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
         "repaint:true",
         "fresh:false",
+      ]);
+    });
+
+    it("flags the re-attached PTY during the call of a follow-up redraw", async () => {
+      const { registry, backend, id, outputs } = await redrawing();
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+      await registry.attachView(id, "view-a");
+      const lost = backend.pty(id);
+      lost.loseClient();
+      await vi.waitFor(() => expect(backend.pty(id)).not.toBe(lost));
+      // A view attaching to the new PTY merges a follow-up into the running redraw.
+      await registry.attachView(id, "view-b");
+
+      backend.redrawGate = undefined;
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("flags the repaint of the retry after a failed first call", async () => {
+      const { registry, backend, id, outputs } = await redrawing();
+      backend.failNextRedraw = new Error("refresh-client failed");
+      // A failed call repaints nothing; the retry does.
+      backend.onRedraw = (sessionId) => {
+        if (!backend.failNextRedraw) backend.pty(sessionId).emitData("repaint");
+      };
+
+      await registry.attachView(id, "view-a");
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("stops flagging when a call takes longer than redrawOutputMaxMs", async () => {
+      const { registry, backend, id, outputs } = await redrawing({ redrawOutputMaxMs: 20 });
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitData("early");
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      backend.pty(id).emitData("late");
+      release();
+      await settle();
+
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "early:true",
+        "late:false",
       ]);
     });
 

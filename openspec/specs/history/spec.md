@@ -161,7 +161,7 @@ Wird `historyLimitBytes` gesenkt, SHALL der Core beim nächsten Schreiben mit ge
 
 ### Requirement: Neuzeichnen beim Anhängen nicht speichern
 
-Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie jede Ausgabe der PTY, die es neu zeichnet, vom Anfordern bis zum Ende dieses Neuzeichnens (samt Wiederholung und zusammengefasstem Folge-Neuzeichnen) als Neuzeichnen kennzeichnen. Der Verlauf MUST solche Ausgabe nicht speichern; Views MUST sie unverändert erhalten. Alle übrige Ausgabe SHALL der Verlauf wie bisher speichern, auch Neuzeichnen, das tmux von selbst auslöst.
+Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie die Ausgabe der PTY, die ein Backend-Aufruf dafür neu zeichnet, während dieses Aufrufs und höchstens 2 s je Aufruf als Neuzeichnen kennzeichnen; ein gescheiterter Aufruf beendet die Kennzeichnung sofort. Der Verlauf MUST solche Ausgabe nicht speichern; Views MUST sie unverändert erhalten. Alle übrige Ausgabe SHALL der Verlauf speichern, auch Neuzeichnen, das tmux von selbst oder beim Anbinden einer PTY auslöst.
 
 #### Scenario: Neuzeichnen beim Anhängen
 
@@ -181,11 +181,23 @@ Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie
 - **WHEN** danach Ausgabe eintrifft
 - **THEN** speichert der Verlauf sie
 
+#### Scenario: Wiederholung nach gescheitertem Aufruf
+
+- **GIVEN** ein Neuzeichnen, dessen erster Backend-Aufruf scheitert
+- **WHEN** die Wiederholung den Bildschirm in die PTY schreibt
+- **THEN** speichert der Verlauf diese Bytes nicht, die Ausgabe danach aber schon
+
+#### Scenario: Obergrenze je Aufruf
+
+- **GIVEN** ein Backend-Aufruf zum Neuzeichnen, der länger als 2 s dauert (WSL hängt)
+- **WHEN** nach diesen 2 s Ausgabe eintrifft
+- **THEN** speichert der Verlauf sie
+
 #### Scenario: Wiederanbinden während des Neuzeichnens
 
-- **GIVEN** ein laufendes Neuzeichnen, während dessen der tmux-Client verloren geht und die Registry eine neue PTY anbindet
-- **WHEN** die neue PTY Ausgabe liefert, bevor das Neuzeichnen endet
-- **THEN** speichert der Verlauf sie
+- **GIVEN** ein laufender Backend-Aufruf zum Neuzeichnen, während dessen der tmux-Client verloren geht und die Registry eine neue PTY anbindet
+- **WHEN** die neue PTY Ausgabe liefert, bevor dieser Aufruf endet
+- **THEN** speichert der Verlauf sie, auch den Bildschirm, den tmux beim Anbinden zeichnet; erst die Ausgabe der neuen PTY während eines folgenden Aufrufs wird nicht gespeichert
 
 #### Scenario: Ohne angefordertes Neuzeichnen
 

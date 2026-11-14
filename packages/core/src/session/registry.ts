@@ -48,6 +48,11 @@ export interface SessionRegistryOptions {
    */
   reattachDelaysMs?: readonly number[];
   /**
+   * Longest time the output of one backend redraw call is flagged `fromRedraw` (issue #88); a call that takes
+   * longer stops the flag here. Defaults to `DEFAULT_REDRAW_OUTPUT_MAX_MS`.
+   */
+  redrawOutputMaxMs?: number;
+  /**
    * Removes the persistent history of a session (`history/<sessionId>/`, ADR 0004); `delete` calls it before
    * the stored row goes. Must be idempotent. Defaults to doing nothing (a registry without data directory).
    */
@@ -116,12 +121,15 @@ export interface OutputEvent {
   /** Views attached when the output arrived; each of them gets `session.output`. */
   viewIds: readonly ViewId[];
   /**
-   * Whether the output arrived while a redraw the registry requested ran (`requestRedraw`, from the request to the
-   * end of its retry and merged follow-up). Such output repaints the screen and is not stored in the history
-   * (issue #88). Core-internal: `session.output` does not carry it.
+   * Whether the output came from this PTY while a backend call of a redraw the registry requested ran
+   * (`requestRedraw`), at most `redrawOutputMaxMs` per call. Such output repaints the screen and is not stored
+   * in the history (issue #88). Core-internal: `session.output` does not carry it.
    */
   fromRedraw: boolean;
 }
+
+/** Default of `SessionRegistryOptions.redrawOutputMaxMs`; a redraw call took about 270 ms when measured. */
+export const DEFAULT_REDRAW_OUTPUT_MAX_MS = 2_000;
 
 export interface AttachResult {
   session: SessionInfo;
@@ -158,7 +166,10 @@ const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 interface RedrawRun {
   /** Another redraw was requested meanwhile; it follows this one. */
   again: boolean;
-  /** PTY the current backend call repaints; its output is flagged `fromRedraw` (issue #88). */
+  /**
+   * PTY the running backend call repaints; its output is flagged `fromRedraw` (issue #88). Unset between calls,
+   * after a failed call and once `redrawOutputMaxMs` passed.
+   */
   pty: PtyHandle | undefined;
 }
 
@@ -222,6 +233,7 @@ export class SessionRegistry {
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
   private readonly reattachDelaysMs: readonly number[];
+  private readonly redrawOutputMaxMs: number;
   private readonly removeHistory: (sessionId: SessionId) => Promise<void>;
   private readonly defaultLoggingEnabled: () => boolean;
   private restored = false;
@@ -240,6 +252,7 @@ export class SessionRegistry {
     this.now = options.now ?? (() => new Date());
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
+    this.redrawOutputMaxMs = options.redrawOutputMaxMs ?? DEFAULT_REDRAW_OUTPUT_MAX_MS;
     this.removeHistory = options.removeHistory ?? (async () => {});
     this.defaultLoggingEnabled = options.defaultLoggingEnabled ?? (() => true);
     this.onPersistError =
@@ -614,7 +627,7 @@ export class SessionRegistry {
       entry.redraw.again = true;
       return;
     }
-    const run: RedrawRun = { again: false, pty: entry.pty };
+    const run: RedrawRun = { again: false, pty: undefined };
     entry.redraw = run;
     void this.runRedraws(entry, backend, run).finally(() => {
       if (entry.redraw === run) entry.redraw = undefined;
@@ -626,10 +639,10 @@ export class SessionRegistry {
       run.again = false;
       let failure: unknown;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        // Only the output of the PTY this call repaints is flagged; a re-attached PTY counts from its next call.
-        run.pty = entry.pty;
         try {
-          await backend.redraw?.(entry.info.id, entry.info.launch);
+          await this.flaggingRedrawOutput(entry, run, () =>
+            backend.redraw?.(entry.info.id, entry.info.launch),
+          );
           failure = undefined;
           break;
         } catch (error) {
@@ -639,6 +652,32 @@ export class SessionRegistry {
       }
       if (failure !== undefined) this.onRedrawError(failure, snapshotInfo(entry.info));
     } while (run.again && !this.disposed);
+  }
+
+  /**
+   * Flags the output of the current PTY as `fromRedraw` while one backend redraw call runs, at most
+   * `redrawOutputMaxMs` (issue #88). The bytes carry no origin; the repaint arrives before the call returns
+   * (design of the change `history-skip-redraw`). A failed call ends the flag at once: nothing was repainted.
+   */
+  private async flaggingRedrawOutput(
+    entry: SessionEntry,
+    run: RedrawRun,
+    call: () => Promise<void> | undefined,
+  ): Promise<void> {
+    const pty = entry.pty;
+    run.pty = pty;
+    const limit = setTimeout(() => {
+      this.timers.delete(limit);
+      if (run.pty === pty) run.pty = undefined;
+    }, this.redrawOutputMaxMs);
+    this.timers.add(limit);
+    try {
+      await call();
+    } finally {
+      clearTimeout(limit);
+      this.timers.delete(limit);
+      run.pty = undefined;
+    }
   }
 
   /** Detaches a view. The process keeps running; the writer gets no automatic successor (ADR 0005). */

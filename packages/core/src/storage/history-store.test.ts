@@ -369,8 +369,7 @@ describe("recordHistory", () => {
 
   it("skips output marked as redraw (issue #88)", async () => {
     const store = makeStore(tempDir());
-    let listener:
-      ((event: { sessionId: string; data: Uint8Array; fromRedraw?: boolean }) => void) | undefined;
+    let listener: Parameters<HistorySource["onOutput"]>[0] | undefined;
     const source: HistorySource = {
       onOutput: (l) => {
         listener = l;
@@ -383,11 +382,11 @@ describe("recordHistory", () => {
 
     listener!({ sessionId: "s1", data: encode("real"), fromRedraw: false });
     listener!({ sessionId: "s1", data: encode("repaint"), fromRedraw: true });
-    listener!({ sessionId: "s1", data: encode("plain") });
+    listener!({ sessionId: "s1", data: encode("later"), fromRedraw: false });
     await store.flush();
 
     const text = (await collect(store.read("s1"))).map((e) => new TextDecoder().decode(e.data));
-    expect(text).toEqual(["real", "plain"]);
+    expect(text).toEqual(["real", "later"]);
   });
 
   it("takes the default of a new session from the setting", async () => {
@@ -403,7 +402,7 @@ describe("recordHistory", () => {
   it("stops writing when logging is switched off and keeps what is stored", async () => {
     const dir = tempDir();
     const store = makeStore(dir);
-    let listener: ((event: { sessionId: string; data: Uint8Array }) => void) | undefined;
+    let listener: Parameters<HistorySource["onOutput"]>[0] | undefined;
     let loggingEnabled = true;
     const source: HistorySource = {
       onOutput: (l) => {
@@ -413,7 +412,8 @@ describe("recordHistory", () => {
       get: () => ({ loggingEnabled }),
     };
     recordHistory(source, store);
-    const emit = (text: string) => listener!({ sessionId: "s1", data: new TextEncoder().encode(text) });
+    const emit = (text: string) =>
+      listener!({ sessionId: "s1", data: new TextEncoder().encode(text), fromRedraw: false });
 
     emit("before");
     await store.flush();

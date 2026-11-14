@@ -155,21 +155,17 @@ describe("DesktopBridge calls", () => {
     expect(core.sent("session.create")[0]?.params).toEqual(params);
   });
 
-  it("tells every window about a created session, also the one that asked", async () => {
-    const { core, bridge, a, b } = setup();
+  it("passes the core's session.created to every window (issue #46)", () => {
+    const { core, a, b } = setup();
     const session = { id: "s1" } as SessionInfo;
-    core.answers.set("session.create", { result: { session } });
 
-    await bridge.call(a.id, {
-      method: "createSession",
-      params: { name: "WSL", launch: { backend: "wsl", cwd: "~" } },
-    });
+    core.emit("session.created", { session });
 
     expect(a.events).toEqual([{ kind: "sessionCreated", session }]);
     expect(b.events).toEqual([{ kind: "sessionCreated", session }]);
   });
 
-  it("announces no session when the core refuses to create it", async () => {
+  it("passes the core's error when it refuses session.create", async () => {
     const { core, bridge, a, b } = setup();
     core.answers.set("session.create", new IpcError("backend_unavailable", "WSL is down"));
 
@@ -179,6 +175,20 @@ describe("DesktopBridge calls", () => {
     });
 
     expect(result).toMatchObject({ ok: false, error: { code: "backend_unavailable" } });
+    expect(a.events).toEqual([]);
+    expect(b.events).toEqual([]);
+  });
+
+  it("makes no announcement of its own after session.create", async () => {
+    const { core, bridge, a, b } = setup();
+    const session = { id: "s1" } as SessionInfo;
+    core.answers.set("session.create", { result: { session } });
+
+    await bridge.call(a.id, {
+      method: "createSession",
+      params: { name: "WSL", launch: { backend: "wsl", cwd: "~" } },
+    });
+
     expect(a.events).toEqual([]);
     expect(b.events).toEqual([]);
   });

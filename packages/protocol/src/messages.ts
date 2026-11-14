@@ -165,6 +165,13 @@ export interface EventMap {
   "session.resized": { sessionId: SessionId; size: TerminalSize };
   /** writerViewId undefined means nobody writes. */
   "view.writerChanged": { sessionId: SessionId; writerViewId?: ViewId };
+  /**
+   * A session came into the registry through `session.create`, in state `Starting`; sent to every client that
+   * used `session.list` (like `session.stateChanged`), also the one that asked. Since protocol 1.2. Also sent when
+   * the start fails afterwards; `session.stateChanged` to `Interrupted` follows. Sessions loaded at the core's
+   * start are not announced; clients get them with `session.list`.
+   */
+  "session.created": { session: SessionInfo };
 }
 
 export type EventName = keyof EventMap;
@@ -174,6 +181,7 @@ export const EVENT_NAMES = [
   "session.stateChanged",
   "session.resized",
   "view.writerChanged",
+  "session.created",
 ] as const satisfies readonly EventName[];
 
 // --- Payload rules --------------------------------------------------------------------------
@@ -218,6 +226,7 @@ export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {
   "session.stateChanged": "none",
   "session.resized": "none",
   "view.writerChanged": "none",
+  "session.created": "none",
 };
 
 // --- Parsed forms ---------------------------------------------------------------------------

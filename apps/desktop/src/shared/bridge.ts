@@ -75,7 +75,7 @@ export type BridgeEvent =
   | { kind: "resized"; sessionId: SessionId; size: TerminalSize }
   | { kind: "writerChanged"; sessionId: SessionId; writerViewId?: ViewId }
   | { kind: "stateChanged"; sessionId: SessionId; state: SessionState; lastExitCode?: number }
-  /** A session was created through this main process; the core has no event for it (ADR 0006). */
+  /** The core's `session.created`: a session came into the registry, from any client (ADR 0002, 0006). */
   | { kind: "sessionCreated"; session: SessionInfo }
   | { kind: "coreClosed" };
 

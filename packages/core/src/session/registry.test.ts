@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { InMemorySessionRepository } from "../storage/session-repository.js";
@@ -38,6 +38,23 @@ describe("SessionRegistry: create and start", () => {
     expect(registry.get(session.id).state).toBe("Detached");
     expect(states.map((s) => `${s.from}->${s.to}`)).toEqual(["Starting->Running", "Running->Detached"]);
     expect(registry.list().map((s) => s.id)).toEqual([session.id]);
+  });
+
+  it("starts and returns the session although an onCreated listener throws (issue #46)", async () => {
+    const { registry } = setup();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const seen: string[] = [];
+    registry.onCreated(() => {
+      throw new Error("listener bug");
+    });
+    registry.onCreated(({ session }) => seen.push(session.id));
+
+    const info = await registry.create({ name: "shell", launch: spec });
+
+    expect(info.state).toBe("Detached");
+    expect(seen).toEqual([info.id]);
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
   });
 
   it("gives every session its own id", async () => {

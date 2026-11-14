@@ -17,9 +17,9 @@ const sessionSelector = (name: string): string => `[data-session-name=${JSON.str
 const SUMMARY_EXPRESSION = `(() => ({
   sidebar: Boolean(document.querySelector('.sidebar')),
   tabs: [...document.querySelectorAll('[data-tab-title]')].map((tab) => tab.dataset.tabTitle + (tab.classList.contains('tab--active') ? '*' : '')),
-  panels: [...document.querySelectorAll('.tab-panel')].map((panel) => {
-    const area = panel.querySelector('.pane-tree').getBoundingClientRect();
-    return [...panel.querySelectorAll('.pane')].map((pane) => {
+  panels: [...document.querySelectorAll('[data-tab-id][data-tab-title]')].map((tab) => {
+    const area = document.querySelector('.pane-tree').getBoundingClientRect();
+    return [...document.querySelectorAll('.pane')].filter((pane) => pane.dataset.tabId === tab.dataset.tabId).map((pane) => {
       const box = pane.getBoundingClientRect();
       return [pane.dataset.sessionId, pane.dataset.activePane,
         Math.round(((box.left - area.left) / area.width) * 100), Math.round(((box.top - area.top) / area.height) * 100),
@@ -104,7 +104,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
     const box = await evaluate<{ x: number; y: number; left: number; w: number }>(
       win,
       `(() => {
-        const divider = document.querySelector('.tab-panel[data-active="true"] .divider');
+        const divider = document.querySelector('.divider[data-tab-active="true"]');
         const area = divider.parentElement.getBoundingClientRect();
         const box = divider.getBoundingClientRect();
         return { x: box.left + box.width / 2, y: box.top + box.height / 2, left: area.left, w: area.width };
@@ -214,7 +214,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   for (const win of restored) {
     await waitFor(
       win,
-      `!document.querySelector('[data-view="restoring"]') && document.querySelector('.tab-panel')`,
+      `!document.querySelector('[data-view="restoring"]') && document.querySelector('.pane')`,
       "the restored window",
     );
     await waitFor(

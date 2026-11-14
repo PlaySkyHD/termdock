@@ -298,6 +298,27 @@ describe("runCommand: tabs", () => {
     expect(calls).toEqual([]);
   });
 
+  it("moves the active tab left and right, keeps it active and gives the terminal the focus (#67)", async () => {
+    const { run, store, calls, activeIndex } = setup(["a", "b", "c"]);
+    const sessionsInOrder = (): string[] =>
+      store.getState().window.tabs.map((tab) => (tab.root.kind === "pane" ? tab.root.sessionId : ""));
+
+    await run("moveTabLeft");
+    expect(sessionsInOrder()).toEqual(["a", "c", "b"]);
+    expect(activeIndex()).toBe(1);
+    await run("moveTabRight");
+    expect(sessionsInOrder()).toEqual(["a", "b", "c"]);
+    expect(calls).toEqual(["refocus", "refocus"]);
+  });
+
+  it("does not apply a tab move at the edge, so the key stays with the shell", () => {
+    const { deps } = setup(["a", "b"]);
+
+    expect(canRun("moveTabRight", deps)).toBe(false);
+    expect(canRun("moveTabLeft", deps)).toBe(true);
+    expect(canRun("moveTabLeft", setup().deps)).toBe(false);
+  });
+
   it("gives the focus back to the terminal after a tab command", async () => {
     const { run, calls } = setup(["a", "b"]);
 

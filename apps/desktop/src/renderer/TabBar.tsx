@@ -1,6 +1,10 @@
 // Tab bar: the sidebar toggle at the left, one tab per pane tree with a close button on each, and at the right
-// the actions on the active pane (split right, split down, close pane).
+// the actions on the active pane (split right, split down, close pane). Tabs are dragged to reorder them or onto a
+// pane (#67); each tab is a drop target with two halves, the free part of the bar takes a drop at the end.
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { LayoutTab, SessionInfo } from "@termdock/protocol";
+import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
+import { TAB_BAR_END, TAB_KIND, tabTarget } from "./layout-drop.js";
 import { StateIcon } from "./StateIcon.js";
 import { tabSessionId } from "./ui-store.js";
 
@@ -22,6 +26,8 @@ export interface TabBarProps {
   onShowShortcuts: () => void;
   /** Opens the history search (#62). */
   onSearch: () => void;
+  /** Right click, menu key or Shift+F10 on a tab: its menu (#67). */
+  onMenu: (tabId: string, event: ReactMouseEvent<HTMLElement>) => void;
 }
 
 export function TabBar({
@@ -38,7 +44,10 @@ export function TabBar({
   onClosePane,
   onShowShortcuts,
   onSearch,
+  onMenu,
 }: TabBarProps) {
+  const drag = useDrag();
+  const endOver = drag.state.phase === "dragging" && drag.state.over === TAB_BAR_END;
   const full = panes >= maxPanes;
   const splitTitle = (text: string): string => (full ? `Höchstens ${maxPanes} Panes je Tab` : text);
   return (
@@ -58,25 +67,40 @@ export function TabBar({
           <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" />
         </svg>
       </button>
-      <div className="tab-bar__tabs" role="tablist">
+      <div
+        className={`tab-bar__tabs${endOver ? " tab-bar__tabs--drop-end" : ""}`}
+        role="tablist"
+        // The free part right of the tabs: a drop there goes to the end (#67).
+        {...{ [DROP_TARGET_ATTRIBUTE]: TAB_BAR_END }}
+      >
         {tabs.map((tab) => {
           const sessionId = tabSessionId(tab);
           const session = sessions.find((candidate) => candidate.id === sessionId);
           const active = tab.id === activeTabId;
           const title = session?.name ?? "Unbekannte Session";
+          const { over } = drag.zonesOf(tabTarget(tab.id));
           return (
             <div
-              className={`tab${active ? " tab--active" : ""}`}
+              className={`tab${active ? " tab--active" : ""}${over ? ` tab--drop-${over}` : ""}`}
               key={tab.id}
               role="tab"
               aria-selected={active}
               data-tab-title={title}
+              data-tab-id={tab.id}
+              {...{ [DROP_TARGET_ATTRIBUTE]: tabTarget(tab.id), [DROP_ZONES_ATTRIBUTE]: "sides" }}
               // Middle click closes, like in VS Code.
               onAuxClick={(event) => {
                 if (event.button === 1) onClose(tab.id);
               }}
+              onContextMenu={(event) => onMenu(tab.id, event)}
             >
-              <button className="tab__main" type="button" title={title} onClick={() => onFocus(tab.id)}>
+              <button
+                className="tab__main"
+                type="button"
+                title={`${title}\nZiehen: umsortieren oder auf ein Pane legen; Rechtsklick oder Menütaste: Aktionen`}
+                {...drag.sourceProps({ kind: TAB_KIND, id: tab.id, label: title })}
+                onClick={() => onFocus(tab.id)}
+              >
                 {session && <StateIcon session={session} />}
                 <span className="tab__title">{title}</span>
               </button>

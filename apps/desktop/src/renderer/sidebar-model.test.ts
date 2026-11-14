@@ -186,6 +186,35 @@ describe("sessionMenu", () => {
     });
   });
 
+  it("offers opening in the zones of the active pane after Öffnen, disabled ones with their hint (#67)", () => {
+    const entries = sessionMenu(session("a"), workspaces, [
+      { key: "place:left", label: "Links vom aktiven Pane öffnen", action: "left" },
+      {
+        key: "place:center",
+        label: "Im aktiven Pane öffnen",
+        action: "center",
+        disabled: true,
+        hint: "schon",
+      },
+    ]);
+
+    expect(keys(entries).slice(0, 4)).toEqual(["open", "place:left", "place:center", "rename"]);
+    expect(entries[1]).toMatchObject({ action: { kind: "place", zone: "left" } });
+    expect(entries[2]).toMatchObject({
+      action: { kind: "place", zone: "center" },
+      disabled: true,
+      hint: "schon",
+    });
+    expect(entries[3]?.separator).toBe(true);
+  });
+
+  it("offers no zones for an archived session, which cannot be dragged onto a pane either", () => {
+    const place = { key: "place:center", label: "Im aktiven Pane öffnen", action: "center" as const };
+    expect(keys(sessionMenu(session("a", { state: "Archived" }), workspaces, [place]))).not.toContain(
+      "place:center",
+    );
+  });
+
   it("offers only the workspaces for an ungrouped session", () => {
     expect(keys(sessionMenu(session("a"), workspaces))).toEqual([
       "open",

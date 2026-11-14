@@ -1,6 +1,6 @@
 import type { PaneNode } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { layoutPanes, takesInput } from "./pane-layout.js";
+import { layoutPanes, layoutWindow, takesInput } from "./pane-layout.js";
 
 describe("takesInput (#66: the input moves only on request)", () => {
   const down = { x: 100, y: 50 };
@@ -98,5 +98,38 @@ describe("layoutPanes", () => {
       position: 0.25,
       split: { x: 0.5, y: 0, width: 0.5, height: 1 },
     });
+  });
+});
+
+describe("layoutWindow (#67: one flat list for all tabs)", () => {
+  const split: PaneNode = {
+    kind: "split",
+    id: "r",
+    direction: "row",
+    children: [
+      { kind: "pane", id: "b1", sessionId: "s2" },
+      { kind: "pane", id: "b2", sessionId: "s3" },
+    ],
+    sizes: [0.5, 0.5],
+  };
+  const tabs = [
+    { id: "A", root: { kind: "pane", id: "a", sessionId: "s1" } as PaneNode, activePaneId: "a" },
+    { id: "B", root: split, activePaneId: "b1" },
+  ];
+
+  it("lists the panes of every tab, tabs in order and each in tree order, with their tab", () => {
+    const { panes } = layoutWindow(tabs, "B");
+
+    expect(panes.map((pane) => [pane.paneId, pane.tabId, pane.tabActive])).toEqual([
+      ["a", "A", false],
+      ["b1", "B", true],
+      ["b2", "B", true],
+    ]);
+    expect(panes[0]!.rect).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(panes[2]!.rect).toEqual({ x: 0.5, y: 0, width: 0.5, height: 1 });
+  });
+
+  it("lists the dividers with their tab", () => {
+    expect(layoutWindow(tabs, "A").dividers).toMatchObject([{ splitId: "r", tabId: "B", tabActive: false }]);
   });
 });

@@ -2,6 +2,8 @@
 // window supplies what depends on React (the form, the overview, the notice), so this module stays testable
 // without DOM. "newWindow" is the application menu's (main process): nothing to do here.
 import type { LayoutTab, SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import { tabStepTarget } from "./layout-moves.js";
+import type { MoveTarget } from "./layout-moves.js";
 import { neighborPane } from "./pane-focus.js";
 import type { FocusDirection } from "./pane-focus.js";
 import type { CommandId } from "./keymap.js";
@@ -160,6 +162,13 @@ function tabTarget(command: CommandId, deps: CommandDeps): LayoutTab | undefined
   return target === tab ? undefined : target;
 }
 
+/** Where `moveTabLeft`/`moveTabRight` put the active tab (#67); undefined at the edge or without a tab. */
+function tabMoveTarget(command: "moveTabLeft" | "moveTabRight", deps: CommandDeps): MoveTarget | undefined {
+  const { window } = deps.store.getState();
+  if (window.activeTabId === undefined) return undefined;
+  return tabStepTarget(window, window.activeTabId, command === "moveTabLeft" ? -1 : 1);
+}
+
 /** The command that closes the dialog that is open; every other command waits while it is. */
 function modalCommand(deps: CommandDeps): CommandId | undefined {
   return deps.shortcutsOpen ? "showShortcuts" : deps.searchOpen ? "searchHistory" : undefined;
@@ -188,6 +197,9 @@ export function canRun(command: CommandId, deps: CommandDeps): boolean {
     case "nextTab":
     case "previousTab":
       return tabTarget(command, deps) !== undefined;
+    case "moveTabLeft":
+    case "moveTabRight":
+      return tabMoveTarget(command, deps) !== undefined;
     default:
       // The window and clipboard commands always apply (a missing selection must not send Ctrl+Shift+C to the
       // shell as an interrupt); `newWindow` is the menu's.
@@ -217,6 +229,15 @@ export async function runCommand(command: CommandId, deps: CommandDeps): Promise
     case "previousTab":
       goTo(tabTarget(command, deps));
       return;
+    case "moveTabLeft":
+    case "moveTabRight": {
+      const target = tabMoveTarget(command, deps);
+      if (tab && target) {
+        store.move({ kind: "tab", tabId: tab.id }, target);
+        deps.refocus();
+      }
+      return;
+    }
     case "splitRow":
     case "splitColumn":
       await splitActivePane(deps, command === "splitRow" ? "row" : "column");

@@ -1,13 +1,25 @@
-// The panes of one tab (#27): every pane is a positioned element of one flat list, keyed by its id, so splitting
-// or closing another pane never attaches a view again. Dividers lie above the panes and are dragged with the mouse.
+// The panes of all tabs of a window (#27, #67): every pane is a positioned element of one flat list, keyed by its
+// id, so splitting, closing or moving a pane, even into another tab, never attaches a view again (its role and the
+// input lock stay). Panes of hidden tabs stay mounted and keep their room. Dividers of the visible tab lie above
+// the panes and are dragged with the mouse; while a tab, pane or session is dragged, the pane under the pointer
+// shows its five drop zones.
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject } from "react";
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  RefObject,
+} from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
+import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
-import { layoutPanes } from "./pane-layout.js";
+import { PANE_KIND, paneTarget } from "./layout-drop.js";
+import { layoutWindow } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
+import { paneCount } from "./pane-tree.js";
 import { isAttachable } from "./session-display.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
@@ -18,32 +30,33 @@ const MIN_PANE_PX = 80;
 
 export interface PaneTreeProps {
   api: TermdockApi;
-  tab: LayoutTab;
+  tabs: readonly LayoutTab[];
+  activeTabId: string | undefined;
   sessions: readonly SessionInfo[];
   /** The first list of sessions has arrived (a pane of an unknown session is then a placeholder). */
   sessionsLoaded: boolean;
-  /** The tab is the visible one. */
-  active: boolean;
   focusSignal: number;
   onStatus: (paneId: string, status: ViewStatus | undefined) => void;
   onController: (paneId: string, controller: TerminalController | undefined) => void;
   /** A press in the pane: it becomes active, nothing else (#66). */
-  onPanePress: (paneId: string) => void;
+  onPanePress: (tabId: string, paneId: string) => void;
   /** "Pane schließen" of a placeholder. */
-  onClosePane: (paneId: string) => void;
+  onClosePane: (tabId: string, paneId: string) => void;
   /** A bound key was pressed in a pane's terminal (#28). */
   commands: KeyCommands;
   /** Right click on a pane: paste into its view (App). */
   onPanePaste: (paneId: string) => void;
-  onMoveDivider: (splitId: string, index: number, delta: number, minShare: number) => void;
+  onMoveDivider: (tabId: string, splitId: string, index: number, delta: number, minShare: number) => void;
+  /** Click, menu key or right click on a pane's grip: its menu (#67). */
+  onPaneMenu: (paneId: string, event: ReactMouseEvent<HTMLElement>) => void;
 }
 
 export function PaneTree({
   api,
-  tab,
+  tabs,
+  activeTabId,
   sessions,
   sessionsLoaded,
-  active,
   focusSignal,
   onStatus,
   onController,
@@ -52,46 +65,145 @@ export function PaneTree({
   commands,
   onPanePaste,
   onMoveDivider,
+  onPaneMenu,
 }: PaneTreeProps) {
   const area = useRef<HTMLDivElement>(null);
-  const { panes, dividers } = layoutPanes(tab.root);
-  const split = panes.length > 1;
+  const { panes, dividers } = layoutWindow(tabs, activeTabId);
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
   return (
     <div className="pane-tree" ref={area}>
-      {panes.map(({ paneId, sessionId, rect }) => (
-        <div
-          key={paneId}
-          className={`pane${split && paneId === tab.activePaneId ? " pane--active" : ""}`}
-          style={rectStyle(rect)}
-          data-pane-id={paneId}
-          data-active-pane={paneId === tab.activePaneId}
-          data-session-id={sessionId}
-          // Capture phase: xterm.js handles mouse events itself when a program (vim, htop) asks for them.
-          onMouseDownCapture={() => onPanePress(paneId)}
-        >
-          <PaneView
-            api={api}
-            sessionId={sessionId}
-            session={sessions.find((session) => session.id === sessionId)}
-            sessionsLoaded={sessionsLoaded}
-            active={active && paneId === tab.activePaneId}
-            focusSignal={focusSignal}
-            onStatus={(status) => onStatus(paneId, status)}
-            onController={(controller) => onController(paneId, controller)}
-            onClosePane={() => onClosePane(paneId)}
-            commands={commands}
-            onContextPaste={() => onPanePaste(paneId)}
+      {panes.map(({ paneId, sessionId, rect, tabId, tabActive }) => {
+        const tab = byId.get(tabId)!;
+        const split = paneCount(tab) > 1;
+        const activePane = paneId === tab.activePaneId;
+        const session = sessions.find((each) => each.id === sessionId);
+        return (
+          <div
+            key={paneId}
+            className={`pane${split && activePane ? " pane--active" : ""}${tabActive ? "" : " pane--hidden"}`}
+            style={rectStyle(rect)}
+            data-pane-id={paneId}
+            data-tab-id={tabId}
+            data-tab-active={tabActive}
+            data-active-pane={activePane}
+            data-session-id={sessionId}
+            // Only the visible panes take drops: a hidden one is not under the pointer anyway.
+            {...(tabActive
+              ? { [DROP_TARGET_ATTRIBUTE]: paneTarget(paneId), [DROP_ZONES_ATTRIBUTE]: "pane" }
+              : {})}
+            // Capture phase: xterm.js handles mouse events itself when a program (vim, htop) asks for them.
+            onMouseDownCapture={() => onPanePress(tabId, paneId)}
+          >
+            <PaneView
+              api={api}
+              sessionId={sessionId}
+              session={session}
+              sessionsLoaded={sessionsLoaded}
+              active={tabActive && activePane}
+              focusSignal={focusSignal}
+              onStatus={(status) => onStatus(paneId, status)}
+              onController={(controller) => onController(paneId, controller)}
+              onClosePane={() => onClosePane(tabId, paneId)}
+              commands={commands}
+              onContextPaste={() => onPanePaste(paneId)}
+            />
+            {tabActive && <PaneGrip paneId={paneId} label={session?.name ?? "Pane"} onMenu={onPaneMenu} />}
+            {tabActive && <ZoneOverlay paneId={paneId} />}
+          </div>
+        );
+      })}
+      {dividers
+        .filter((divider) => divider.tabActive)
+        .map((divider) => (
+          <Divider
+            key={`${divider.splitId}:${divider.index}`}
+            divider={divider}
+            area={area}
+            onMove={(splitId, index, delta, minShare) =>
+              onMoveDivider(divider.tabId, splitId, index, delta, minShare)
+            }
           />
-        </div>
-      ))}
-      {dividers.map((divider) => (
-        <Divider
-          key={`${divider.splitId}:${divider.index}`}
-          divider={divider}
-          area={area}
-          onMove={onMoveDivider}
-        />
-      ))}
+        ))}
+    </div>
+  );
+}
+
+/** The handle of a pane (#67): dragging it moves the pane, a click or the menu key opens its menu. */
+function PaneGrip({
+  paneId,
+  label,
+  onMenu,
+}: {
+  paneId: string;
+  label: string;
+  onMenu: PaneTreeProps["onPaneMenu"];
+}) {
+  const drag = useDrag();
+  return (
+    <button
+      className="pane-grip"
+      type="button"
+      data-action="pane-menu"
+      aria-haspopup="menu"
+      aria-label={`Pane ${label} verschieben`}
+      title={"Ziehen: Pane verschieben (auf ein Pane oder die Tab-Leiste)\nKlick oder Menütaste: Aktionen"}
+      {...drag.sourceProps({ kind: PANE_KIND, id: paneId, label })}
+      onClick={(event) => onMenu(paneId, event)}
+      onContextMenu={(event) => onMenu(paneId, event)}
+    >
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        {[3, 6, 9].flatMap((y) =>
+          [4, 8].map((x) => <circle key={`${x}:${y}`} cx={x} cy={y} r="1" fill="currentColor" />),
+        )}
+      </svg>
+    </button>
+  );
+}
+
+const E = EDGE_SHARE * 100;
+/** The five zones in a 100×100 box: the edges are trapezoids between the diagonals, the center the inner box. */
+const ZONE_SHAPES: ReadonlyArray<[string, string]> = [
+  ["left", `0,0 ${E},${E} ${E},${100 - E} 0,100`],
+  ["right", `100,0 ${100 - E},${E} ${100 - E},${100 - E} 100,100`],
+  ["top", `0,0 100,0 ${100 - E},${E} ${E},${E}`],
+  ["bottom", `0,100 100,100 ${100 - E},${100 - E} ${E},${100 - E}`],
+  ["center", `${E},${E} ${100 - E},${E} ${100 - E},${100 - E} ${E},${100 - E}`],
+];
+
+/**
+ * The drop zones of a pane while something that may land on it is dragged: a dashed frame on every valid pane, on
+ * the pane under the pointer the five zones (blocked ones dimmed) and where the drop would land.
+ */
+function ZoneOverlay({ paneId }: { paneId: string }) {
+  const drag = useDrag();
+  const { valid, over } = drag.zonesOf(paneTarget(paneId));
+  if (valid.length === 0) return null;
+  if (over === undefined) return <div className="pane-drop pane-drop--valid" data-drop-overlay="valid" />;
+  const preview = zonePreview(over);
+  return (
+    <div className="pane-drop pane-drop--over" data-drop-overlay={over}>
+      <svg className="pane-drop__zones" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {ZONE_SHAPES.map(([zone, points]) => (
+          <polygon
+            key={zone}
+            points={points}
+            data-zone={zone}
+            className={`pane-drop__zone${valid.includes(zone) ? "" : " pane-drop__zone--blocked"}${
+              zone === over ? " pane-drop__zone--over" : ""
+            }`}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </svg>
+      <div
+        className="pane-drop__preview"
+        style={{
+          left: `${preview.left * 100}%`,
+          top: `${preview.top * 100}%`,
+          width: `${preview.width * 100}%`,
+          height: `${preview.height * 100}%`,
+        }}
+      />
     </div>
   );
 }
@@ -112,7 +224,7 @@ function Divider({
 }: {
   divider: PlacedDivider;
   area: RefObject<HTMLDivElement | null>;
-  onMove: PaneTreeProps["onMoveDivider"];
+  onMove: (splitId: string, index: number, delta: number, minShare: number) => void;
 }) {
   // The latest geometry for the pointer handlers; the divider moves under the pointer while it is dragged.
   const current = useRef(divider);
@@ -137,6 +249,7 @@ function Divider({
       className={`divider divider--${divider.direction}${dragging ? " divider--dragging" : ""}`}
       style={dividerStyle(divider)}
       data-divider={`${divider.splitId}:${divider.index}`}
+      data-tab-active="true"
       role="separator"
       aria-orientation={row ? "vertical" : "horizontal"}
       onPointerDown={(event) => {

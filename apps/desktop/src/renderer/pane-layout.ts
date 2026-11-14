@@ -1,7 +1,7 @@
 // Geometry of a tab's pane tree (#27): where each pane and each divider sits, as shares of the tab's area. The
 // window draws all panes of a tab as one flat list of positioned elements, so a pane keeps its element (and its
 // view in the core) however the tree around it changes.
-import type { PaneNode, SessionId } from "@termdock/protocol";
+import type { LayoutTab, PaneNode, SessionId } from "@termdock/protocol";
 import type { ViewRole } from "./terminal-controller.js";
 
 /** A rectangle in shares of the tab's area (0 to 1). */
@@ -51,6 +51,37 @@ export function takesInput(
 ): boolean {
   if (role !== "reader" || !down || up.detail !== 2) return false;
   return Math.abs(up.x - down.x) <= CLICK_SLOP_PX && Math.abs(up.y - down.y) <= CLICK_SLOP_PX;
+}
+
+export interface WindowPane extends PlacedPane {
+  tabId: string;
+  /** The pane's tab is the visible one. */
+  tabActive: boolean;
+}
+
+export interface WindowDivider extends PlacedDivider {
+  tabId: string;
+  tabActive: boolean;
+}
+
+/**
+ * The panes and dividers of all tabs of a window as one flat list (#67): tabs in order, each in tree order. The
+ * window draws them in one parent, keyed by pane id, so a pane that moves to another tab keeps its element and its
+ * view; panes of hidden tabs stay mounted and keep their room.
+ */
+export function layoutWindow(
+  tabs: readonly LayoutTab[],
+  activeTabId: string | undefined,
+): { panes: WindowPane[]; dividers: WindowDivider[] } {
+  const panes: WindowPane[] = [];
+  const dividers: WindowDivider[] = [];
+  for (const tab of tabs) {
+    const tabActive = tab.id === activeTabId;
+    const layout = layoutPanes(tab.root);
+    for (const pane of layout.panes) panes.push({ ...pane, tabId: tab.id, tabActive });
+    for (const divider of layout.dividers) dividers.push({ ...divider, tabId: tab.id, tabActive });
+  }
+  return { panes, dividers };
 }
 
 export function layoutPanes(root: PaneNode): PaneLayout {

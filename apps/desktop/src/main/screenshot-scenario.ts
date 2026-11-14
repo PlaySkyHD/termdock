@@ -16,6 +16,7 @@ import type { QuietWatch } from "./screenshot.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { sidebarScenes } from "./screenshot-sidebar.js";
+import { tabScenes } from "./screenshot-tabs.js";
 
 const run = promisify(execFile);
 
@@ -193,7 +194,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await click(second, sessionSelector("Lost"));
   await waitFor(
     second,
-    `document.querySelector('.tab-panel[data-active="true"] [data-view="notice"]')`,
+    `document.querySelector('.pane[data-tab-active="true"] [data-view="notice"]')`,
     "the notice",
   );
   if (viewOf(second, session("Lost").id) !== undefined) throw new Error("Lost must not be attached");
@@ -207,6 +208,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await splitScenes(deps, capture, session("Notes"));
   await keymapScenes(deps, capture);
   await sidebarScenes(deps);
+  await tabScenes(deps);
   await restoreScenes(deps, wsl);
   await quitScenes(deps, capture);
   await searchScenes(deps);
@@ -302,7 +304,7 @@ interface PaneShot {
 }
 
 /** Reads the panes of the visible tab from the DOM (xterm.js draws rows as DOM elements). */
-const PANES_EXPRESSION = `[...document.querySelectorAll('.tab-panel[data-active="true"] .pane')].map((pane) => {
+const PANES_EXPRESSION = `[...document.querySelectorAll('.pane[data-tab-active="true"]')].map((pane) => {
   const rows = [...pane.querySelectorAll('.xterm-rows > div')];
   let cursor = null;
   rows.forEach((row, y) => {
@@ -419,7 +421,7 @@ async function splitScenes(
     mouse("mouseUp", x, y);
     await sleep(300);
   };
-  const paneSelector = (id: string): string => `.tab-panel[data-active="true"] [data-pane-id="${id}"]`;
+  const paneSelector = (id: string): string => `.pane[data-tab-active="true"][data-pane-id="${id}"]`;
   const button = async (action: string): Promise<void> => {
     const selector = `[data-action="${action}"]`;
     await waitFor(`document.querySelector('${selector}:not(:disabled)')`, selector);
@@ -444,7 +446,7 @@ async function splitScenes(
       h: number;
     }>(
       `(() => {
-        const divider = document.querySelectorAll('.tab-panel[data-active="true"] .divider')[${index}];
+        const divider = document.querySelectorAll('.divider[data-tab-active="true"]')[${index}];
         const area = divider.parentElement.getBoundingClientRect();
         const box = divider.getBoundingClientRect();
         return { x: box.left + box.width / 2, y: box.top + box.height / 2, row: divider.classList.contains('divider--row'),
@@ -490,7 +492,7 @@ async function splitScenes(
     log(`${what}: xterm cursor ${at}, tmux cursor ${tmux.x},${tmux.y} (${tmux.cols}x${tmux.rows})`);
     if (at !== `${tmux.x},${tmux.y}`) {
       const classes = await evaluate<string[]>(
-        `[...document.querySelectorAll('.tab-panel[data-active="true"] .pane')[${index}].querySelectorAll('.xterm-rows [class*="cursor"]')].map((e) => e.className)`,
+        `[...document.querySelectorAll('.pane[data-tab-active="true"]')[${index}].querySelectorAll('.xterm-rows [class*="cursor"]')].map((e) => e.className)`,
       );
       throw new Error(
         `${what}: cursor at ${at}, tmux has ${tmux.x},${tmux.y}; cursor elements ${JSON.stringify(classes)}`,
@@ -552,7 +554,7 @@ async function splitScenes(
   log(`split into a new session: ${shot.map(sttyOf).join(" | ")}`);
   await capture(win, "06a-split-new-session.png");
   await button("close-pane"); // the new pane; Shell 2 stays in the sidebar
-  await waitFor(`document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 1`, "one pane");
+  await waitFor(`document.querySelectorAll('.pane[data-tab-active="true"]').length === 1`, "one pane");
 
   // --- The same session in two panes (Shift+click in the sidebar): the new one reads, zoomed out ------
   await sidebarClick("Shell", "shiftKey");
@@ -681,10 +683,7 @@ async function splitScenes(
   await clickAt(paneSelector(editorPane.id));
   await sidebarClick("Notes", "shiftKey");
   await waitForViews(session("Notes").id, 1);
-  await waitFor(
-    `document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 3`,
-    "three panes",
-  );
+  await waitFor(`document.querySelectorAll('.pane[data-tab-active="true"]').length === 3`, "three panes");
   // The short prompt also here: the default one names user and host.
   await typeCommand("Notes", "stty size");
   await capture(win, "10-three-panes.png");
@@ -762,7 +761,7 @@ async function keymapScenes(
     await sleep(wait);
   };
   const ctrlShift = ["control" as const, "shift" as const];
-  const ACTIVE_PANE = `.tab-panel[data-active="true"] [data-active-pane="true"]`;
+  const ACTIVE_PANE = `.pane[data-tab-active="true"][data-active-pane="true"]`;
   const notice = (): Promise<string | null> =>
     evaluate(`document.querySelector('.status-bar__item--warning')?.textContent ?? null`);
   const writeClipboard = (text: string): Promise<void> =>
@@ -899,17 +898,17 @@ async function keymapScenes(
   // becomes active and writes.
   await key("D", ctrlShift, 1_500);
   await waitFor(
-    `document.querySelectorAll('.tab-panel[data-active="true"] [data-role="writer"]').length === 2`,
+    `document.querySelectorAll('.pane[data-tab-active="true"] [data-role="writer"]').length === 2`,
     "two writing panes",
   );
   await key("E", ctrlShift, 1_500);
   await waitFor(
-    `document.querySelectorAll('.tab-panel[data-active="true"] [data-role="writer"]').length === 3`,
+    `document.querySelectorAll('.pane[data-tab-active="true"] [data-role="writer"]').length === 3`,
     "three writing panes",
   );
   let shot = await panes();
   const sessionsShown = await evaluate<string[]>(
-    `[...document.querySelectorAll('.tab-panel[data-active="true"] .pane')].map((pane) => pane.dataset.sessionId)`,
+    `[...document.querySelectorAll('.pane[data-tab-active="true"]')].map((pane) => pane.dataset.sessionId)`,
   );
   if (new Set(sessionsShown).size !== 3 || !shot[2]?.active)
     throw new Error(

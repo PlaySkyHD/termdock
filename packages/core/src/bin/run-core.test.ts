@@ -10,6 +10,7 @@ import { FakeBackend } from "../backend/fake.js";
 import { connect } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
 import { openStorage } from "../storage/database.js";
+import { historyDir, readHistory } from "../storage/history-store.js";
 import { runCore } from "./run-core.js";
 import type { RunCoreOptions, RunCoreResult } from "./run-core.js";
 
@@ -115,6 +116,42 @@ describe("runCore", () => {
     const { sessions } = (await c2.request("session.list", {})).result;
     expect(sessions).toEqual([expect.objectContaining({ id: session.id, name: "build", state: "Detached" })]);
     expect(backend.attaches.map((a) => a.id)).toEqual([session.id]);
+  });
+
+  it("takes the logging default of new sessions from the stored settings (issues #59, #60)", async () => {
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    await start({ pipePath, dataDir: tempDir(), backends: [backend] });
+    const c = await client(pipePath);
+    await c.request("settings.set", { settings: { historyEnabledByDefault: false } });
+
+    const { session } = (await c.request("session.create", { name: "a", launch })).result;
+
+    expect(session.loggingEnabled).toBe(false);
+    await c.close();
+  });
+
+  it("writes the output of sessions into history/<id> and flushes it on close (issue #59)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const core = await start({ pipePath, dataDir, backends: [backend] });
+    const c = await client(pipePath);
+    const logged = (await c.request("session.create", { name: "a", launch })).result.session;
+    const silent = (await c.request("session.create", { name: "b", launch, loggingEnabled: false })).result
+      .session;
+
+    expect(logged.loggingEnabled).toBe(true);
+    backend.pty(logged.id).emitData("kept\r\n");
+    backend.pty(silent.id).emitData("not kept\r\n");
+    await c.close();
+    await core.close?.();
+
+    const text = [];
+    for await (const entry of readHistory(dataDir, logged.id))
+      text.push(new TextDecoder().decode(entry.data));
+    expect(text.join("")).toBe("kept\r\n");
+    expect(existsSync(historyDir(dataDir, silent.id))).toBe(false);
   });
 
   it("keeps workspaces and the ungrouped sessions of a deleted workspace across a restart (issue #56)", async () => {

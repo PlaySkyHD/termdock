@@ -151,6 +151,31 @@ describe("runCore", () => {
     expect("workspaceId" in stored!).toBe(false);
   });
 
+  it("keeps profiles across a restart and unbinds them when their workspace is deleted (issue #58)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const first = await start({ pipePath, dataDir, backends: [backend] });
+    const c1 = await client(pipePath);
+    const workspace = (await c1.request("workspace.create", { name: "w" })).result.workspace;
+    const gone = (await c1.request("workspace.create", { name: "gone" })).result.workspace;
+    const spec = { backend: "wsl", cwd: "~", command: ["bash", "-lc", "pwd; exec bash"] } as const;
+    const kept = (
+      await c1.request("profile.create", { name: "kept", launch: spec, workspaceId: workspace.id })
+    ).result.profile;
+    const unbound = (
+      await c1.request("profile.create", { name: "unbound", launch: spec, workspaceId: gone.id })
+    ).result.profile;
+    await c1.request("workspace.delete", { workspaceId: gone.id });
+    await c1.close();
+    await first.close?.();
+
+    await start({ pipePath, dataDir, backends: [backend] });
+    const c2 = await client(pipePath);
+    const { workspaceId: _removed, ...withoutWorkspace } = unbound;
+    expect((await c2.request("profile.list", {})).result.profiles).toEqual([kept, withoutWorkspace]);
+  });
+
   it("answers hello at once but holds other requests until the reconcile is done", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

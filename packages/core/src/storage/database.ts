@@ -8,6 +8,8 @@ import type { LayoutRepository } from "./layout-repository.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { SqliteSessionRepository } from "./session-repository.js";
 import type { SessionRepository } from "./session-repository.js";
+import { SqliteProfileRepository } from "./profile-repository.js";
+import type { ProfileRepository } from "./profile-repository.js";
 import { SqliteWorkspaceRepository } from "./workspace-repository.js";
 import type { WorkspaceRepository } from "./workspace-repository.js";
 
@@ -47,6 +49,7 @@ export interface Storage extends Disposable {
   readonly sessions: SessionRepository;
   readonly layouts: LayoutRepository;
   readonly workspaces: WorkspaceRepository;
+  readonly profiles: ProfileRepository;
   /** Highest applied migration. */
   schemaVersion(): number;
   /** Closes the database. */
@@ -67,10 +70,12 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
   let sessions: SessionRepository;
   let layouts: LayoutRepository;
   let workspaces: WorkspaceRepository;
+  let profiles: ProfileRepository;
   try {
     sessions = new SqliteSessionRepository(db);
     layouts = new SqliteLayoutRepository(db, options.onLayoutInvalid);
     workspaces = new SqliteWorkspaceRepository(db);
+    profiles = new SqliteProfileRepository(db);
   } catch (error) {
     db.close();
     throw error;
@@ -80,6 +85,7 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
     sessions,
     layouts,
     workspaces,
+    profiles,
     schemaVersion: () => schemaVersion(db),
     dispose: () => {
       if (!open) return;

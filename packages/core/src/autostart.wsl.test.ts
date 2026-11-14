@@ -91,6 +91,10 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
       // The socket belongs to this file alone.
       await tmux(distro, ["kill-server"]);
     }
+    // A run that failed before it learned the distro still leaves the server of the default distro behind.
+    if (distros.size === 0) {
+      await runWsl(["--cd", "~", "--exec", "tmux", "-L", SOCKET, "kill-server"], { timeoutMs: 15_000 });
+    }
     distros.clear();
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });

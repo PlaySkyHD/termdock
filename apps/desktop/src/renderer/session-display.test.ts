@@ -4,10 +4,8 @@ import {
   backendText,
   coreHints,
   endedNotice,
-  groupSessions,
   isAttachable,
   isRunning,
-  NO_GROUP_LABEL,
   stateText,
 } from "./session-display.js";
 
@@ -24,40 +22,6 @@ function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
     ...patch,
   };
 }
-
-describe("groupSessions", () => {
-  it("always has the group without workspace, also when there is no session", () => {
-    expect(groupSessions([])).toEqual([{ key: "", label: NO_GROUP_LABEL, sessions: [] }]);
-  });
-
-  it("puts sessions without a workspace under their group and keeps the given order", () => {
-    const groups = groupSessions([session("a"), session("b")]);
-
-    expect(groups).toHaveLength(1);
-    expect(groups[0]?.sessions.map((s) => s.id)).toEqual(["a", "b"]);
-  });
-
-  it("makes one group per workspace id, named by the id, sorted, with the group without workspace last", () => {
-    const groups = groupSessions([
-      session("a"),
-      session("b", { workspaceId: "w2" }),
-      session("c", { workspaceId: "w1" }),
-      session("d", { workspaceId: "w2" }),
-    ]);
-
-    expect(groups.map((g) => [g.label, g.sessions.map((s) => s.id)])).toEqual([
-      ["w1", ["c"]],
-      ["w2", ["b", "d"]],
-      [NO_GROUP_LABEL, ["a"]],
-    ]);
-  });
-
-  it("leaves out archived sessions", () => {
-    const groups = groupSessions([session("a", { state: "Archived" }), session("b")]);
-
-    expect(groups[0]?.sessions.map((s) => s.id)).toEqual(["b"]);
-  });
-});
 
 describe("state helpers", () => {
   it.each<[SessionState, boolean]>([

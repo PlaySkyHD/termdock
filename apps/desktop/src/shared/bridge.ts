@@ -1,15 +1,19 @@
 // Contract between renderer, preload and main (ADR 0002, ADR 0006). Types only plus the channel names:
 // the sandboxed preload cannot load local modules, so it imports nothing at runtime from here.
 import type {
+  BackendKind,
   CoreStatusResult,
   ErrorCode,
   LayoutWindow,
+  ProjectId,
   SessionCreateParams,
   SessionId,
   SessionInfo,
   SessionState,
   TerminalSize,
   ViewId,
+  Workspace,
+  WorkspaceId,
 } from "@termdock/protocol";
 import type { LayoutWindowPart } from "./layout-mapping.js";
 import type { QuitAnswer, QuitChoice } from "./quit-decision.js";
@@ -29,6 +33,18 @@ export type BridgeCall =
   | { method: "input"; viewId: ViewId; data: string }
   | { method: "resize"; viewId: ViewId; size: TerminalSize }
   | { method: "claimWriter"; viewId: ViewId }
+  /** The workspaces with their projects, in the core's order (#63). */
+  | { method: "listWorkspaces" }
+  | { method: "createWorkspace"; name: string }
+  | { method: "updateWorkspace"; workspaceId: WorkspaceId; name: string }
+  | { method: "deleteWorkspace"; workspaceId: WorkspaceId }
+  | { method: "createProject"; workspaceId: WorkspaceId; name: string; path: string; backend: BackendKind }
+  | { method: "updateProject"; projectId: ProjectId; name: string }
+  | { method: "deleteProject"; projectId: ProjectId }
+  /** Renames and/or moves a session; `workspaceId: null` makes it ungrouped. At least one change. */
+  | { method: "updateSession"; sessionId: SessionId; name?: string; workspaceId?: WorkspaceId | null }
+  | { method: "archiveSession"; sessionId: SessionId }
+  | { method: "deleteSession"; sessionId: SessionId }
   /** The layout of this window as the main process holds it (restore, #29). */
   | { method: "windowLayout" }
   /** The tabs and sidebar of this window after a change; the main process bundles and saves the layout. */
@@ -59,6 +75,16 @@ export interface BridgeResults {
   input: null;
   resize: null;
   claimWriter: null;
+  listWorkspaces: Workspace[];
+  createWorkspace: null;
+  updateWorkspace: null;
+  deleteWorkspace: null;
+  createProject: null;
+  updateProject: null;
+  deleteProject: null;
+  updateSession: SessionInfo;
+  archiveSession: null;
+  deleteSession: null;
   windowLayout: LayoutWindow;
   reportLayout: null;
   answerQuit: null;
@@ -84,6 +110,12 @@ export type BridgeEvent =
   | { kind: "stateChanged"; sessionId: SessionId; state: SessionState; lastExitCode?: number }
   /** The core's `session.created`: a session came into the registry, from any client (ADR 0002, 0006). */
   | { kind: "sessionCreated"; session: SessionInfo }
+  /** Name, workspace or logging of a session changed (`session.updated`), from any client (#63). */
+  | { kind: "sessionUpdated"; session: SessionInfo }
+  /** The session and its history are gone (`session.removed`), from any client (#63). */
+  | { kind: "sessionRemoved"; sessionId: SessionId }
+  /** The complete list of workspaces after any change (`workspace.changed`), from any client (#63). */
+  | { kind: "workspaceChanged"; workspaces: Workspace[] }
   /** The app is about to quit while sessions run: this window shows the quit dialog and answers (#60). */
   | { kind: "quitRequested"; requestId: string; activeSessions: number }
   | { kind: "coreClosed" };
@@ -101,6 +133,19 @@ export interface TermdockApi {
   input(viewId: ViewId, data: string): Promise<void>;
   resize(viewId: ViewId, size: TerminalSize): Promise<void>;
   claimWriter(viewId: ViewId): Promise<void>;
+  listWorkspaces(): Promise<Workspace[]>;
+  createWorkspace(name: string): Promise<void>;
+  updateWorkspace(workspaceId: WorkspaceId, name: string): Promise<void>;
+  deleteWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  createProject(workspaceId: WorkspaceId, name: string, path: string, backend: BackendKind): Promise<void>;
+  updateProject(projectId: ProjectId, name: string): Promise<void>;
+  deleteProject(projectId: ProjectId): Promise<void>;
+  updateSession(
+    sessionId: SessionId,
+    change: { name?: string; workspaceId?: WorkspaceId | null },
+  ): Promise<SessionInfo>;
+  archiveSession(sessionId: SessionId): Promise<void>;
+  deleteSession(sessionId: SessionId): Promise<void>;
   windowLayout(): Promise<LayoutWindow>;
   reportLayout(window: LayoutWindowPart): Promise<void>;
   answerQuit(requestId: string, answer: QuitAnswer): Promise<void>;

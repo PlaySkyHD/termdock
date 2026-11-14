@@ -4,7 +4,7 @@ import type { SessionId, SessionInfo, SessionState } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import type { UiStore } from "./ui-store.js";
 
-type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "coreStatus">;
+type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus">;
 
 interface StateChange {
   sessionId: SessionId;
@@ -43,12 +43,31 @@ export function connectStore(
   let disposed = false;
   const created: SessionInfo[] = [];
   const changes: StateChange[] = [];
+  /** Updates and removals that arrived before the list, in order; applied after the created sessions. */
+  const edits: Array<{ update: SessionInfo } | { removed: SessionId }> = [];
+  /**
+   * A `workspaceChanged` has been seen: it holds the whole list and is never older than what reaches the window
+   * after it, so a later answer of `listWorkspaces` (possibly computed before it) must not replace it.
+   */
+  let workspaceEventSeen = false;
 
   const off = api.onEvent((event: BridgeEvent) => {
     switch (event.kind) {
       case "sessionCreated":
         if (listed) store.sessionCreated(event.session);
         else created.push(event.session);
+        return;
+      case "sessionUpdated":
+        if (listed) store.sessionUpdated(event.session);
+        else edits.push({ update: event.session });
+        return;
+      case "sessionRemoved":
+        if (listed) store.sessionRemoved(event.sessionId);
+        else edits.push({ removed: event.sessionId });
+        return;
+      case "workspaceChanged":
+        workspaceEventSeen = true;
+        store.setWorkspaces(event.workspaces);
         return;
       case "stateChanged": {
         const { kind: _kind, ...change } = event;
@@ -92,7 +111,25 @@ export function connectStore(
     if (!disposed) store.setSessions(store.getState().sessions, true);
   };
 
+  /** Lists the workspaces; tries again with growing waits when that fails (the sidebar shows none until then). */
+  const loadWorkspaces = async (): Promise<void> => {
+    const waits = [0, ...(options.retryDelaysMs ?? RETRY_DELAYS_MS)];
+    for (const wait of waits) {
+      if (wait > 0) await sleep(wait);
+      if (disposed || workspaceEventSeen) return;
+      try {
+        const workspaces = await api.listWorkspaces();
+        if (!disposed && !workspaceEventSeen) store.setWorkspaces(workspaces);
+        return;
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error));
+      }
+    }
+  };
+
   const ready = (async () => {
+    // Alongside the sessions; `ready` does not wait for it (its retries take seconds).
+    void loadWorkspaces();
     let sessions: SessionInfo[] = [];
     let loaded = true;
     try {
@@ -109,9 +146,14 @@ export function connectStore(
     for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
     for (const change of changes)
       store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode);
+    for (const edit of edits) {
+      if ("update" in edit) store.sessionUpdated(edit.update);
+      else store.sessionRemoved(edit.removed);
+    }
     listed = true;
     created.length = 0;
     changes.length = 0;
+    edits.length = 0;
     if (!loaded) void retryList();
     try {
       const status = await api.coreStatus();

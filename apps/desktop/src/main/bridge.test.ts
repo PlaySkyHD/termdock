@@ -591,3 +591,153 @@ describe("DesktopBridge quit answers (#60)", () => {
     expect(answers).toEqual([]);
   });
 });
+
+describe("DesktopBridge workspaces and session management (#63)", () => {
+  it("lists the workspaces of the core", async () => {
+    const { core, bridge, a } = setup();
+    const workspaces = [{ id: "w1", name: "Web", projects: [] }];
+    core.answers.set("workspace.list", { result: { workspaces } });
+
+    expect(await bridge.call(a.id, { method: "listWorkspaces" })).toEqual({ ok: true, value: workspaces });
+  });
+
+  it.each([
+    [{ method: "createWorkspace", name: "Web" }, "workspace.create", { name: "Web" }],
+    [
+      { method: "updateWorkspace", workspaceId: "w1", name: "Web 2" },
+      "workspace.update",
+      { workspaceId: "w1", name: "Web 2" },
+    ],
+    [{ method: "deleteWorkspace", workspaceId: "w1" }, "workspace.delete", { workspaceId: "w1" }],
+    [
+      { method: "createProject", workspaceId: "w1", name: "api", path: "/srv/api", backend: "wsl" },
+      "project.create",
+      { workspaceId: "w1", name: "api", path: "/srv/api", backend: "wsl" },
+    ],
+    [
+      { method: "updateProject", projectId: "p1", name: "api2" },
+      "project.update",
+      { projectId: "p1", name: "api2" },
+    ],
+    [{ method: "deleteProject", projectId: "p1" }, "project.delete", { projectId: "p1" }],
+    [{ method: "archiveSession", sessionId: "s1" }, "session.archive", { sessionId: "s1" }],
+    [{ method: "deleteSession", sessionId: "s1" }, "session.delete", { sessionId: "s1" }],
+  ])("passes %j to the core as %s", async (call, method, params) => {
+    const { core, bridge, a } = setup();
+
+    expect(await bridge.call(a.id, call)).toEqual({ ok: true, value: null });
+    expect(core.requests.map((r) => [r.method, r.params])).toEqual([[method, params]]);
+  });
+
+  it("moves a session out of its workspace with workspaceId null and returns the session", async () => {
+    const { core, bridge, a } = setup();
+    const session = { id: "s1", name: "x" } as SessionInfo;
+    core.answers.set("session.update", { result: { session } });
+
+    const result = await bridge.call(a.id, {
+      method: "updateSession",
+      sessionId: "s1",
+      workspaceId: null,
+      name: undefined,
+    });
+
+    expect(result).toEqual({ ok: true, value: session });
+    expect(core.sent("session.update")[0]?.params).toEqual({ sessionId: "s1", workspaceId: null });
+  });
+
+  it("renames a session without touching its workspace", async () => {
+    const { core, bridge, a } = setup();
+    core.answers.set("session.update", { result: { session: { id: "s1" } } });
+
+    await bridge.call(a.id, { method: "updateSession", sessionId: "s1", name: "neu" });
+
+    expect(core.sent("session.update")[0]?.params).toEqual({ sessionId: "s1", name: "neu" });
+  });
+
+  it.each([
+    ["updateSession without a change", { method: "updateSession", sessionId: "s1" }],
+    ["updateSession with an empty name", { method: "updateSession", sessionId: "s1", name: "" }],
+    [
+      "updateSession with a number as workspace",
+      { method: "updateSession", sessionId: "s1", workspaceId: 3 },
+    ],
+    ["createWorkspace without a name", { method: "createWorkspace" }],
+    ["createWorkspace with a non-string name", { method: "createWorkspace", name: 4 }],
+    [
+      "createProject with an unknown backend",
+      { method: "createProject", workspaceId: "w1", name: "a", path: "/a", backend: "docker" },
+    ],
+    [
+      "createProject without a path",
+      { method: "createProject", workspaceId: "w1", name: "a", backend: "wsl" },
+    ],
+    ["updateWorkspace without an id", { method: "updateWorkspace", name: "a" }],
+    ["deleteSession without an id", { method: "deleteSession" }],
+    ["archiveSession with an empty id", { method: "archiveSession", sessionId: "" }],
+    ["deleteProject without an id", { method: "deleteProject" }],
+  ])("refuses %s with bad_request and no core request", async (_name, call) => {
+    const { core, bridge, a } = setup();
+
+    expect(await bridge.call(a.id, call)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(core.requests).toEqual([]);
+  });
+
+  it("passes the core's refusal of a delete with its code", async () => {
+    const { core, bridge, a } = setup();
+    core.answers.set("session.delete", new IpcError("invalid_state", "Session s1 is running"));
+
+    expect(await bridge.call(a.id, { method: "deleteSession", sessionId: "s1" })).toEqual({
+      ok: false,
+      error: { code: "invalid_state", message: "Session s1 is running" },
+    });
+  });
+
+  it("passes session.updated, session.removed and workspace.changed of any client to every window", () => {
+    const { core, a, b } = setup();
+    const session = { id: "s1" } as SessionInfo;
+    const workspaces = [{ id: "w1", name: "Web", projects: [] }];
+
+    core.emit("session.updated", { session });
+    core.emit("session.removed", { sessionId: "s1" });
+    core.emit("workspace.changed", { workspaces });
+
+    const expected = [
+      { kind: "sessionUpdated", session },
+      { kind: "sessionRemoved", sessionId: "s1" },
+      { kind: "workspaceChanged", workspaces },
+    ];
+    expect(a.events).toEqual(expected);
+    expect(b.events).toEqual(expected);
+  });
+
+  it("forgets the views of a removed session, so the window's input for them is refused locally", async () => {
+    const { core, bridge, a } = setup();
+    await attach(core, bridge, a, "s1", "v1");
+    await attach(core, bridge, a, "s2", "v2");
+
+    core.emit("session.removed", { sessionId: "s1" });
+
+    expect(bridge.viewsOf(a.id)).toEqual(["v2"]);
+    const before = core.requests.length;
+    expect(await bridge.call(a.id, { method: "input", viewId: "v1", data: "x" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(core.requests.length).toBe(before);
+  });
+
+  it("numbers the output of a removed session from 1 again (a 1.0 core without seq)", async () => {
+    const { core, bridge, a } = setup();
+    await attach(core, bridge, a, "s1", "v1");
+    core.emit("session.output", { sessionId: "s1" }, bytes("a"));
+    core.emit("session.output", { sessionId: "s1" }, bytes("b"));
+    core.emit("session.removed", { sessionId: "s1" });
+    // The view is gone with the session; a new session may reuse nothing of the old counter.
+    await attach(core, bridge, a, "s1", "v2");
+    core.emit("session.output", { sessionId: "s1" }, bytes("c"));
+
+    expect(
+      a.events.filter((event) => event.kind === "output").map((event) => (event as { seq: number }).seq),
+    ).toEqual([1, 2, 1]);
+  });
+});

@@ -11,6 +11,7 @@ import type {
   SessionId,
   SessionInfo,
   SessionState,
+  Workspace,
 } from "@termdock/protocol";
 
 /** `MAX_TABS_PER_WINDOW` of the protocol; a test keeps them equal (the renderer imports only types). */
@@ -29,6 +30,8 @@ export interface UiState {
   readonly sessions: readonly SessionInfo[];
   /** The first list of sessions has arrived; before that a pane cannot tell a missing session from an unknown one. */
   readonly sessionsLoaded: boolean;
+  /** Workspaces with their projects in the core's order (#63). */
+  readonly workspaces: readonly Workspace[];
   readonly window: LayoutWindow;
   readonly coreStatus: CoreStatusResult | undefined;
   /** The connection to the core ended; final. */
@@ -50,6 +53,7 @@ export class UiStore {
     this.state = {
       sessions: [],
       sessionsLoaded: false,
+      workspaces: [],
       window: { id: options.newId(), sidebarVisible: true, tabs: [] },
       coreStatus: undefined,
       coreClosed: false,
@@ -92,6 +96,38 @@ export class UiStore {
     const { lastExitCode: _old, ...rest } = known;
     const next: SessionInfo = { ...rest, state, ...(lastExitCode === undefined ? {} : { lastExitCode }) };
     this.set({ sessions: this.state.sessions.map((session) => (session === known ? next : session)) });
+  }
+
+  /**
+   * A session of the core changed its name, workspace or logging (`session.updated`, from any client). Only these
+   * fields are taken: the state has its own events, and the update can be older than a state change that reached
+   * the window first. An unknown session is added.
+   */
+  sessionUpdated(session: SessionInfo): void {
+    const known = this.state.sessions.find((each) => each.id === session.id);
+    if (!known) {
+      this.sessionCreated(session);
+      return;
+    }
+    const { workspaceId: _old, ...rest } = known;
+    const next: SessionInfo = {
+      ...rest,
+      name: session.name,
+      loggingEnabled: session.loggingEnabled,
+      updatedAt: session.updatedAt,
+      ...(session.workspaceId === undefined ? {} : { workspaceId: session.workspaceId }),
+    };
+    this.set({ sessions: this.state.sessions.map((each) => (each === known ? next : each)) });
+  }
+
+  /** The session and its history are gone (`session.removed`); panes that show it fall back to the placeholder. */
+  sessionRemoved(sessionId: SessionId): void {
+    if (!this.state.sessions.some((session) => session.id === sessionId)) return;
+    this.set({ sessions: this.state.sessions.filter((session) => session.id !== sessionId) });
+  }
+
+  setWorkspaces(workspaces: readonly Workspace[]): void {
+    this.set({ workspaces });
   }
 
   setCoreStatus(coreStatus: CoreStatusResult): void {

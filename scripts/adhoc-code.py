@@ -47,12 +47,10 @@ def heredoc_lines(command):
     longest = 0
     for match in HEREDOC.finditer(command):
         lines = command[match.end():].splitlines()[1:]
-        body = 0
-        for line in lines:
-            if line.strip() == match.group(1):
-                break
-            body += 1
-        longest = max(longest, body)
+        # Without its delimiter line it is no heredoc (e.g. a shift `$((a << 2))`).
+        ends = [index for index, line in enumerate(lines) if line.strip() == match.group(1)]
+        if ends:
+            longest = max(longest, ends[0])
     return longest
 
 
@@ -65,7 +63,10 @@ def repo_roots(cwd):
     """Pfadteile, an denen Dateien im Repo oder einem seiner Worktrees erkannt werden."""
     if not cwd:
         return ()
-    name = os.path.basename(cwd.replace("\\", "/").rstrip("/")).lower()
+    parts = cwd.replace("\\", "/").rstrip("/").lower().split("/")
+    # A session in a worktree (`<repo>-wt/<branch>`) belongs to the repo before `-wt`.
+    worktree = next((part for part in parts if part.endswith("-wt")), None)
+    name = worktree.removesuffix("-wt") if worktree else parts[-1]
     return (f"/{name}/", f"/{name}-wt/")
 
 

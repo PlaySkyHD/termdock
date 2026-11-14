@@ -44,6 +44,9 @@ class HeredocTest(unittest.TestCase):
     def test_counts_only_until_the_delimiter(self):
         self.assertEqual(adhoc.heredoc_lines("cat <<EOF\na\nb\nEOF\nmore\nlines\nhere"), 2)
 
+    def test_shift_without_delimiter_is_no_heredoc(self):
+        self.assertEqual(adhoc.heredoc_lines("echo $((1 << 2))\na\nb\nc\nd\ne\nf"), 0)
+
 
 class ScriptTest(unittest.TestCase):
     def test_script_outside_the_repo(self):
@@ -56,6 +59,12 @@ class ScriptTest(unittest.TestCase):
             write("P:\\Temp\\notes.md"),
         ]
         self.assertEqual(kinds(calls), [])
+
+    def test_session_in_a_worktree_knows_the_main_checkout(self):
+        cwd = "P:\\GitHub\\termdock-wt\\chore\\x"
+        calls = [(cwd, "Write", {"file_path": "P:\\GitHub\\termdock\\scripts\\a.py", "content": ""}),
+                 (cwd, "Write", {"file_path": "P:\\Temp\\a.py", "content": ""})]
+        self.assertEqual(kinds(calls), ["script"])
 
 
 class RepeatTest(unittest.TestCase):

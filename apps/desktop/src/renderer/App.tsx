@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { canRun, pasteInto, runCommand } from "./commands.js";
+import { canRun, panesFull, pasteInto, runCommand, splitActivePane } from "./commands.js";
 import type { CommandDeps } from "./commands.js";
 import { handleKey, resolveKey } from "./keymap.js";
 import type { KeyCommands } from "./keymap.js";
@@ -60,15 +60,16 @@ export function App({ api }: { api: TermdockApi }) {
   const refocus = useCallback(() => setFocusSignal((signal) => signal + 1), []);
 
   /**
-   * Splits the active pane of the active tab; the new pane shows `sessionId`. With the same session the new view
-   * reads, so the writing pane stays active and keeps the focus (the store decides, `splitPane`).
+   * Shift+click in the sidebar: the active pane splits to the right and the new pane shows `sessionId`. With the
+   * same session the new view reads, so the writing pane stays active and keeps the focus (the store decides,
+   * `splitPane`). The keys and buttons start a new session instead (`splitActivePane`, #66).
    */
   const split = useCallback(
     (direction: SplitDirection, sessionId: SessionId) => {
       const tab = activeTab(store.getState());
       if (!tab) return;
       const paneId = store.splitPane(tab.id, tab.activePaneId, direction, sessionId);
-      setNotice(paneId === undefined ? `Höchstens ${MAX_PANES} Panes je Tab` : undefined);
+      setNotice(paneId === undefined ? panesFull(MAX_PANES) : undefined);
       refocus();
     },
     [store, refocus],
@@ -145,7 +146,7 @@ export function App({ api }: { api: TermdockApi }) {
     store,
     clipboard: navigator.clipboard,
     activeController: () => (tab ? controllers.current.get(tab.activePaneId) : undefined),
-    split: (direction) => activeSessionId !== undefined && split(direction, activeSessionId),
+    createSession: (params) => api.createSession(params),
     showForm,
     shortcutsOpen,
     toggleShortcuts: () => {
@@ -211,7 +212,7 @@ export function App({ api }: { api: TermdockApi }) {
             refocus();
           }}
           onClose={(tabId) => store.closeTab(tabId)}
-          onSplit={(direction) => activeSessionId !== undefined && split(direction, activeSessionId)}
+          onSplit={(direction) => void splitActivePane(commandRef.current, direction)}
           onShowShortcuts={() => setShortcutsOpen(true)}
           onClosePane={() => {
             if (tab) store.closePane(tab.id, tab.activePaneId);
@@ -240,13 +241,9 @@ export function App({ api }: { api: TermdockApi }) {
                   focusSignal={focusSignal}
                   onStatus={setStatus}
                   onController={setController}
+                  // A press only makes the pane active; taking the input is the pane's button or a double
+                  // click (TerminalView, #66), so neither the writer nor the size jump on a click.
                   onPanePress={(paneId) => store.focusPane(each.id, paneId)}
-                  onPaneClick={(paneId) => {
-                    // A real click into a reading pane takes the writer, selecting text does not;
-                    // claimWriter never rejects.
-                    if (statuses[paneId]?.role === "reader")
-                      void controllers.current.get(paneId)?.claimWriter();
-                  }}
                   onClosePane={(paneId) => store.closePane(each.id, paneId)}
                   commands={keyCommands}
                   onPanePaste={(paneId) => {
@@ -268,7 +265,10 @@ export function App({ api }: { api: TermdockApi }) {
         hints={coreHints(state.coreStatus, state.coreClosed)}
         notice={notice}
         // claimWriter never rejects; a refusal arrives as the error of the view status.
-        onClaimWriter={() => void (tab && controllers.current.get(tab.activePaneId)?.claimWriter())}
+        onClaimWriter={() => {
+          void (tab && controllers.current.get(tab.activePaneId)?.claimWriter());
+          refocus(); // like the button in the pane: the terminal takes the keys again
+        }}
       />
       {shortcutsOpen && (
         <ShortcutsDialog

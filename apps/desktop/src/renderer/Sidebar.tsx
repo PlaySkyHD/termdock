@@ -74,7 +74,7 @@ export function Sidebar({
                     type="button"
                     data-session-name={session.name}
                     data-state={session.state}
-                    title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen`}
+                    title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)`}
                     onClick={(event) =>
                       onOpen(session.id, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")
                     }

@@ -130,9 +130,10 @@ describe("the default keymap", () => {
     expect(rows).toHaveLength(COMMAND_IDS.length);
     expect(rows.find((row) => row.command === "splitRow")).toEqual({
       command: "splitRow",
-      label: "Pane rechts teilen",
+      label: "Rechts teilen mit neuer Session",
       shortcut: "Ctrl+Shift+D",
     });
+    expect(rows.find((row) => row.command === "splitColumn")?.label).toBe("Unten teilen mit neuer Session");
   });
 });
 

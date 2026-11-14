@@ -7,7 +7,7 @@ import type { SessionInfo } from "@termdock/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
 import { runCore } from "../bin/run-core.js";
-import { sessionHistoryDir } from "../storage/history-files.js";
+import { historyDir } from "../storage/history-store.js";
 import { connect, IpcError } from "./client.js";
 import type { CoreClient } from "./client.js";
 
@@ -62,7 +62,7 @@ function tempDataDir(): string {
 
 /** History segments as the HistoryStore writes them (ADR 0004). */
 function writeHistory(dataDir: string, sessionId: string): string {
-  const dir = sessionHistoryDir(dataDir, sessionId);
+  const dir = historyDir(dataDir, sessionId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "a.log"), "output");
   return dir;
@@ -87,19 +87,21 @@ describe("session management over IPC (issue #57)", () => {
       [other, []],
       [stranger, []],
     ]);
+    const w1 = (await caller.request("workspace.create", { name: "Eins" })).result.workspace.id;
+    const w2 = (await caller.request("workspace.create", { name: "Zwei" })).result.workspace.id;
     for (const [client, list] of seen) client.on("session.updated", ({ session }) => list.push(session));
-    const session = await createSession(caller, "w1");
+    const session = await createSession(caller, w1);
 
     const renamed = (await caller.request("session.update", { sessionId: session.id, name: "deploy" }))
       .result;
     const ungrouped = (await caller.request("session.update", { sessionId: session.id, workspaceId: null }))
       .result;
-    const regrouped = (await caller.request("session.update", { sessionId: session.id, workspaceId: "w2" }))
+    const regrouped = (await caller.request("session.update", { sessionId: session.id, workspaceId: w2 }))
       .result;
 
-    expect(renamed.session).toMatchObject({ name: "deploy", workspaceId: "w1", state: "Detached" });
+    expect(renamed.session).toMatchObject({ name: "deploy", workspaceId: w1, state: "Detached" });
     expect(ungrouped.session).not.toHaveProperty("workspaceId");
-    expect(regrouped.session).toMatchObject({ name: "deploy", workspaceId: "w2" });
+    expect(regrouped.session).toMatchObject({ name: "deploy", workspaceId: w2 });
     // Events are written before the answers.
     for (const client of [caller, other]) {
       expect(seen.get(client)).toEqual([renamed.session, ungrouped.session, regrouped.session]);
@@ -107,10 +109,26 @@ describe("session management over IPC (issue #57)", () => {
     expect(seen.get(stranger)).toEqual([]);
     expect(backend.kills).toEqual([]);
     expect(backend.pty(session.id).disposed).toBe(false);
-    expect((await other.request("session.list", {})).result.sessions[0]).toMatchObject({ workspaceId: "w2" });
+    expect((await other.request("session.list", {})).result.sessions[0]).toMatchObject({ workspaceId: w2 });
     expect(await errorCode(caller.request("session.update", { sessionId: "nope", name: "x" }))).toBe(
       "not_found",
     );
+  });
+
+  it("refuses to move a session into an unknown workspace and changes nothing", async () => {
+    const { pipePath } = await startCore(tempDataDir());
+    const client = await newClient(pipePath);
+    await client.request("session.list", {});
+    const updates: SessionInfo[] = [];
+    client.on("session.updated", ({ session }) => updates.push(session));
+    const session = await createSession(client);
+
+    expect(
+      await errorCode(client.request("session.update", { sessionId: session.id, workspaceId: "w-typo" })),
+    ).toBe("not_found");
+
+    expect((await client.request("session.list", {})).result.sessions[0]).not.toHaveProperty("workspaceId");
+    expect(updates).toEqual([]);
   });
 
   it("archives a running session: process ended, Archived reported, history kept", async () => {
@@ -161,8 +179,11 @@ describe("session management over IPC (issue #57)", () => {
     const session = await createSession(lister);
     const kept = await createSession(lister);
     const { viewId } = (await viewer.request("session.attach", { sessionId: session.id })).result;
+    // Real history: the recorder writes the output through the HistoryStore (#59).
+    first.backend.pty(session.id).emitData("output to forget\r\n");
+    const history = historyDir(dataDir, session.id);
+    await expect.poll(() => existsSync(join(history, "a.log"))).toBe(true);
     await lister.request("session.kill", { sessionId: session.id });
-    const history = writeHistory(dataDir, session.id);
     const keptHistory = writeHistory(dataDir, kept.id);
     writers.length = 0;
 

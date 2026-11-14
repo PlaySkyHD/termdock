@@ -8,7 +8,7 @@ Die Registry kennt Lifecycle, Views und Eingabe-Lock (ADR 0005); `archive` exist
 
 ### Ändern ohne Prozess
 
-`update` ändert nur Metadaten und ist in jedem Zustand erlaubt, auch `Archived` (Umbenennen im Archiv). `workspaceId: null` entfernt das Feld. Der Name wird wie im Guard geprüft (1 bis `MAX_NAME_LENGTH` Zeichen, nicht nur Leerzeichen), damit auch Aufrufer ohne Pipe keine ungültigen Namen speichern. Speichern über `persist` wie jede andere Änderung: Ein Speicherfehler geht an `onPersistError`, die Änderung gilt im Speicher (Anforderung „Fehler beim Speichern“). Ob die Ziel-`workspaceId` existiert, prüft #56; die Registry kennt keine Workspaces.
+`update` ändert nur Metadaten und ist in jedem Zustand erlaubt, auch `Archived` (Umbenennen im Archiv). `workspaceId: null` entfernt das Feld. Der Name wird wie im Guard geprüft (1 bis `MAX_NAME_LENGTH` Zeichen, nicht nur Leerzeichen), damit auch Aufrufer ohne Pipe keine ungültigen Namen speichern. Speichern über `persist` wie jede andere Änderung: Ein Speicherfehler geht an `onPersistError`, die Änderung gilt im Speicher (Anforderung „Fehler beim Speichern“). Ob die Ziel-`workspaceId` existiert, prüft der Server mit dem Workspace-Dienst aus #56 (`assertWorkspace`, wie bei `session.create`, sonst `not_found`); die Registry kennt keine Workspaces.
 
 ### Reihenfolge beim Löschen
 
@@ -24,7 +24,7 @@ Verworfen: Views zuerst trennen. Dann hätte ein gescheitertes Löschen eine Ses
 
 ### Verlaufspfad
 
-`storage/history-files.ts` bildet `<dataDir>/history/<sessionId>` nur aus einer Session-ID der Form `[A-Za-z0-9_-]+` (wie die tmux-Ziele, ADR 0003) und prüft, dass der aufgelöste Pfad unter `history/` liegt. `rm(..., { recursive, force, maxRetries: 3 })` ist idempotent und folgt keinen Links. Die Registry bekommt das Entfernen als Option `removeHistory` (Standard: nichts), damit sie das Dateisystem nicht kennt und Tests ohne Platte laufen. `runCore` löst das Datenverzeichnis jetzt selbst auf (`resolveDataDir`) und übergibt es an `openStorage` und `removeSessionHistory`. Der HistoryStore (#59) kann dieselbe Pfadfunktion nutzen.
+Die Registry bekommt das Entfernen als Option `removeHistory` (Standard: nichts), damit sie das Dateisystem nicht kennt und Tests ohne Platte laufen. `runCore` bindet sie an `HistoryStore.remove` (#59): Warteschlange der Session verwerfen, laufendes Schreiben und offene Leser abwarten, dann `history/<id>/` rekursiv und idempotent löschen (`rm` folgt keinen Links). Den Pfad bildet `historyDir` nur aus einer Session-ID der Form `[A-Za-z0-9_-]+` (wie die tmux-Ziele, ADR 0003). Ein eigenes Modul `storage/history-files.ts` aus der ersten Fassung entfiel beim Merge mit #59. Archivieren ruft den HistoryStore nicht auf, der Verlauf bleibt unverändert.
 
 ### IPC
 

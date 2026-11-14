@@ -11,7 +11,7 @@ import { runCore } from "./bin/run-core.js";
 import type { RunCoreResult } from "./bin/run-core.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
-import { sessionHistoryDir } from "./storage/history-files.js";
+import { historyDir } from "./storage/history-store.js";
 
 const SOCKET = "termdock-test";
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
@@ -69,7 +69,7 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
   }
 
   function writeHistory(sessionId: string): string {
-    const dir = sessionHistoryDir(dataDir, sessionId);
+    const dir = historyDir(dataDir, sessionId);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "a.log"), "output");
     return dir;

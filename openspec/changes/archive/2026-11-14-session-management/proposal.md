@@ -9,9 +9,9 @@ Gruppenlose und gruppierte Sessions müssen sich umbenennen, verschieben, archiv
 - `SessionRegistry.update(sessionId, patch)`: Name, `workspaceId` (`null` = gruppenlos) und `loggingEnabled` ändern, in jedem Zustand, ohne den Prozess zu berühren; gespeichert wie jede Änderung.
 - `SessionRegistry.delete(sessionId)`: nur aus `Exited`, `Interrupted`, `Archived` (sonst `invalid_state`). Beendet bei `Interrupted` eine verbliebene Backend-Session, entfernt `history/<sessionId>/`, dann die Zeile in `sessions`, trennt danach alle Views und vergisst die Session. Scheitert ein Schritt, bleibt die Session mit ihren Views.
 - `SessionRepository.delete(sessionId)` (SQLite und In-Memory).
-- `storage/history-files.ts`: Pfad `history/<sessionId>/` nach ADR 0004 mit Prüfung der Session-ID, rekursives und idempotentes Entfernen.
+- Verlauf entfernen über `HistoryStore.remove` aus #59 (Pfad `history/<sessionId>/` nach ADR 0004 mit Prüfung der Session-ID in `historyDir`, rekursiv und idempotent).
 - IPC: `session.update` antwortet mit der Session und sendet `session.updated`; `session.archive` nutzt `SessionRegistry.archive` (Event `session.stateChanged` wie bisher); `session.delete` sendet `session.removed`. Nach Archivieren und Löschen vergisst der Server die Views der Session.
-- `runCore` löst das Datenverzeichnis selbst auf und gibt der Registry das Entfernen des Verlaufs.
+- `runCore` bindet das Entfernen des Verlaufs an `HistoryStore.remove`; `session.update` prüft eine neue `workspaceId` gegen die Workspaces aus #56 (`not_found`).
 
 ## Capabilities
 
@@ -27,9 +27,9 @@ Gruppenlose und gruppierte Sessions müssen sich umbenennen, verschieben, archiv
 
 ## Impact
 
-- Paket `packages/core`: `session/registry.ts`, `storage/session-repository.ts`, `storage/history-files.ts` (neu), `ipc/server.ts`, `bin/run-core.ts`, Tests.
+- Paket `packages/core`: `session/registry.ts`, `storage/session-repository.ts`, `ipc/server.ts`, `bin/run-core.ts`, Tests.
 - Kein Vertragswechsel: `packages/protocol` und `apps/desktop` bleiben unverändert (UI folgt mit P3-8).
 - Phase 3, Welle 1 (#57). Parallel: #56 (`clearWorkspace`), #59 (HistoryStore schreibt in dasselbe Verzeichnis).
-- Non-Goals: UI, Prüfung, ob die Ziel-`workspaceId` existiert (Workspaces kommen mit #56), Schreiben des Verlaufs (#59).
+- Non-Goals: UI, Schreiben des Verlaufs (#59).
 - Security: Der Pfad des Verlaufs entsteht nur aus einer geprüften Session-ID (`[A-Za-z0-9_-]+`) und muss unter `<dataDir>/history/` liegen; `rm` folgt keinen Links. Löschen entfernt den Verlauf vor der Zeile, damit kein Verlauf ohne Session zurückbleibt.
 - Breaking Changes: keine.

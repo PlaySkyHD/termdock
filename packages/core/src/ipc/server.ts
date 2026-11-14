@@ -477,6 +477,8 @@ export class CoreServer {
       // Rename, move, archive, delete: issue #57.
       case "session.update": {
         const { sessionId, ...patch } = request.params;
+        // As in session.create: an unknown workspace would collect a session no workspace delete ungroups.
+        if (typeof patch.workspaceId === "string") this.workspaces.assertWorkspace(patch.workspaceId);
         const session = registry.update(sessionId, patch);
         // Before the answer, like session.created: every lister sees the same order.
         this.notifyListers("session.updated", { session });

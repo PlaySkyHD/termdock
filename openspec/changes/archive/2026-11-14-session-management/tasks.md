@@ -3,7 +3,7 @@
 ## 1. Speicher
 
 - [x] 1.1 Test und Umsetzung: `SessionRepository.delete` für SQLite und In-Memory, unbekannte ID ist kein Fehler (`session-repository.test.ts`, `session-repository.ts`, `run-core.ts`)
-- [x] 1.2 Test und Umsetzung: Verlaufspfad `history/<sessionId>/` mit ID-Prüfung, rekursives und idempotentes Entfernen (`history-files.test.ts`, `history-files.ts`)
+- [x] 1.2 Test und Umsetzung: Verlauf entfernen über `HistoryStore.remove` aus #59 (ID-Prüfung und Idempotenz in `history-store.test.ts`; Verdrahtung in `run-core.ts`, echter Verlauf in `ipc/session-management.test.ts`)
 
 ## 2. Registry
 
@@ -13,7 +13,7 @@
 
 ## 3. IPC und Zusammenbau
 
-- [x] 3.1 Test und Umsetzung: `session.update` mit `session.updated` an Listen-Clients, `not_found` (`ipc/session-management.test.ts`, `server.ts`)
+- [x] 3.1 Test und Umsetzung: `session.update` mit `session.updated` an Listen-Clients, `not_found` für unbekannte Session und unbekannten Workspace (`ipc/session-management.test.ts`, `server.ts`)
 - [x] 3.2 Test und Umsetzung: `session.archive` – Prozess beendet, `Archived` gemeldet, Verlauf bleibt, View vergessen (`ipc/session-management.test.ts`, `server.ts`)
 - [x] 3.3 Test und Umsetzung: `session.delete` – laufend abgelehnt; Verlauf, Zeile und View weg, `session.removed`, neuer Core lädt sie nicht (`ipc/session-management.test.ts`, `server.ts`, `run-core.ts`)
 - [x] 3.4 Test: Stub-Test prüft nur noch die offenen Methoden (`ipc.test.ts`)

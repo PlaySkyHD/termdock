@@ -14,13 +14,19 @@ Bis ihre Fachlogik umgesetzt ist, SHALL der Core jede noch nicht umgesetzte Meth
 
 ### Requirement: Sessions über die IPC verwalten
 
-`session.update` SHALL die geänderte Session liefern und vorher `session.updated` senden. `session.archive` SHALL `{}` liefern, `Archived` meldet `session.stateChanged`. `session.delete` SHALL `{}` liefern und `session.removed` senden. Fehler der Registry MUST mit ihrem Code beantwortet werden. Nach Archivieren und Löschen MUST der Core die Views der Session in allen Verbindungen vergessen; Aufrufe mit ihnen MUST `not_found` ergeben.
+`session.update` SHALL die geänderte Session liefern und vorher `session.updated` senden. `session.archive` SHALL `{}` liefern, `Archived` meldet `session.stateChanged`. `session.delete` SHALL `{}` liefern und `session.removed` senden. Eine unbekannte `workspaceId` MUST `not_found` ergeben, Fehler der Registry ihren Code. Nach Archivieren und Löschen MUST der Core die Views der Session in allen Verbindungen vergessen; Aufrufe mit ihnen MUST `not_found` ergeben.
 
 #### Scenario: Umbenennen und Verschieben über die Pipe
 
 - **GIVEN** zwei Clients, die `session.list` genutzt haben, und einer ohne
 - **WHEN** der erste eine Session umbenennt, gruppenlos macht und in `w2` verschiebt
 - **THEN** erhält er jeweils die geänderte Session, beide Listen-Clients erhalten drei `session.updated` in dieser Reihenfolge, der dritte keines, und der Prozess läuft weiter
+
+#### Scenario: Verschieben in unbekannten Workspace
+
+- **GIVEN** eine gruppenlose Session und kein Workspace `w-typo`
+- **WHEN** ein Client sie mit `workspaceId: "w-typo"` ändern will
+- **THEN** antwortet der Core mit `not_found`, die Session bleibt gruppenlos und kein `session.updated` wird gesendet
 
 #### Scenario: Laufende Session archivieren über die Pipe
 

@@ -1,4 +1,4 @@
-import type { CoreStatusResult, SessionInfo, SessionState } from "@termdock/protocol";
+import type { CoreStatusResult, SessionInfo, SessionState, Workspace } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import { connectStore } from "./session-sync.js";
@@ -18,8 +18,16 @@ function session(id: string, state: SessionState = "Detached"): SessionInfo {
 }
 
 /** Bridge double: the test decides when the list and the status are answered and emits events. */
-class FakeApi implements Pick<TermdockApi, "onEvent" | "listSessions" | "coreStatus"> {
+class FakeApi implements Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus"> {
   private listener: ((event: BridgeEvent) => void) | undefined;
+  /** What `listWorkspaces` answers; an `Error` makes it reject. The test may swap it between calls. */
+  workspaces: Workspace[] | Error = [];
+  workspaceListCalls = 0;
+  async listWorkspaces(): Promise<Workspace[]> {
+    this.workspaceListCalls += 1;
+    if (this.workspaces instanceof Error) throw this.workspaces;
+    return this.workspaces;
+  }
   private answerList: ((sessions: SessionInfo[]) => void) | undefined;
   private failList: ((error: Error) => void) | undefined;
   status: CoreStatusResult | Error = { backendUnavailable: [] };
@@ -315,5 +323,98 @@ describe("connectStore", () => {
     connection.dispose();
 
     expect(api.subscribed).toBe(false);
+  });
+});
+
+const workspace = (id: string, name = id): Workspace => ({ id, name, projects: [] });
+const names = (s: UiStore): string[] => s.getState().workspaces.map((w) => w.name);
+
+describe("connectStore workspaces and session edits (#63)", () => {
+  it("lists the workspaces next to the sessions", async () => {
+    const api = new FakeApi();
+    api.workspaces = [workspace("w1", "Web"), workspace("w2", "Daten")];
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+
+    api.answer([]);
+    await connection.ready;
+    await settle();
+
+    expect(names(s)).toEqual(["Web", "Daten"]);
+  });
+
+  it("takes workspaceChanged of another client into every window", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([]);
+    await connection.ready;
+
+    api.emit({ kind: "workspaceChanged", workspaces: [workspace("w1", "Web")] });
+    api.emit({ kind: "workspaceChanged", workspaces: [workspace("w1", "Web"), workspace("w2", "Neu")] });
+
+    expect(names(s)).toEqual(["Web", "Neu"]);
+  });
+
+  it("does not let a late answer of listWorkspaces replace a newer workspaceChanged", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.workspaces = [workspace("w1", "alt")];
+    api.emit({ kind: "workspaceChanged", workspaces: [workspace("w1", "neu")] });
+    api.answer([]);
+    await connection.ready;
+    await settle();
+
+    expect(names(s)).toEqual(["neu"]);
+  });
+
+  it("retries a failing listWorkspaces", async () => {
+    const api = new FakeApi();
+    api.workspaces = new Error("[timeout] workspace.list");
+    const errors: string[] = [];
+    const s = store();
+    let wake: () => void = () => {};
+    connectStore(s, api, (message) => errors.push(message), {
+      retryDelaysMs: [1],
+      sleep: () => new Promise<void>((resolve) => (wake = resolve)),
+    });
+    api.answer([]);
+    await settle();
+    api.workspaces = [workspace("w1", "Web")];
+    wake();
+    await settle();
+
+    expect(errors).toEqual(["[timeout] workspace.list"]);
+    expect(api.workspaceListCalls).toBe(2);
+    expect(names(s)).toEqual(["Web"]);
+  });
+
+  it("applies sessionUpdated and sessionRemoved after the list when they arrived before it", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+
+    api.emit({ kind: "sessionUpdated", session: { ...session("a"), name: "umbenannt", workspaceId: "w1" } });
+    api.emit({ kind: "sessionRemoved", sessionId: "b" });
+    api.answer([session("a"), session("b")]);
+    await connection.ready;
+
+    expect(s.getState().sessions.map((x) => [x.id, x.name, x.workspaceId])).toEqual([
+      ["a", "umbenannt", "w1"],
+    ]);
+  });
+
+  it("applies sessionUpdated and sessionRemoved at once after the list", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a"), session("b")]);
+    await connection.ready;
+
+    api.emit({ kind: "sessionUpdated", session: { ...session("a"), name: "neu" } });
+    api.emit({ kind: "sessionRemoved", sessionId: "b" });
+
+    expect(s.getState().sessions.map((x) => [x.id, x.name])).toEqual([["a", "neu"]]);
   });
 });

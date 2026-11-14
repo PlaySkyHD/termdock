@@ -6,6 +6,9 @@ import { handleKey } from "./keymap.js";
 import type { KeyCommands, KeyLike } from "./keymap.js";
 import { MIN_FONT_SIZE, NORMAL_FONT_SIZE, readerFontSize } from "./terminal-size.js";
 
+/** The calls and events a view needs of the bridge. */
+export type ViewApi = Pick<TermdockApi, "onEvent" | "attach" | "detach" | "input" | "resize" | "claimWriter">;
+
 /** The part of xterm.js and its fit addon the controller uses. */
 export interface TerminalSurface {
   readonly cols: number;
@@ -107,7 +110,7 @@ export class TerminalController {
   private cancelLayout: (() => void) | undefined;
 
   constructor(
-    private readonly api: TermdockApi,
+    private readonly api: ViewApi,
     private readonly surface: TerminalSurface,
     private readonly onStatus: (status: ViewStatus) => void,
     options: ControllerOptions = {},
@@ -236,8 +239,8 @@ export class TerminalController {
       this.setStatus({ ...this.status, role: "closed" });
       return;
     }
-    if (event.kind === "sessionCreated" || event.kind === "quitRequested") return;
-    if (event.sessionId !== this.sessionId) return;
+    // Events of the window (new, updated or removed sessions, workspaces, quit) are not this view's.
+    if (!("sessionId" in event) || event.sessionId !== this.sessionId) return;
     switch (event.kind) {
       case "output":
         if (this.pending) this.pending.push({ seq: event.seq, data: event.data });

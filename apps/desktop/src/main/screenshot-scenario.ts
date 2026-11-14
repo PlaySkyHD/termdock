@@ -15,6 +15,7 @@ import type { CorePort } from "./core-connection.js";
 import type { QuietWatch } from "./screenshot.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
+import { sidebarScenes } from "./screenshot-sidebar.js";
 
 const run = promisify(execFile);
 
@@ -205,6 +206,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
 
   await splitScenes(deps, capture, session("Notes"));
   await keymapScenes(deps, capture);
+  await sidebarScenes(deps);
   await restoreScenes(deps, wsl);
   await quitScenes(deps, capture);
   await searchScenes(deps);

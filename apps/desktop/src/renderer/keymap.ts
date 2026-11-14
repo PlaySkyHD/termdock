@@ -12,6 +12,8 @@ export const COMMAND_IDS = [
   "closeTab",
   "nextTab",
   "previousTab",
+  "moveTabLeft",
+  "moveTabRight",
   ...TAB_NUMBERS.map((n) => `gotoTab${n}` as const),
   "splitRow",
   "splitColumn",
@@ -37,6 +39,8 @@ export const DEFAULT_KEYMAP: Keymap = {
   closeTab: "Ctrl+Shift+W",
   nextTab: "Ctrl+Tab",
   previousTab: "Ctrl+Shift+Tab",
+  moveTabLeft: "Ctrl+Shift+PageUp",
+  moveTabRight: "Ctrl+Shift+PageDown",
   gotoTab1: "Ctrl+1",
   gotoTab2: "Ctrl+2",
   gotoTab3: "Ctrl+3",
@@ -66,6 +70,8 @@ export const COMMAND_LABELS: Readonly<Record<CommandId, string>> = {
   closeTab: "Tab schließen",
   nextTab: "Nächster Tab",
   previousTab: "Vorheriger Tab",
+  moveTabLeft: "Tab nach links verschieben",
+  moveTabRight: "Tab nach rechts verschieben",
   gotoTab1: "Zu Tab 1",
   gotoTab2: "Zu Tab 2",
   gotoTab3: "Zu Tab 3",
@@ -126,6 +132,8 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   Right: "ArrowRight",
   Up: "ArrowUp",
   Down: "ArrowDown",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
 };
 
 function parseShortcut(shortcut: string): Chord {

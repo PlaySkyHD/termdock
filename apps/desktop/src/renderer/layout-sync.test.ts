@@ -133,6 +133,19 @@ describe("startLayoutSync", () => {
     expect(reported.sizes[0]).toBeCloseTo(0.7);
   });
 
+  it("reports tabs arranged by drag and drop (#67) in their new order", async () => {
+    const { api, store, scheduler } = await started();
+    const second = store.openSession("s2", { forceNew: true })!;
+
+    store.move({ kind: "tab", tabId: second }, { kind: "tabBar", beforeTabId: "t1" });
+    scheduler.fire();
+    await settle();
+
+    expect(api.reports).toHaveLength(1);
+    expect(api.reports[0]!.tabs.map((tab) => tab.id)).toEqual([second, "t1"]);
+    expect(api.reports[0]!.activeTabId).toBe(second);
+  });
+
   it("starts a new delay for a change after a report", async () => {
     const { api, store, scheduler } = await started();
 

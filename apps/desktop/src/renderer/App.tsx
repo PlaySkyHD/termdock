@@ -3,7 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { canRun, panesFull, pasteInto, runCommand, splitActivePane } from "./commands.js";
+import { ContextMenu } from "./ContextMenu.js";
+import { DragProvider, useDropHandler } from "./drag/DragProvider.js";
+import type { DragPayload } from "./drag/drag-model.js";
+import { dropSource, dropTarget } from "./layout-drop.js";
+import { paneMenu, sessionPlaceEntries, tabMenu } from "./layout-menus.js";
+import type { LayoutAction } from "./layout-menus.js";
+import { tabOfPane } from "./layout-moves.js";
+import type { MoveSource, MoveTarget } from "./layout-moves.js";
+import type { MenuEntry } from "./sidebar-model.js";
 import type { CommandDeps } from "./commands.js";
 import { handleKey, resolveKey } from "./keymap.js";
 import type { KeyCommands } from "./keymap.js";
@@ -239,140 +249,235 @@ export function App({ api }: { api: TermdockApi }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [keyCommands]);
 
+  /** A move of tabs and panes (#67), by drop or menu: the terminal of the active pane takes the focus afterwards. */
+  const arrange = (source: MoveSource, target: MoveTarget): void => {
+    if (store.move(source, target)) setNotice(undefined);
+    refocus();
+  };
+
+  // Menus of tabs and panes (#67); the sidebar has its own.
+  const [layoutMenu, setLayoutMenu] = useState<{
+    x: number;
+    y: number;
+    label: string;
+    entries: MenuEntry<() => void>[];
+    opener: HTMLElement | null;
+  }>();
+  const openLayoutMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    label: string,
+    entries: readonly MenuEntry<LayoutAction>[],
+  ): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (entries.length === 0) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    // The menu key, Shift+F10 and Enter send the event without a pointer position: beside the element.
+    const fromKeyboard =
+      event.type === "click" ? event.detail === 0 : event.clientX === 0 && event.clientY === 0;
+    setLayoutMenu({
+      x: fromKeyboard ? box.left + 12 : event.clientX,
+      y: fromKeyboard ? box.bottom : event.clientY,
+      label,
+      opener: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      entries: entries.map((entry) => ({
+        ...entry,
+        action: () => {
+          const action = entry.action;
+          if (action.kind === "move") arrange(action.source, action.target);
+          else if (action.kind === "closeTab") {
+            store.closeTab(action.tabId);
+            refocus();
+          } else {
+            const owner = tabOfPane(store.getState().window, action.paneId);
+            if (owner) store.closePane(owner.id, action.paneId);
+            refocus();
+          }
+        },
+      })),
+    });
+  };
+
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
   return (
-    <div className={`app${sidebarVisible ? "" : " app--sidebar-hidden"}`}>
-      {sidebarVisible && (
-        <Sidebar
-          sessions={state.sessions}
-          workspaces={state.workspaces}
-          activeSessionId={activeSessionId}
-          actions={sidebarActions}
-          onNotice={setNotice}
-          formOpen={formOpen}
-          creating={creating}
-          createError={createError}
-          onFormOpen={(open) => {
-            setFormOpen(open);
-            if (!open) setCreateError(undefined);
-          }}
-          onOpen={open}
-          onCreate={create}
-        />
-      )}
-      <main className="main">
-        <TabBar
-          tabs={tabs}
-          activeTabId={state.window.activeTabId}
-          sessions={state.sessions}
-          sidebarVisible={sidebarVisible}
-          panes={tab ? paneCount(tab) : 0}
-          maxPanes={MAX_PANES}
-          onToggleSidebar={() => store.toggleSidebar()}
-          onFocus={(tabId) => {
-            store.focusTab(tabId);
-            refocus();
-          }}
-          onClose={(tabId) => store.closeTab(tabId)}
-          onSplit={(direction) => void splitActivePane(commandRef.current, direction)}
-          onShowShortcuts={() => setShortcutsOpen(true)}
-          onSearch={() => setSearchOpen(true)}
-          onClosePane={() => {
-            if (tab) store.closePane(tab.id, tab.activePaneId);
-            setNotice(undefined);
-            refocus();
-          }}
-        />
-        <div className="tab-panels">
-          {tabs.length === 0 && (
-            <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
-          )}
-          {tabs.map((each) => {
-            const active = each.id === state.window.activeTabId;
-            return (
-              <div
-                key={each.id}
-                className={`tab-panel${active ? "" : " tab-panel--hidden"}`}
-                data-active={active}
-              >
-                <PaneTree
-                  api={api}
-                  tab={each}
-                  sessions={state.sessions}
-                  sessionsLoaded={state.sessionsLoaded}
-                  active={active}
-                  focusSignal={focusSignal}
-                  onStatus={setStatus}
-                  onController={setController}
-                  // A press only makes the pane active; taking the input is the pane's button or a double
-                  // click (TerminalView, #66), so neither the writer nor the size jump on a click.
-                  onPanePress={(paneId) => store.focusPane(each.id, paneId)}
-                  onClosePane={(paneId) => store.closePane(each.id, paneId)}
-                  commands={keyCommands}
-                  onPanePaste={(paneId) => {
-                    const controller = controllers.current.get(paneId);
-                    if (controller) void pasteInto(controller, navigator.clipboard, setNotice);
-                  }}
-                  onMoveDivider={(splitId, index, delta, minShare) =>
-                    store.moveDivider(each.id, splitId, index, delta, minShare)
-                  }
-                />
-              </div>
-            );
-          })}
-        </div>
-      </main>
-      <StatusBar
-        session={activeSession}
-        view={activeView}
-        hints={coreHints(state.coreStatus, state.coreClosed)}
-        notice={notice}
-        // claimWriter never rejects; a refusal arrives as the error of the view status.
-        onClaimWriter={() => {
-          void (tab && controllers.current.get(tab.activePaneId)?.claimWriter());
-          refocus(); // like the button in the pane: the terminal takes the keys again
-        }}
-      />
-      {quit && (
-        <QuitDialog
-          activeSessions={quit.activeSessions}
-          onAnswer={(answer) => {
-            const { requestId } = quit;
-            answeredQuits.current.add(requestId);
-            setQuit(undefined);
-            // A refused answer (the main process asked nobody) changes nothing: the dialog is closed either way.
-            api.answerQuit(requestId, answer).catch((error: unknown) => console.error(error));
-            refocus();
+    <DragProvider>
+      <LayoutDropRules store={store} onMove={arrange} />
+      <div className={`app${sidebarVisible ? "" : " app--sidebar-hidden"}`}>
+        {sidebarVisible && (
+          <Sidebar
+            sessions={state.sessions}
+            workspaces={state.workspaces}
+            activeSessionId={activeSessionId}
+            actions={sidebarActions}
+            onNotice={setNotice}
+            formOpen={formOpen}
+            creating={creating}
+            createError={createError}
+            onFormOpen={(open) => {
+              setFormOpen(open);
+              if (!open) setCreateError(undefined);
+            }}
+            onOpen={open}
+            placeEntries={(sessionId) => sessionPlaceEntries(store.getState().window, sessionId)}
+            onPlace={(sessionId, zone) => {
+              const current = activeTab(store.getState());
+              if (current)
+                arrange({ kind: "session", sessionId }, { kind: "pane", paneId: current.activePaneId, zone });
+            }}
+            onCreate={create}
+          />
+        )}
+        <main className="main">
+          <TabBar
+            tabs={tabs}
+            activeTabId={state.window.activeTabId}
+            sessions={state.sessions}
+            sidebarVisible={sidebarVisible}
+            panes={tab ? paneCount(tab) : 0}
+            maxPanes={MAX_PANES}
+            onToggleSidebar={() => store.toggleSidebar()}
+            onFocus={(tabId) => {
+              store.focusTab(tabId);
+              refocus();
+            }}
+            onClose={(tabId) => store.closeTab(tabId)}
+            onSplit={(direction) => void splitActivePane(commandRef.current, direction)}
+            onShowShortcuts={() => setShortcutsOpen(true)}
+            onSearch={() => setSearchOpen(true)}
+            onMenu={(tabId, event) =>
+              openLayoutMenu(event, "Aktionen für den Tab", tabMenu(store.getState().window, tabId))
+            }
+            onClosePane={() => {
+              if (tab) store.closePane(tab.id, tab.activePaneId);
+              setNotice(undefined);
+              refocus();
+            }}
+          />
+          <div className="tab-panels">
+            {tabs.length === 0 && (
+              <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
+            )}
+            {/* One flat list for the panes of all tabs (#67): a pane that moves keeps its element and view. */}
+            <PaneTree
+              api={api}
+              tabs={tabs}
+              activeTabId={state.window.activeTabId}
+              sessions={state.sessions}
+              sessionsLoaded={state.sessionsLoaded}
+              focusSignal={focusSignal}
+              onStatus={setStatus}
+              onController={setController}
+              // A press only makes the pane active; taking the input is the pane's button or a double
+              // click (TerminalView, #66), so neither the writer nor the size jump on a click.
+              onPanePress={(tabId, paneId) => store.focusPane(tabId, paneId)}
+              onClosePane={(tabId, paneId) => store.closePane(tabId, paneId)}
+              commands={keyCommands}
+              onPanePaste={(paneId) => {
+                const controller = controllers.current.get(paneId);
+                if (controller) void pasteInto(controller, navigator.clipboard, setNotice);
+              }}
+              onMoveDivider={(tabId, splitId, index, delta, minShare) =>
+                store.moveDivider(tabId, splitId, index, delta, minShare)
+              }
+              onPaneMenu={(paneId, event) =>
+                openLayoutMenu(event, "Aktionen für das Pane", paneMenu(store.getState().window, paneId))
+              }
+            />
+          </div>
+        </main>
+        <StatusBar
+          session={activeSession}
+          view={activeView}
+          hints={coreHints(state.coreStatus, state.coreClosed)}
+          notice={notice}
+          // claimWriter never rejects; a refusal arrives as the error of the view status.
+          onClaimWriter={() => {
+            void (tab && controllers.current.get(tab.activePaneId)?.claimWriter());
+            refocus(); // like the button in the pane: the terminal takes the keys again
           }}
         />
-      )}
-      {searchOpen && (
-        <SearchDialog
-          api={api}
-          sessions={state.sessions}
-          onOpen={(sessionId) => {
-            // Like a click in the sidebar: opens the tab or focuses the one that shows the session. A session
-            // that no longer lives (archived, ended) opens as a placeholder.
-            setSearchOpen(false);
-            open(sessionId, "tab");
-          }}
-          onClose={() => {
-            setSearchOpen(false);
-            refocus();
-          }}
-        />
-      )}
-      {shortcutsOpen && (
-        <ShortcutsDialog
-          onClose={() => {
-            setShortcutsOpen(false);
-            refocus();
-          }}
-        />
-      )}
-    </div>
+        {quit && (
+          <QuitDialog
+            activeSessions={quit.activeSessions}
+            onAnswer={(answer) => {
+              const { requestId } = quit;
+              answeredQuits.current.add(requestId);
+              setQuit(undefined);
+              // A refused answer (the main process asked nobody) changes nothing: the dialog is closed either way.
+              api.answerQuit(requestId, answer).catch((error: unknown) => console.error(error));
+              refocus();
+            }}
+          />
+        )}
+        {searchOpen && (
+          <SearchDialog
+            api={api}
+            sessions={state.sessions}
+            onOpen={(sessionId) => {
+              // Like a click in the sidebar: opens the tab or focuses the one that shows the session. A session
+              // that no longer lives (archived, ended) opens as a placeholder.
+              setSearchOpen(false);
+              open(sessionId, "tab");
+            }}
+            onClose={() => {
+              setSearchOpen(false);
+              refocus();
+            }}
+          />
+        )}
+        {shortcutsOpen && (
+          <ShortcutsDialog
+            onClose={() => {
+              setShortcutsOpen(false);
+              refocus();
+            }}
+          />
+        )}
+        {layoutMenu && (
+          <ContextMenu
+            x={layoutMenu.x}
+            y={layoutMenu.y}
+            label={layoutMenu.label}
+            entries={layoutMenu.entries}
+            onClose={(chosen) => {
+              setLayoutMenu(undefined);
+              if (!chosen) layoutMenu.opener?.focus();
+            }}
+          />
+        )}
+      </div>
+    </DragProvider>
   );
+}
+
+/**
+ * The drop rules of tab bar and panes (#67): a tab, a pane or a session of the sidebar on a zone of a pane or on the
+ * tab bar, as `layout-moves.ts` allows. Inside the window's `DragProvider`, next to the sidebar's own rules.
+ */
+function LayoutDropRules({
+  store,
+  onMove,
+}: {
+  store: UiStore;
+  onMove: (source: MoveSource, target: MoveTarget) => void;
+}) {
+  const resolve = (payload: DragPayload, targetId: string) => {
+    const source = dropSource(payload);
+    const target = dropTarget(store.getState().window, targetId);
+    return source && target ? { source, target } : undefined;
+  };
+  useDropHandler({
+    accepts: (payload, targetId) => {
+      const move = resolve(payload, targetId);
+      return move !== undefined && store.canMove(move.source, move.target);
+    },
+    onDrop: (payload, targetId) => {
+      const move = resolve(payload, targetId);
+      if (move) onMove(move.source, move.target);
+    },
+  });
+  return null;
 }
 
 /** An input field of the page; the text area of xterm.js is none, its keys are the terminal's. */

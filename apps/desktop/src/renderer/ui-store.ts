@@ -7,18 +7,26 @@ import type {
   LayoutSplit,
   LayoutTab,
   LayoutWindow,
-  PaneNode,
   SessionId,
   SessionInfo,
   SessionState,
   Workspace,
 } from "@termdock/protocol";
+import { applyMove, canMove } from "./layout-moves.js";
+import type { MoveSource, MoveTarget } from "./layout-moves.js";
+import {
+  findNode,
+  findPane,
+  firstPane,
+  insertAt,
+  MAX_PANES,
+  MAX_TABS,
+  panesOf,
+  removePane,
+  replaceNode,
+} from "./pane-tree.js";
 
-/** `MAX_TABS_PER_WINDOW` of the protocol; a test keeps them equal (the renderer imports only types). */
-export const MAX_TABS = 64;
-
-/** `MAX_PANES_PER_TAB` of the protocol; a test keeps them equal. */
-export const MAX_PANES = 4;
+export { MAX_PANES, MAX_TABS, paneCount, panesOf } from "./pane-tree.js";
 
 /** Smallest share of a pane in a split when the caller names none. */
 export const MIN_SHARE = 0.05;
@@ -207,28 +215,10 @@ export class UiStore {
     sessionId: SessionId,
   ): string | undefined {
     const tab = this.state.window.tabs.find((each) => each.id === tabId);
-    if (!tab || !findPane(tab.root, paneId) || paneCount(tab) >= MAX_PANES) return undefined;
+    if (!tab || !findPane(tab.root, paneId) || panesOf(tab.root).length >= MAX_PANES) return undefined;
     const added: LayoutPane = { kind: "pane", id: this.newId(), sessionId };
-    const parent = parentOf(tab.root, paneId);
-    const root =
-      parent?.direction === direction
-        ? // Three columns instead of a column inside a column: the pane hands half of its share to the new one.
-          replaceNode(tab.root, parent.id, () => {
-            const index = parent.children.findIndex((child) => child.id === paneId);
-            const half = parent.sizes[index]! / 2;
-            return {
-              ...parent,
-              children: parent.children.toSpliced(index + 1, 0, added),
-              sizes: parent.sizes.toSpliced(index, 1, half, half),
-            };
-          })
-        : replaceNode(tab.root, paneId, (pane) => ({
-            kind: "split",
-            id: this.newId(),
-            direction,
-            children: [pane, added],
-            sizes: [0.5, 0.5],
-          }));
+    // Three columns instead of a column inside a column: the pane hands half of its share to the new one.
+    const root = insertAt(tab.root, paneId, direction === "row" ? "right" : "bottom", added, this.newId);
     // A second view of the same session reads; the writing pane keeps the focus so typing goes on.
     const sameSession = findPane(tab.root, paneId)!.sessionId === sessionId;
     this.setTab({ ...tab, root, activePaneId: sameSession ? paneId : added.id });
@@ -242,22 +232,25 @@ export class UiStore {
   closePane(tabId: string, paneId: string): void {
     const tab = this.state.window.tabs.find((each) => each.id === tabId);
     if (!tab || !findPane(tab.root, paneId)) return;
-    if (tab.root.kind === "pane") {
-      this.closeTab(tabId);
-      return;
-    }
-    const parent = parentOf(tab.root, paneId)!;
-    const index = parent.children.findIndex((child) => child.id === paneId);
-    const children = parent.children.toSpliced(index, 1);
-    const rest = parent.sizes.toSpliced(index, 1);
-    const total = rest.reduce((sum, size) => sum + size, 0);
-    const replacement: PaneNode =
-      children.length === 1 ? children[0]! : { ...parent, children, sizes: rest.map((size) => size / total) };
-    // A split that gives way to its last child can leave a row inside a row; merge it into its parent.
-    const root = mergeSameDirection(replaceNode(tab.root, parent.id, () => replacement));
-    const successor = children[index] ?? children[index - 1]!;
-    const activePaneId = tab.activePaneId === paneId ? firstPane(successor)!.id : tab.activePaneId;
-    this.setTab({ ...tab, root, activePaneId });
+    const rest = removePane(tab, paneId);
+    if (rest) this.setTab(rest);
+    else this.closeTab(tabId);
+  }
+
+  /**
+   * Arranges tabs and panes (#67): moves a tab, a pane or a session of the sidebar to a zone of a pane or to the
+   * tab bar (`applyMove`). Panes keep their ids, so their views stay attached. Returns whether anything changed.
+   */
+  move(source: MoveSource, target: MoveTarget): boolean {
+    const window = applyMove(this.state.window, source, target, this.newId);
+    if (!window) return false;
+    this.setWindow(window);
+    return true;
+  }
+
+  /** Whether `move` would change something; changes nothing. */
+  canMove(source: MoveSource, target: MoveTarget): boolean {
+    return canMove(this.state.window, source, target);
   }
 
   /**
@@ -314,84 +307,7 @@ export function activeTab(state: UiState): LayoutTab | undefined {
 
 /** Session of the tab's active pane: title of the tab, marked entry of the sidebar. */
 export function tabSessionId(tab: LayoutTab): SessionId | undefined {
-  return paneSession(tab.root, tab.activePaneId) ?? firstPane(tab.root)?.sessionId;
-}
-
-function paneSession(node: PaneNode, paneId: string): SessionId | undefined {
-  return findPane(node, paneId)?.sessionId;
-}
-
-/**
- * The tree without a split directly inside a split of the same direction: the inner children take its place,
- * each with its share of the inner split times the inner split's share. Unchanged branches keep their identity.
- */
-function mergeSameDirection(node: PaneNode): PaneNode {
-  if (node.kind === "pane") return node;
-  const children: PaneNode[] = [];
-  const sizes: number[] = [];
-  let changed = false;
-  node.children.forEach((original, index) => {
-    const child = mergeSameDirection(original);
-    const share = node.sizes[index]!;
-    if (child !== original) changed = true;
-    if (child.kind === "split" && child.direction === node.direction) {
-      changed = true;
-      children.push(...child.children);
-      sizes.push(...child.sizes.map((size) => size * share));
-    } else {
-      children.push(child);
-      sizes.push(share);
-    }
-  });
-  return changed ? { ...node, children, sizes } : node;
-}
-
-function firstPane(node: PaneNode): LayoutPane | undefined {
-  return node.kind === "pane" ? node : firstPane(node.children[0]!);
-}
-
-/** Number of panes of the tab (1 to `MAX_PANES`). */
-export function paneCount(tab: LayoutTab): number {
-  return panesOf(tab.root).length;
-}
-
-/** The panes of the tree, left to right and top to bottom. */
-export function panesOf(node: PaneNode): LayoutPane[] {
-  return node.kind === "pane" ? [node] : node.children.flatMap(panesOf);
-}
-
-/** The split that has the node `id` as a direct child; undefined for the root. */
-function parentOf(node: PaneNode, id: string): LayoutSplit | undefined {
-  if (node.kind === "pane") return undefined;
-  if (node.children.some((child) => child.id === id)) return node;
-  for (const child of node.children) {
-    const found = parentOf(child, id);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function findNode(node: PaneNode, id: string): PaneNode | undefined {
-  if (node.id === id) return node;
-  if (node.kind === "pane") return undefined;
-  for (const child of node.children) {
-    const found = findNode(child, id);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function findPane(node: PaneNode, paneId: string): LayoutPane | undefined {
-  const found = findNode(node, paneId);
-  return found?.kind === "pane" ? found : undefined;
-}
-
-/** The tree with the node `id` replaced by `replace(node)`; untouched branches keep their identity. */
-function replaceNode(node: PaneNode, id: string, replace: (node: PaneNode) => PaneNode): PaneNode {
-  if (node.id === id) return replace(node);
-  if (node.kind === "pane") return node;
-  const children = node.children.map((child) => replaceNode(child, id, replace));
-  return children.every((child, index) => child === node.children[index]) ? node : { ...node, children };
+  return findPane(tab.root, tab.activePaneId)?.sessionId ?? firstPane(tab.root).sessionId;
 }
 
 function byCreation(sessions: readonly SessionInfo[]): SessionInfo[] {

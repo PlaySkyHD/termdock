@@ -427,6 +427,73 @@ describe("UiStore split panes", () => {
   });
 });
 
+describe("UiStore move (#67)", () => {
+  it("reorders tabs, notifies once and keeps a window the layout validation accepts", () => {
+    const store = newStore();
+    const a = store.openSession("s1")!;
+    const b = store.openSession("s2")!;
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    expect(store.canMove({ kind: "tab", tabId: b }, { kind: "tabBar", beforeTabId: a })).toBe(true);
+    expect(store.move({ kind: "tab", tabId: b }, { kind: "tabBar", beforeTabId: a })).toBe(true);
+
+    expect(tabIds(store)).toEqual([b, a]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(validWindow(store)).toBe(true);
+  });
+
+  it("drops a tab into a split of another: the pane keeps its id, the empty tab closes", () => {
+    const store = newStore();
+    const a = store.openSession("s1")!;
+    const moved = tabOf(store, a).activePaneId;
+    const b = store.openSession("s2")!;
+    const target = tabOf(store, b).activePaneId;
+
+    store.move({ kind: "tab", tabId: a }, { kind: "pane", paneId: target, zone: "bottom" });
+
+    expect(tabIds(store)).toEqual([b]);
+    expect(store.getState().window.activeTabId).toBe(b);
+    expect(tabOf(store, b).root).toMatchObject({
+      kind: "split",
+      direction: "column",
+      children: [{ id: target }, { id: moved, sessionId: "s1" }],
+    });
+    expect(tabOf(store, b).activePaneId).toBe(moved);
+    expect(validWindow(store)).toBe(true);
+  });
+
+  it("changes nothing and does not notify for a move that is not allowed", () => {
+    const store = newStore();
+    const a = store.openSession("s1")!;
+    const before = store.getState().window;
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    expect(store.move({ kind: "tab", tabId: a }, { kind: "tabBar" })).toBe(false);
+    expect(store.canMove({ kind: "tab", tabId: a }, { kind: "tabBar" })).toBe(false);
+
+    expect(store.getState().window).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("restores the arranged window from what it reported", () => {
+    const store = newStore();
+    const a = store.openSession("s1")!;
+    const b = store.openSession("s2")!;
+    store.splitPane(b, tabOf(store, b).activePaneId, "row", "s3");
+    const pulled = tabOf(store, b).activePaneId;
+    store.move({ kind: "pane", paneId: pulled }, { kind: "tabBar", beforeTabId: a });
+    const arranged = store.getState().window;
+
+    const restored = newStore();
+    restored.loadWindow(structuredClone(arranged));
+
+    expect(restored.getState().window).toEqual(arranged);
+    expect(sessionsOfTabs(restored)).toEqual(["s3", "s1", "s2"]);
+  });
+});
+
 describe("UiStore sidebar", () => {
   it("toggles the sidebar", () => {
     const store = newStore();

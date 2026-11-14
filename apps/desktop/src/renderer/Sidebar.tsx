@@ -8,8 +8,9 @@ import { ContextMenu } from "./ContextMenu.js";
 import { closeIfCurrent, failureText } from "./dialog-state.js";
 import { ConfirmDialog, NameDialog } from "./Dialogs.js";
 import type { NameField } from "./Dialogs.js";
-import { DragProvider, useDrag } from "./drag/DragProvider.js";
+import { useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
+import type { PaneZone } from "./pane-tree.js";
 import { NO_GROUP_LABEL, stateText } from "./session-display.js";
 import {
   ARCHIVE_TARGET,
@@ -71,6 +72,10 @@ export interface SidebarProps {
   onFormOpen: (open: boolean) => void;
   /** Click opens or focuses the tab; Ctrl+click always opens a new one; Shift+click splits the active pane. */
   onOpen: (sessionId: SessionId, mode: OpenMode) => void;
+  /** Menu entries that open the session in a zone of the active pane (#67); none without an active tab. */
+  placeEntries?: (sessionId: SessionId) => MenuEntry<PaneZone>[];
+  /** Opens the session in a zone of the active pane (the menu's way to dropping it on the pane). */
+  onPlace?: (sessionId: SessionId, zone: PaneZone) => void;
   /** Starts creating the session and opening its tab; `creating` and `createError` report the outcome. */
   onCreate: (name: string, cwd: string) => void;
 }
@@ -205,6 +210,9 @@ export function Sidebar(props: SidebarProps) {
       case "open":
         onOpen(session.id, "tab");
         return;
+      case "place":
+        props.onPlace?.(session.id, action.zone);
+        return;
       case "rename":
         ask(
           "Session umbenennen",
@@ -304,7 +312,7 @@ export function Sidebar(props: SidebarProps) {
   };
 
   const sessionEntries = (session: SessionInfo): MenuEntry<() => void>[] =>
-    sessionMenu(session, workspaces).map((entry) => ({
+    sessionMenu(session, workspaces, props.placeEntries?.(session.id)).map((entry) => ({
       ...entry,
       action: () => runSession(session, entry.action),
     }));
@@ -326,6 +334,8 @@ export function Sidebar(props: SidebarProps) {
     if (target.kind === "archive") archive(session);
     else move(session, target.workspaceId);
   };
+  // The window's drag provider (App) asks these rules for the sidebar's targets; panes have their own (#67).
+  useDropHandler({ accepts, onDrop: drop });
 
   const row = (session: SessionInfo, options: { archived?: boolean } = {}): ReactNode => (
     <SessionRow
@@ -339,7 +349,7 @@ export function Sidebar(props: SidebarProps) {
   );
 
   return (
-    <DragProvider accepts={accepts} onDrop={drop}>
+    <>
       <aside className="sidebar" aria-label="Sessions">
         <header className="sidebar__header">
           <span className="sidebar__title">Sessions</span>
@@ -502,7 +512,7 @@ export function Sidebar(props: SidebarProps) {
           onCancel={() => closeDialog(dialog.cancelled)}
         />
       )}
-    </DragProvider>
+    </>
   );
 }
 
@@ -562,7 +572,7 @@ function SessionRow({
         data-row-session-id={session.id}
         data-state={session.state}
         aria-haspopup="menu"
-        title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace oder das Archiv, Rechtsklick oder Menütaste für Aktionen`}
+        title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace, das Archiv oder ein Pane, Rechtsklick oder Menütaste für Aktionen`}
         {...sourceProps}
         onClick={(event) => onOpen(session.id, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")}
         onContextMenu={onMenu}

@@ -3,10 +3,10 @@
 // whole way from the pointer events through the drag controller to `session.update` is exercised; what the core
 // holds afterwards is checked, not just the picture. A drag aborted with Esc must change nothing. Needs Electron,
 // WSL and the isolated core; no unit test (drag model, controller, sidebar model and bridge are tested).
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo, Workspace } from "@termdock/protocol";
+import { pageDriver } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 
 const sessionSelector = (name: string): string => `[data-session-name=${JSON.stringify(name)}]`;
@@ -21,68 +21,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
   win.show();
   win.moveTop();
 
-  const evaluate = <T>(expression: string): Promise<T> =>
-    win.webContents.executeJavaScript(expression, true) as Promise<T>;
-  const waitFor = async (expression: string, what: string, timeoutMs = 30_000): Promise<void> => {
-    const deadline = Date.now() + timeoutMs;
-    while (!(await evaluate<boolean>(`Boolean(${expression})`).catch(() => false))) {
-      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-      await sleep(100);
-    }
-  };
-  const capture = async (name: string): Promise<void> => {
-    await sleep(300);
-    const file = path.join(dir, name);
-    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
-    console.log(file);
-  };
-  const click = async (selector: string): Promise<void> => {
-    await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
-    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-    await sleep(200);
-  };
-  /** Types into a field of the page the way React hears it. */
-  const fill = async (selector: string, value: string): Promise<void> => {
-    await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
-    await evaluate(`(() => {
-      const input = document.querySelector(${JSON.stringify(selector)});
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    })()`);
-    await sleep(100);
-  };
-  const center = (selector: string): Promise<{ x: number; y: number }> =>
-    evaluate(`(() => {
-      const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
-      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    })()`);
-  const mouse = (
-    type: "mouseDown" | "mouseUp" | "mouseMove",
-    x: number,
-    y: number,
-    button: "left" | "right" = "left",
-  ): void =>
-    win.webContents.sendInputEvent({
-      type,
-      x: Math.round(x),
-      y: Math.round(y),
-      button,
-      clickCount: 1,
-      // A move between down and up is a drag: the button is held.
-      ...(type === "mouseMove" && button === "left" ? { modifiers: ["leftbuttondown" as const] } : {}),
-    });
-  /** A key press; `text` adds the `char` event that activates a focused button (Enter) like a typed key. */
-  const key = async (
-    keyCode: string,
-    modifiers: Array<"shift"> = [],
-    wait = 300,
-    text?: string,
-  ): Promise<void> => {
-    win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
-    if (text !== undefined) win.webContents.sendInputEvent({ type: "char", keyCode: text, modifiers });
-    win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
-    await sleep(wait);
-  };
+  const { evaluate, waitFor, capture, click, fill, center, mouse, dragTo, key } = pageDriver(win, dir);
 
   const sessions = async (): Promise<SessionInfo[]> =>
     (await core.request("session.list", {})).result.sessions;
@@ -112,19 +51,8 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
 
   /** Presses on the session, moves in steps to the center of `target` and stops there with the button held. */
   const dragSessionTo = async (name: string, targetSelector: string): Promise<{ x: number; y: number }> => {
-    const from = await center(sessionSelector(name));
     const to = await center(targetSelector);
-    mouse("mouseDown", from.x, from.y);
-    await sleep(50);
-    const steps = 8;
-    for (let step = 1; step <= steps; step += 1) {
-      mouse(
-        "mouseMove",
-        from.x + ((to.x - from.x) * step) / steps,
-        from.y + ((to.y - from.y) * step) / steps,
-      );
-      await sleep(40);
-    }
+    await dragTo(await center(sessionSelector(name)), to);
     return to;
   };
 
@@ -323,7 +251,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     "Done to leave the sidebar",
   );
   await waitFor(
-    `document.querySelector('.tab-panel[data-active="true"]')?.textContent.includes('Session nicht gefunden')`,
+    `[...document.querySelectorAll('.pane[data-tab-active="true"]')].some((pane) => pane.textContent.includes('Session nicht gefunden'))`,
     "the placeholder in the open tab",
   );
   await capture("36-deleted-session-placeholder.png");

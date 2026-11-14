@@ -30,6 +30,8 @@ describe("resolveKey", () => {
     ["Ctrl+Shift+W", press("KeyW", ctrlShift), "closeTab"],
     ["Ctrl+Tab", press("Tab", { ctrlKey: true }), "nextTab"],
     ["Ctrl+Shift+Tab", press("Tab", ctrlShift), "previousTab"],
+    ["Ctrl+Shift+PageUp", press("PageUp", ctrlShift), "moveTabLeft"],
+    ["Ctrl+Shift+PageDown", press("PageDown", ctrlShift), "moveTabRight"],
     ["Ctrl+1", press("Digit1", { ctrlKey: true }), "gotoTab1"],
     ["Ctrl+9", press("Digit9", { ctrlKey: true }), "gotoTab9"],
     ["Ctrl+Shift+D", press("KeyD", ctrlShift), "splitRow"],

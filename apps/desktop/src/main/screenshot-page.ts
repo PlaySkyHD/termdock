@@ -1,0 +1,94 @@
+// Driving one window of the screenshot mode like a user (#63, #67): JavaScript in the page to read it, and the real
+// mouse and keyboard through `webContents.sendInputEvent` (press, moves with the button held, release), so drag and
+// drop runs the whole way through the pointer events. Shared by the scenes of sidebar and tabs. Needs Electron.
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { BrowserWindow } from "electron";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export function pageDriver(win: BrowserWindow, dir: string) {
+  const evaluate = <T>(expression: string): Promise<T> =>
+    win.webContents.executeJavaScript(expression, true) as Promise<T>;
+  const waitFor = async (expression: string, what: string, timeoutMs = 30_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await evaluate<boolean>(`Boolean(${expression})`).catch(() => false))) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+      await sleep(100);
+    }
+  };
+  const capture = async (name: string): Promise<void> => {
+    await sleep(300);
+    const file = path.join(dir, name);
+    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
+    console.log(file);
+  };
+  const click = async (selector: string): Promise<void> => {
+    await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await sleep(200);
+  };
+  /** Types into a field of the page the way React hears it. */
+  const fill = async (selector: string, value: string): Promise<void> => {
+    await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
+    await evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await sleep(100);
+  };
+  /** A point of the element, as shares of its box (the center by default). */
+  const pointIn = (selector: string, u = 0.5, v = 0.5): Promise<Point> =>
+    evaluate(`(() => {
+      const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+      return { x: box.left + box.width * ${u}, y: box.top + box.height * ${v} };
+    })()`);
+  const center = (selector: string): Promise<Point> => pointIn(selector);
+  const mouse = (
+    type: "mouseDown" | "mouseUp" | "mouseMove",
+    x: number,
+    y: number,
+    button: "left" | "right" = "left",
+  ): void =>
+    win.webContents.sendInputEvent({
+      type,
+      x: Math.round(x),
+      y: Math.round(y),
+      button,
+      clickCount: 1,
+      // A move between down and up is a drag: the button is held.
+      ...(type === "mouseMove" && button === "left" ? { modifiers: ["leftbuttondown" as const] } : {}),
+    });
+  /** Presses at `from`, moves in steps to `to` and stops there with the button held. */
+  const dragTo = async (from: Point, to: Point): Promise<void> => {
+    mouse("mouseDown", from.x, from.y);
+    await sleep(50);
+    const steps = 8;
+    for (let step = 1; step <= steps; step += 1) {
+      mouse(
+        "mouseMove",
+        from.x + ((to.x - from.x) * step) / steps,
+        from.y + ((to.y - from.y) * step) / steps,
+      );
+      await sleep(40);
+    }
+  };
+  /** A key press; `text` adds the `char` event that activates a focused button (Enter) like a typed key. */
+  const key = async (
+    keyCode: string,
+    modifiers: Array<"shift" | "control"> = [],
+    wait = 300,
+    text?: string,
+  ): Promise<void> => {
+    win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    if (text !== undefined) win.webContents.sendInputEvent({ type: "char", keyCode: text, modifiers });
+    win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+    await sleep(wait);
+  };
+  return { evaluate, waitFor, capture, click, fill, pointIn, center, mouse, dragTo, key };
+}

@@ -3,6 +3,7 @@
 // drop) and the keyboard (context menu) cannot disagree. Pure, no DOM.
 import type { Project, SessionInfo, Workspace } from "@termdock/protocol";
 import type { DragPayload } from "./drag/drag-model.js";
+import type { PaneZone } from "./pane-tree.js";
 
 export interface WorkspaceSection {
   workspace: Workspace;
@@ -98,18 +99,28 @@ export interface MenuEntry<A> {
 
 export type SessionAction =
   | { kind: "open" }
+  /** Opens it in a zone of the active pane (#67). */
+  | { kind: "place"; zone: PaneZone }
   | { kind: "rename" }
   | { kind: "move"; workspaceId: string | null }
   | { kind: "archive" }
   | { kind: "delete" };
 
+/** `places`: the entries that open the session in a zone of the active pane (`sessionPlaceEntries`, #67). */
 export function sessionMenu(
   session: SessionInfo,
   workspaces: readonly Workspace[],
+  places: readonly MenuEntry<PaneZone>[] = [],
 ): MenuEntry<SessionAction>[] {
   const entries: MenuEntry<SessionAction>[] = [
     { key: "open", label: "Öffnen", action: { kind: "open" } },
-    { key: "rename", label: "Umbenennen …", action: { kind: "rename" } },
+    ...places.map((place) => ({ ...place, action: { kind: "place" as const, zone: place.action } })),
+    {
+      key: "rename",
+      label: "Umbenennen …",
+      action: { kind: "rename" },
+      ...(places.length > 0 ? { separator: true } : {}),
+    },
   ];
   let first = true;
   for (const workspace of workspaces) {

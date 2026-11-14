@@ -17,6 +17,7 @@ import type {
   EventName,
   Frame,
   ParsedRequest,
+  SessionAttachResult,
   SessionId,
   ViewId,
 } from "@termdock/protocol";
@@ -183,10 +184,11 @@ export class CoreServer {
 
   private subscribe(): void {
     this.subscriptions = [
-      this.registry.onOutput(({ sessionId, data, viewIds }) => {
+      this.registry.onOutput(({ sessionId, seq, data, viewIds }) => {
+        // All parts of split output carry its number; the attach mark always lies between two outputs.
         for (let offset = 0; offset < data.length; offset += MAX_PAYLOAD_BYTES) {
           const chunk = data.subarray(offset, offset + MAX_PAYLOAD_BYTES);
-          this.route(viewIds, [], eventFrame("session.output", { sessionId }, chunk));
+          this.route(viewIds, [], eventFrame("session.output", { sessionId, seq }, chunk));
         }
       }),
       this.registry.onResized(({ sessionId, size, viewIds }) => {
@@ -407,16 +409,13 @@ export class CoreServer {
       this.endAttach(conn);
       throw new CoreError("invalid_state", "Connection closed during attach");
     }
-    const { session, snapshot } = attached;
+    const { session, snapshot, outputSeq } = attached;
     // A snapshot over the frame limit keeps its newest bytes, so the visible end of the screen survives.
     const data =
       snapshot.data.length > MAX_PAYLOAD_BYTES
         ? snapshot.data.subarray(snapshot.data.length - MAX_PAYLOAD_BYTES)
         : snapshot.data;
-    const result: { viewId: ViewId; size: typeof session.size; writerViewId?: ViewId } = {
-      viewId,
-      size: session.size,
-    };
+    const result: SessionAttachResult = { viewId, size: session.size, outputSeq };
     if (session.writerViewId !== undefined) result.writerViewId = session.writerViewId;
     return {
       result,

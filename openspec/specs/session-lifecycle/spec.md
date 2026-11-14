@@ -130,7 +130,7 @@ Der Core SHALL jede Ausgabe der PTY einer Session genau einmal als Ereignis meld
 
 ### Requirement: Snapshot für neue Views
 
-Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser verwendet werden, ergänzt um Ausgabe, die während der Abfrage eintraf, dann entfällt das Feld `cursor`. Liefert das Backend nichts oder schlägt die Abfrage fehl, MUST der Inhalt des Rohdaten-Puffers verwendet werden. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
+Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend einen eigenen Bildschirminhalt, MUST dieser unverändert verwendet werden, samt Feld `cursor`; Ausgabe, die während der Abfrage eintrifft, MUST NOT angehängt werden. Liefert das Backend nichts oder schlägt die Abfrage fehl, MUST der Inhalt des Rohdaten-Puffers verwendet werden. Der Puffer MUST auf die letzten 256 KiB Ausgabe je Session begrenzt sein.
 
 #### Scenario: Fallback auf den Puffer
 
@@ -148,7 +148,7 @@ Beim Anhängen SHALL eine View einen Snapshot erhalten. Liefert das Backend eine
 
 - **GIVEN** ein Backend, das Bildschirminhalt mit Cursorposition liefert
 - **WHEN** während der Abfrage weitere Ausgabe eintrifft
-- **THEN** enthält der Snapshot den Bildschirminhalt gefolgt von dieser Ausgabe und kein Feld `cursor`
+- **THEN** enthält der Snapshot nur den Bildschirminhalt mit dem Feld `cursor`, und die neue View erhält diese Ausgabe nicht
 
 #### Scenario: Snapshot-Abfrage schlägt fehl
 
@@ -307,3 +307,57 @@ Beim Beenden des Core ohne Stop SHALL die Registry alle PTYs lösen, ohne Zustä
 - **GIVEN** eine Session, deren Start noch läuft
 - **WHEN** die Registry freigegeben wird und der Start danach scheitert
 - **THEN** schlägt der Aufruf mit `invalid_state` fehl, kein Ereignis wurde gemeldet und der gespeicherte Zustand ist `Starting`
+
+### Requirement: Grenze zwischen Snapshot und Live-Ausgabe
+
+Der Core SHALL die Ausgabe jeder Session fortlaufend ab 1 nummerieren und jedes Ausgabeereignis mit seiner Nummer melden. Beim Anhängen SHALL er als Marke die Nummer der letzten Ausgabe vor dem Registrieren der View liefern (0 ohne Ausgabe). Die View MUST genau die Ausgabe mit höherer Nummer erhalten; die Nummern MUST über einen Wechsel der PTY hinweg weiterlaufen.
+
+#### Scenario: Marke beim Anhängen
+
+- **GIVEN** eine Session, deren PTY dreimal Daten ausgegeben hat, und eine angehängte View A
+- **WHEN** View B angehängt wird und die PTY danach Daten ausgibt
+- **THEN** liefert das Anhängen die Marke 3, und das nächste Ausgabeereignis trägt die Nummer 4 und nennt A und B
+
+#### Scenario: Ausgabe während der Abfrage liegt unter der Marke
+
+- **GIVEN** eine View B, deren Backend-Snapshot noch abgefragt wird
+- **WHEN** die PTY in dieser Zeit Daten ausgibt
+- **THEN** nennt dieses Ausgabeereignis B nicht, und seine Nummer ist höchstens die Marke von B
+
+### Requirement: Neuzeichnen nach dem Anhängen
+
+Stammt der Snapshot einer neuen View vom Backend, SHALL der Core das Backend nach dem Registrieren der View auffordern, den ganzen Bildschirm neu in die PTY zu zeichnen, damit Ausgabe, die der Snapshot schon enthält oder die zwischen Snapshot und Registrieren verloren ging, überschrieben wird. Scheitert das Neuzeichnen oder kann das Backend es nicht, MUST das Anhängen trotzdem gelingen.
+
+#### Scenario: Neuzeichnen nach Backend-Snapshot
+
+- **GIVEN** ein Backend, das für die Session einen Bildschirminhalt liefert
+- **WHEN** eine View angehängt wird
+- **THEN** fordert der Core das Neuzeichnen erst an, nachdem die View registriert ist
+
+#### Scenario: Kein Neuzeichnen beim Rohdaten-Puffer
+
+- **GIVEN** ein Backend ohne eigenen Snapshot
+- **WHEN** eine View angehängt wird
+- **THEN** fordert der Core kein Neuzeichnen an
+
+#### Scenario: Neuzeichnen scheitert
+
+- **GIVEN** ein Backend, dessen Neuzeichnen fehlschlägt
+- **WHEN** eine View angehängt wird
+- **THEN** gelingt das Anhängen mit dem Snapshot des Backends
+
+### Requirement: Neuzeichnen je Session gebündelt und wiederholt
+
+Je Session SHALL höchstens ein Neuzeichnen laufen. Anforderungen, während eines läuft, SHALL der Core zu genau einem weiteren Neuzeichnen danach zusammenfassen. Scheitert ein Neuzeichnen, SHALL der Core es einmal wiederholen und ein erneutes Scheitern im Fehlerprotokoll des Core melden.
+
+#### Scenario: Mehrere Views kurz nacheinander
+
+- **GIVEN** ein Backend mit eigenem Snapshot, dessen Neuzeichnen noch läuft
+- **WHEN** drei weitere Views derselben Session angehängt werden
+- **THEN** zeichnet das Backend danach genau einmal neu, insgesamt zweimal
+
+#### Scenario: Wiederholung
+
+- **GIVEN** ein Backend, dessen erstes Neuzeichnen fehlschlägt
+- **WHEN** eine View angehängt wird
+- **THEN** zeichnet der Core ein zweites Mal neu und meldet keinen Fehler; scheitert auch das, meldet er den Fehler einmal

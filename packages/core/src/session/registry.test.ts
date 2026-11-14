@@ -296,16 +296,132 @@ describe("SessionRegistry: output", () => {
     expect(snapshot.cursor).toEqual({ x: 6, y: 0 });
   });
 
-  it("appends output that arrives while the backend snapshot is taken", async () => {
+  it("numbers the output of a session and gives a new view the number before it as mark (issue #34)", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
-    backend.setSnapshot(id, "screen");
+    const outputs: Array<{ seq: number; viewIds: readonly string[] }> = [];
+    registry.onOutput((e) => outputs.push({ seq: e.seq, viewIds: e.viewIds }));
+    expect((await registry.attachView(id, "view-a")).outputSeq).toBe(0);
+    for (const data of ["a", "b", "c"]) backend.pty(id).emitData(data);
+
+    const { outputSeq } = await registry.attachView(id, "view-b");
+    backend.pty(id).emitData("d");
+
+    expect(outputSeq).toBe(3);
+    expect(outputs.at(-1)).toEqual({ seq: 4, viewIds: ["view-a", "view-b"] });
+  });
+
+  it("keeps counting when the PTY is replaced (issue #34)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("old");
+    backend.pty(id).loseClient();
+    await settle();
+
+    backend.pty(id).emitData("new");
+
+    expect((await registry.attachView(id, "view-a")).outputSeq).toBe(2);
+  });
+
+  it("leaves the backend snapshot as it is and keeps output of the query below the mark (issue #34)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, { data: new TextEncoder().encode("screen"), cursor: { x: 6, y: 0 } });
+    const outputs: Array<{ seq: number; viewIds: readonly string[] }> = [];
+    registry.onOutput((e) => outputs.push({ seq: e.seq, viewIds: e.viewIds }));
 
     const attaching = registry.attachView(id, "view-a");
     backend.pty(id).emitData("+live");
-    const { snapshot } = await attaching;
+    const { snapshot, outputSeq } = await attaching;
 
-    expect(decode(snapshot.data)).toBe("screen+live");
+    expect(decode(snapshot.data)).toBe("screen");
+    expect(snapshot.cursor).toEqual({ x: 6, y: 0 });
+    expect(outputs).toEqual([{ seq: 1, viewIds: [] }]);
+    expect(outputSeq).toBe(1);
+  });
+
+  it("asks the backend to redraw once the view is registered when the snapshot is the backend's (issue #34)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    const writersAtRedraw: Array<string | undefined> = [];
+    backend.onRedraw = (sessionId) => writersAtRedraw.push(registry.get(sessionId).writerViewId);
+
+    await registry.attachView(id, "view-a");
+
+    expect(backend.redraws).toEqual([id]);
+    expect(writersAtRedraw).toEqual(["view-a"]);
+  });
+
+  it("does not redraw when the snapshot comes from the core buffer (issue #34)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("buffered");
+
+    await registry.attachView(id, "view-a");
+
+    expect(backend.redraws).toEqual([]);
+  });
+
+  it("attaches with the backend snapshot when the redraw fails (issue #34)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    backend.failNextRedraw = new Error("refresh-client failed");
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+    await settle();
+
+    expect(decode(snapshot.data)).toBe("screen");
+    expect(registry.get(id).writerViewId).toBe("view-a");
+  });
+
+  it("retries a failed redraw once without reporting it (PR #39)", async () => {
+    const errors: unknown[] = [];
+    const { registry, backend } = setup({ onRedrawError: (error) => errors.push(error) });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    backend.failNextRedraw = new Error("refresh-client failed");
+
+    await registry.attachView(id, "view-a");
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
+    expect(errors).toEqual([]);
+  });
+
+  it("reports a redraw that fails again on the retry (PR #39)", async () => {
+    const errors: Array<{ error: unknown; sessionId: string }> = [];
+    const { registry, backend } = setup({
+      onRedrawError: (error, session) => errors.push({ error, sessionId: session.id }),
+    });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    const failure = new Error("refresh-client failed");
+    backend.failNextRedraw = failure;
+    backend.onRedraw = () => (backend.failNextRedraw ??= failure);
+
+    await registry.attachView(id, "view-a");
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
+    expect(errors).toEqual([{ error: failure, sessionId: id }]);
+  });
+
+  it("merges redraws requested while one runs into a single follow-up (PR #39)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    let release = () => {};
+    backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+    // Like a layout restore (#29): several panes of one session attach right after each other.
+    for (const view of ["view-a", "view-b", "view-c", "view-d"]) await registry.attachView(id, view);
+    expect(backend.redraws).toEqual([id]);
+    release();
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
   });
 
   it("drops the backend snapshot when the PTY ends while it is taken", async () => {
@@ -581,19 +697,6 @@ describe("SessionRegistry: backend failures", () => {
 
     await expect(registry.archive(id)).rejects.toMatchObject({ code: "backend_unavailable" });
     expect(registry.get(id).state).toBe("Interrupted");
-  });
-
-  it("drops the cursor field when output was appended to the backend snapshot", async () => {
-    const { registry, backend } = setup();
-    const { id } = await registry.create({ name: "shell", launch: spec });
-    backend.setSnapshot(id, { data: new TextEncoder().encode("screen"), cursor: { x: 6, y: 0 } });
-
-    const attaching = registry.attachView(id, "view-a");
-    backend.pty(id).emitData("+live");
-    const { snapshot } = await attaching;
-
-    expect(decode(snapshot.data)).toBe("screen+live");
-    expect(snapshot.cursor).toBeUndefined();
   });
 
   it("names the new session id in the error when the first start fails", async () => {

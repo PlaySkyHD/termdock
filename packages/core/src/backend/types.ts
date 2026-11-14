@@ -45,4 +45,10 @@ export interface Backend {
   kill(id: SessionId, spec: LaunchSpec): Promise<void>;
   /** Visible screen content for a new view; undefined when the backend keeps no screen (Core buffer is used). */
   snapshot(id: SessionId, spec: LaunchSpec): Promise<TerminalSnapshot | undefined>;
+  /**
+   * Makes the backend paint the whole screen into the PTY again (WSL: `tmux refresh-client`). The registry calls
+   * it after a view attached with a `snapshot`: the PTY lags behind that screen, and the repaint overwrites
+   * output the view got twice or missed (issue #34). Optional: backends without `snapshot` need none.
+   */
+  redraw?(id: SessionId, spec: LaunchSpec): Promise<void>;
 }

@@ -356,6 +356,28 @@ describe("DesktopBridge events", () => {
     expect(a.events.map((e) => (e.kind === "output" ? e.seq : 0))).toEqual([1, 2, 3]);
   });
 
+  it("takes number and mark from the core, also for held output read after the answer (issue #34)", async () => {
+    const { core, bridge, a } = setup();
+    await attach(core, bridge, a, "s1", "v1");
+    core.emit("session.output", { sessionId: "s1", seq: 4 }, bytes("before"));
+    core.answers.set("session.attach", {
+      result: { viewId: "v1b", size: { cols: 80, rows: 24 }, writerViewId: "v1", outputSeq: 5 },
+    });
+
+    const second = await bridge.call(a.id, {
+      method: "attach",
+      sessionId: "s1",
+      size: { cols: 100, rows: 30 },
+    });
+    await flush();
+    // Held by the core during the attach, but read by the main only after it handled the answer.
+    core.emit("session.output", { sessionId: "s1", seq: 5 }, bytes("held"));
+    core.emit("session.output", { sessionId: "s1", seq: 6 }, bytes("live"));
+
+    expect(second).toMatchObject({ ok: true, value: { outputSeq: 5 } });
+    expect(a.events.map((e) => (e.kind === "output" ? e.seq : 0))).toEqual([4, 5, 6]);
+  });
+
   it("delivers output that arrives right behind the attach response", async () => {
     const { core, bridge, a } = setup();
     core.afterAnswer = () => core.emit("session.output", { sessionId: "s1" }, bytes("early"));

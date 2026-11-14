@@ -37,8 +37,9 @@ export class DesktopBridge {
 
   constructor(private readonly core: CorePort) {
     this.subscriptions = [
-      core.on("session.output", ({ sessionId }, payload) => {
-        const seq = (this.outputSeq.get(sessionId) ?? 0) + 1;
+      core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
+        // The core's number (protocol 1.1); a 1.0 core sends none, then the main counts itself.
+        const seq = coreSeq ?? (this.outputSeq.get(sessionId) ?? 0) + 1;
         this.outputSeq.set(sessionId, seq);
         this.toSession(sessionId, { kind: "output", sessionId, seq, data: payload });
       }),
@@ -152,10 +153,9 @@ export class DesktopBridge {
     const epoch = this.epochs.get(windowId) ?? 0;
     try {
       const { result, payload } = await this.core.request("session.attach", { sessionId, size });
-      // The core holds events for this connection during the attach and puts the output of that time into the
-      // snapshot; it sends them right behind the answer. They are handled in the same turn as the answer, before
-      // this line, so everything numbered up to here is in the snapshot (ADR 0006).
-      const outputSeq = this.outputSeq.get(sessionId) ?? 0;
+      // The core's mark is exact, also for held events that arrive in a later read (issue #34). A 1.0 core sends
+      // none; then everything this main numbered up to here counts as part of the snapshot (ADR 0006).
+      const outputSeq = result.outputSeq ?? this.outputSeq.get(sessionId) ?? 0;
       this.views.set(result.viewId, { windowId, sessionId });
       if (!this.windows.has(windowId) || (this.epochs.get(windowId) ?? 0) !== epoch) {
         // The window closed or its renderer reloaded while the core attached; nobody can use this view.

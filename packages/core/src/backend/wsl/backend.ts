@@ -6,11 +6,14 @@ import {
   hasSessionArgs,
   isMissingSession,
   killSessionArgs,
+  listClientsArgs,
   listDistrosArgs,
+  parseClientTtys,
   parseDistroList,
   parsePaneStatus,
   parseSnapshot,
   paneStatusArgs,
+  refreshClientArgs,
   sessionName,
   snapshotArgs,
   startArgs,
@@ -143,6 +146,22 @@ export class WslBackend implements Backend {
     if (isMissingSession(result)) return undefined;
     if (result.code !== 0) throw wslError("tmux capture-pane", result);
     return parseSnapshot(result.stdout);
+  }
+
+  /**
+   * Lets every tmux client of the session paint its whole screen again (issue #34). Each client on its own: one
+   * that left after `list-clients` does not keep the others (the Core's own) from it. Rejects when listing fails
+   * or no client could be redrawn.
+   */
+  async redraw(id: SessionId, spec: LaunchSpec): Promise<void> {
+    const target = await this.target(spec);
+    const clients = await this.exec(listClientsArgs(target, id));
+    if (clients.code !== 0) throw wslError("tmux list-clients", clients);
+    const results = await Promise.all(
+      parseClientTtys(clients.stdout).map((tty) => this.exec(refreshClientArgs(target, tty))),
+    );
+    const failed = results.find((result) => result.code !== 0);
+    if (failed && results.every((result) => result.code !== 0)) throw wslError("tmux refresh-client", failed);
   }
 
   /** Stops all keepalive processes; tmux sessions keep running (until WSL stops the distro). */

@@ -35,6 +35,18 @@ const api: TermdockApi = {
   input: async (viewId, data) => void (await call({ method: "input", viewId, data })),
   resize: async (viewId, size) => void (await call({ method: "resize", viewId, size })),
   claimWriter: async (viewId) => void (await call({ method: "claimWriter", viewId })),
+  listWorkspaces: () => call({ method: "listWorkspaces" }),
+  createWorkspace: async (name) => void (await call({ method: "createWorkspace", name })),
+  updateWorkspace: async (workspaceId, name) =>
+    void (await call({ method: "updateWorkspace", workspaceId, name })),
+  deleteWorkspace: async (workspaceId) => void (await call({ method: "deleteWorkspace", workspaceId })),
+  createProject: async (workspaceId, name, path, backend) =>
+    void (await call({ method: "createProject", workspaceId, name, path, backend })),
+  updateProject: async (projectId, name) => void (await call({ method: "updateProject", projectId, name })),
+  deleteProject: async (projectId) => void (await call({ method: "deleteProject", projectId })),
+  updateSession: (sessionId, change) => call({ method: "updateSession", sessionId, ...change }),
+  archiveSession: async (sessionId) => void (await call({ method: "archiveSession", sessionId })),
+  deleteSession: async (sessionId) => void (await call({ method: "deleteSession", sessionId })),
   windowLayout: () => call({ method: "windowLayout" }),
   reportLayout: async (window) => void (await call({ method: "reportLayout", window })),
   answerQuit: async (requestId, { choice, remember }) =>

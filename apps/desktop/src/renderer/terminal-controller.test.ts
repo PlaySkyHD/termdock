@@ -1,8 +1,8 @@
 import type { TerminalSize } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
-import type { AttachedView, BridgeEvent, TermdockApi } from "../shared/bridge.js";
+import type { AttachedView, BridgeEvent } from "../shared/bridge.js";
 import { TerminalController } from "./terminal-controller.js";
-import type { KeyEvent, TerminalSurface, ViewStatus } from "./terminal-controller.js";
+import type { KeyEvent, TerminalSurface, ViewApi, ViewStatus } from "./terminal-controller.js";
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (data: Uint8Array | string): string =>
@@ -87,7 +87,7 @@ class FakeSurface implements TerminalSurface {
 }
 
 /** Bridge double: `attach` waits until the test releases it, so output can arrive before the answer. */
-class FakeApi implements TermdockApi {
+class FakeApi implements ViewApi {
   listeners = new Set<(event: BridgeEvent) => void>();
   inputs: Array<[string, string]> = [];
   resizes: Array<[string, TerminalSize]> = [];

@@ -1,7 +1,14 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
-import type { LayoutDocument, SessionInfo, Settings, SettingsPatch, Workspace } from "@termdock/protocol";
+import type {
+  LaunchProfile,
+  LayoutDocument,
+  SessionInfo,
+  Settings,
+  SettingsPatch,
+  Workspace,
+} from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -14,6 +21,7 @@ import { HistoryStore } from "../storage/history-store.js";
 import type { HistorySettings } from "../storage/history-store.js";
 import type { Storage } from "../storage/database.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
+import type { ProfileRepository } from "../storage/profile-repository.js";
 import type { SettingsRepository } from "../storage/settings-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
@@ -142,6 +150,28 @@ class StorageWorkspaceRepository implements WorkspaceRepository {
   }
 }
 
+/** Same forwarding for launch profiles. */
+class StorageProfileRepository implements ProfileRepository {
+  target: ProfileRepository | undefined;
+
+  list(): LaunchProfile[] {
+    return this.open().list();
+  }
+
+  save(profile: LaunchProfile): void {
+    this.open().save(profile);
+  }
+
+  delete(profileId: string): boolean {
+    return this.open().delete(profileId);
+  }
+
+  private open(): ProfileRepository {
+    if (!this.target) throw new Error("The database is not open yet");
+    return this.target;
+  }
+}
+
 export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResult> {
   const stderr = options.stderr ?? process.stderr;
   // Only messages: stack traces stay out of logs, as they stay out of IPC answers.
@@ -156,6 +186,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   // before the database is open the defaults apply.
   const getSettings = (): HistorySettings => settings.target?.get() ?? DEFAULT_SETTINGS;
   const workspaces = new StorageWorkspaceRepository();
+  const profiles = new StorageProfileRepository();
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
@@ -177,6 +208,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       layouts,
       settings,
       workspaces,
+      profiles,
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),
@@ -232,7 +264,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   let restore: RestoreResult;
   try {
     const dataDir = options.dataDir ?? resolveDataDir();
-    storage = openStorage({ dataDir, onLayoutInvalid: log });
+    storage = openStorage({ dataDir, onLayoutInvalid: log, onProfileInvalid: log });
     history = new HistoryStore({
       dataDir,
       getSettings,
@@ -245,6 +277,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     layouts.target = storage.layouts;
     settings.target = storage.settings;
     workspaces.target = storage.workspaces;
+    profiles.target = storage.profiles;
     const restoring = registry.restore();
     // After a close nothing waits for the reconcile any more; its outcome no longer matters.
     restoring.catch(() => {});

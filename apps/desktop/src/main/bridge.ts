@@ -17,6 +17,8 @@ export interface WindowLayouts {
 /** The open quit question, as the bridge needs it (`QuitPrompt` fits). `answer` throws `IpcError`. */
 export interface QuitAnswers {
   answer(windowId: number, requestId: string, answer: QuitAnswer): void;
+  /** The window shows the dialog for this question. */
+  ack(windowId: number, requestId: string): void;
 }
 
 /** A window as the bridge sees it; `id` is the `webContents` id. */
@@ -179,6 +181,9 @@ export class DesktopBridge {
         // Throws `not_found` for a window or id that was not asked.
         this.quit?.answer(windowId, call.requestId, { choice: call.choice, remember: call.remember });
         return null;
+      case "quitShown":
+        this.quit?.ack(windowId, call.requestId);
+        return null;
     }
   }
 
@@ -283,6 +288,8 @@ function parseCall(raw: unknown): BridgeCall {
         remember: raw["remember"],
       };
     }
+    case "quitShown":
+      return { method: "quitShown", requestId: text(raw["requestId"], "requestId") };
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }

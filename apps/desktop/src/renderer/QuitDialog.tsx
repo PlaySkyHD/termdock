@@ -2,6 +2,7 @@
 // fragen"; Escape cancels. A click on the backdrop does nothing, so a stray click never quits.
 import { useEffect, useRef, useState } from "react";
 import { quitMessage } from "../shared/quit-decision.js";
+import { trapFocus } from "./focus-trap.js";
 import type { QuitAnswer } from "../shared/quit-decision.js";
 
 export function QuitDialog({
@@ -13,9 +14,13 @@ export function QuitDialog({
 }) {
   const [remember, setRemember] = useState(false);
   const keep = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // Takes the focus from the terminal; the default is the behavior of closing so far: keep the sessions.
     keep.current?.focus();
+    // aria-modal alone does not hold the focus: Tab must not reach the terminal behind (its keys would go to the
+    // session), and a focus that escapes comes back.
+    return dialog.current ? trapFocus(dialog.current, () => keep.current) : undefined;
   }, []);
   // Escape cancels wherever the focus is: a click beside the dialog must not leave it without a way out.
   useEffect(() => {
@@ -36,6 +41,7 @@ export function QuitDialog({
     >
       <div
         className="dialog"
+        ref={dialog}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="quit-title"

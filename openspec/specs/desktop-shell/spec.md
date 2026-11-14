@@ -811,6 +811,18 @@ Beim Beenden durch den Benutzer (Menü, Strg+Q, Schließen des letzten Fensters)
 - **WHEN** das Fenster neu geladen wird oder abstürzt
 - **THEN** gilt die Frage als abgebrochen, und die App läuft weiter
 
+#### Scenario: Fenster zeigt den Dialog nicht
+
+- **GIVEN** der Main hat die Frage gesendet, aber der Renderer hat noch nicht zugehört oder hängt
+- **WHEN** das Fenster den Dialog nicht binnen 5 s mit `quitShown` bestätigt (der Main sendet die Frage bis dahin alle 500 ms erneut und nach dem Laden der Seite)
+- **THEN** gilt die Frage als abgebrochen: die App bleibt offen, nichts wird beendet, und das nächste Beenden fragt neu; nach der Bestätigung gibt es kein Zeitlimit
+
+#### Scenario: Fokus bleibt im Dialog
+
+- **GIVEN** der Dialog ist offen
+- **WHEN** der Benutzer Tab oder Umschalt+Tab drückt oder der Fokus anderswohin springt
+- **THEN** wandert der Fokus nur zwischen den Elementen des Dialogs bzw. kehrt dorthin zurück, und keine Taste erreicht das Terminal dahinter
+
 ### Requirement: Gespeicherte Wahl beim Beenden
 
 Mit „Nicht mehr fragen“ SHALL der Main `confirmQuitWhileRunning: false` und die Wahl als `quitAction` per `settings.set` speichern, bevor er beendet; „Abbrechen“ speichert nie. Ist die Nachfrage aus, SHALL er die gespeicherte Aktion ohne Dialog anwenden (fehlend: Sessions behalten). Das Ende der Windows-Sitzung (`session-end`) SHALL nie fragen und die Sessions behalten. Antwortet der Core nicht, SHALL die App wie bisher beenden und die Sessions behalten.

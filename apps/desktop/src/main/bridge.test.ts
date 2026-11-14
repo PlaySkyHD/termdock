@@ -523,16 +523,39 @@ describe("DesktopBridge quit answers (#60)", () => {
   function withQuit() {
     const { core, a, b } = setup();
     const answers: Array<[number, string, unknown]> = [];
+    const shown: Array<[number, string]> = [];
     const quit = {
       answer: (windowId: number, requestId: string, answer: unknown) => {
         if (requestId !== "q1") throw new IpcError("not_found", "no open quit question");
         answers.push([windowId, requestId, answer]);
       },
+      ack: (windowId: number, requestId: string) => {
+        if (requestId !== "q1") throw new IpcError("not_found", "no open quit question");
+        shown.push([windowId, requestId]);
+      },
     };
     const bridge = new DesktopBridge(core, undefined, quit);
     bridge.addWindow(a);
-    return { core, bridge, a, b, answers };
+    return { core, bridge, a, b, answers, shown };
   }
+
+  it("passes the confirmation that the dialog is shown on, and refuses a foreign id", async () => {
+    const { core, bridge, a, shown } = withQuit();
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "q1" })).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(shown).toEqual([[a.id, "q1"]]);
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "x" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await bridge.call(a.id, { method: "quitShown", requestId: "" })).toMatchObject({
+      ok: false,
+      error: { code: "bad_request" },
+    });
+    expect(core.requests).toEqual([]);
+  });
 
   it("passes the answer of the calling window on, without asking the core", async () => {
     const { core, bridge, a, answers } = withQuit();

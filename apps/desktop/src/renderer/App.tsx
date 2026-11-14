@@ -148,11 +148,23 @@ export function App({ api }: { api: TermdockApi }) {
   useEffect(
     () =>
       api.onEvent((event) => {
-        if (event.kind === "quitRequested")
-          setQuit({ requestId: event.requestId, activeSessions: event.activeSessions });
+        // The main process repeats a question until it is confirmed; one that is answered stays answered.
+        if (event.kind === "quitRequested" && !answeredQuits.current.has(event.requestId))
+          setQuit((open) =>
+            open?.requestId === event.requestId
+              ? open
+              : { requestId: event.requestId, activeSessions: event.activeSessions },
+          );
       }),
     [api],
   );
+  const answeredQuits = useRef(new Set<string>());
+  // The dialog confirms to the main process that it is shown; without that the question is cancelled there.
+  const quitRequestId = quit?.requestId;
+  useEffect(() => {
+    if (quitRequestId !== undefined)
+      api.quitShown(quitRequestId).catch((error: unknown) => console.error(error));
+  }, [api, quitRequestId]);
   const commandDeps: CommandDeps = {
     store,
     clipboard: navigator.clipboard,
@@ -289,6 +301,7 @@ export function App({ api }: { api: TermdockApi }) {
           activeSessions={quit.activeSessions}
           onAnswer={(answer) => {
             const { requestId } = quit;
+            answeredQuits.current.add(requestId);
             setQuit(undefined);
             // A refused answer (the main process asked nobody) changes nothing: the dialog is closed either way.
             api.answerQuit(requestId, answer).catch((error: unknown) => console.error(error));

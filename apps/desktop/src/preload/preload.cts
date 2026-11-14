@@ -39,6 +39,7 @@ const api: TermdockApi = {
   reportLayout: async (window) => void (await call({ method: "reportLayout", window })),
   answerQuit: async (requestId, { choice, remember }) =>
     void (await call({ method: "answerQuit", requestId, choice, remember })),
+  quitShown: async (requestId) => void (await call({ method: "quitShown", requestId })),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

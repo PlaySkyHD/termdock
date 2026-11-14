@@ -104,6 +104,7 @@ class FakeApi implements TermdockApi {
   windowLayout = vi.fn();
   reportLayout = vi.fn(async () => {});
   answerQuit = vi.fn(async () => {});
+  quitShown = vi.fn(async () => {});
   attach(sessionId: string, size: TerminalSize): Promise<AttachedView> {
     this.attachCalls.push([sessionId, size]);
     return new Promise((resolve, reject) => {

@@ -34,7 +34,9 @@ export type BridgeCall =
   /** The tabs and sidebar of this window after a change; the main process bundles and saves the layout. */
   | { method: "reportLayout"; window: LayoutWindowPart }
   /** The answer of this window to the quit dialog (`quitRequested`, #60). */
-  | { method: "answerQuit"; requestId: string; choice: QuitChoice; remember: boolean };
+  | { method: "answerQuit"; requestId: string; choice: QuitChoice; remember: boolean }
+  /** This window now shows the quit dialog; without it the main process cancels the question after 5 s. */
+  | { method: "quitShown"; requestId: string };
 
 export type BridgeMethod = BridgeCall["method"];
 
@@ -60,6 +62,7 @@ export interface BridgeResults {
   windowLayout: LayoutWindow;
   reportLayout: null;
   answerQuit: null;
+  quitShown: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -101,6 +104,7 @@ export interface TermdockApi {
   windowLayout(): Promise<LayoutWindow>;
   reportLayout(window: LayoutWindowPart): Promise<void>;
   answerQuit(requestId: string, answer: QuitAnswer): Promise<void>;
+  quitShown(requestId: string): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

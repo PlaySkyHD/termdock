@@ -26,6 +26,8 @@ import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput, SessionRegistry } from "../session/registry.js";
 import type { LayoutRepository } from "../storage/layout-repository.js";
+import { InMemorySettingsRepository } from "../storage/settings-repository.js";
+import type { SettingsRepository } from "../storage/settings-repository.js";
 import { defaultPipeName } from "./pipe-name.js";
 
 /** Not-yet-written bytes per client above which the client is disconnected (16 MiB). */
@@ -53,6 +55,8 @@ export interface CoreServerOptions {
   registry: SessionRegistry;
   /** Stored layout behind `layout.get` and `layout.save`. */
   layouts: LayoutRepository;
+  /** Stored settings behind `settings.get` and `settings.set`; defaults to an in-memory repository. */
+  settings?: SettingsRepository;
   /** Pipe path; defaults to `\\.\pipe\termdock-core-<user>`. Tests pass a unique name. */
   pipePath?: string;
   /** Per-client limit for output the client has not read yet; defaults to 16 MiB. */
@@ -113,6 +117,7 @@ export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
   private readonly layouts: LayoutRepository;
+  private readonly settings: SettingsRepository;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -135,6 +140,7 @@ export class CoreServer {
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.layouts = options.layouts;
+    this.settings = options.settings ?? new InMemorySettingsRepository();
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -437,11 +443,13 @@ export class CoreServer {
         throw notImplemented(request.method);
       case "session.delete":
         throw notImplemented(request.method);
-      // Settings: issue #64.
       case "settings.get":
-        throw notImplemented(request.method);
-      case "settings.set":
-        throw notImplemented(request.method);
+        return { result: { settings: this.settings.get() } };
+      case "settings.set": {
+        const settings = this.settings.set(request.params.settings);
+        // The event follows the answer; every lister gets it, the caller too.
+        return { result: { settings }, after: () => this.notifyListers("settings.changed", { settings }) };
+      }
       // History search: issue #62.
       case "history.search":
         throw notImplemented(request.method);

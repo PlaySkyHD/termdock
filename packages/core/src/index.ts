@@ -24,6 +24,12 @@ export { InMemorySessionRepository, SqliteSessionRepository } from "./storage/se
 export type { SessionRepository } from "./storage/session-repository.js";
 export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
 export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
+export {
+  applySettingsPatch,
+  InMemorySettingsRepository,
+  SqliteSettingsRepository,
+} from "./storage/settings-repository.js";
+export type { SettingsRepository } from "./storage/settings-repository.js";
 
 // ipc
 export { defaultPipeName, sanitizePipeUser } from "./ipc/pipe-name.js";

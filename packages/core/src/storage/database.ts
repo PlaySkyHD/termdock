@@ -8,6 +8,8 @@ import type { LayoutRepository } from "./layout-repository.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { SqliteSessionRepository } from "./session-repository.js";
 import type { SessionRepository } from "./session-repository.js";
+import { SqliteSettingsRepository } from "./settings-repository.js";
+import type { SettingsRepository } from "./settings-repository.js";
 
 export const DATABASE_FILE = "termdock.db";
 
@@ -44,6 +46,7 @@ export function openDatabase(file: string): DatabaseSync {
 export interface Storage extends Disposable {
   readonly sessions: SessionRepository;
   readonly layouts: LayoutRepository;
+  readonly settings: SettingsRepository;
   /** Highest applied migration. */
   schemaVersion(): number;
   /** Closes the database. */
@@ -53,7 +56,7 @@ export interface Storage extends Disposable {
 export interface OpenStorageOptions {
   /** Directory of termdock.db; defaults to `resolveDataDir()`. Created if missing. */
   dataDir?: string;
-  /** Receives the reason when the stored layout cannot be used; defaults to stderr. */
+  /** Receives the reason when a stored layout or setting cannot be used; defaults to stderr. */
   onLayoutInvalid?: (message: string) => void;
 }
 
@@ -63,9 +66,11 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
   const db = openDatabase(join(dataDir, DATABASE_FILE));
   let sessions: SessionRepository;
   let layouts: LayoutRepository;
+  let settings: SettingsRepository;
   try {
     sessions = new SqliteSessionRepository(db);
     layouts = new SqliteLayoutRepository(db, options.onLayoutInvalid);
+    settings = new SqliteSettingsRepository(db, options.onLayoutInvalid);
   } catch (error) {
     db.close();
     throw error;
@@ -74,6 +79,7 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
   return {
     sessions,
     layouts,
+    settings,
     schemaVersion: () => schemaVersion(db),
     dispose: () => {
       if (!open) return;

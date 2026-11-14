@@ -5,12 +5,18 @@ import type { Disposable } from "@termdock/core";
 import type { LayoutWindow, SessionCreateParams, SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeCall, BridgeErrorBody, BridgeEvent, BridgeResult } from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
+import type { QuitAnswer } from "../shared/quit-decision.js";
 import type { CorePort } from "./core-connection.js";
 
 /** The layout of the windows, as the bridge needs it (`LayoutCoordinator` fits). `report` throws `IpcError`. */
 export interface WindowLayouts {
   windowOf(windowId: number): LayoutWindow | undefined;
   report(windowId: number, part: LayoutWindowPart): void;
+}
+
+/** The open quit question, as the bridge needs it (`QuitPrompt` fits). `answer` throws `IpcError`. */
+export interface QuitAnswers {
+  answer(windowId: number, requestId: string, answer: QuitAnswer): void;
 }
 
 /** A window as the bridge sees it; `id` is the `webContents` id. */
@@ -45,6 +51,7 @@ export class DesktopBridge {
   constructor(
     private readonly core: CorePort,
     private readonly layouts?: WindowLayouts,
+    private readonly quit?: QuitAnswers,
   ) {
     this.subscriptions = [
       core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
@@ -106,6 +113,13 @@ export class DesktopBridge {
     return view?.windowId === windowId ? view.sessionId : undefined;
   }
 
+  /** One event to one window (the quit dialog); false for a window that is gone or unknown. */
+  sendTo(windowId: number, event: BridgeEvent): boolean {
+    const window = this.windows.get(windowId);
+    window?.send(event);
+    return window !== undefined;
+  }
+
   /** Handles one renderer call. Never throws: errors come back as `{ ok: false }` with a stable code. */
   async call(windowId: number, raw: unknown): Promise<BridgeResult> {
     try {
@@ -160,6 +174,10 @@ export class DesktopBridge {
       case "reportLayout":
         // The main process checks the whole document; the id of the window is the caller's, never a parameter.
         this.layouts?.report(windowId, call.window);
+        return null;
+      case "answerQuit":
+        // Throws `not_found` for a window or id that was not asked.
+        this.quit?.answer(windowId, call.requestId, { choice: call.choice, remember: call.remember });
         return null;
     }
   }
@@ -253,6 +271,18 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "windowLayout" };
     case "reportLayout":
       return { method: "reportLayout", window: layoutPart(raw["window"]) };
+    case "answerQuit": {
+      const choice = raw["choice"];
+      if (choice !== "keepSessions" && choice !== "stopSessions" && choice !== "cancel")
+        throw new BadRequest("choice must be keepSessions, stopSessions or cancel");
+      if (typeof raw["remember"] !== "boolean") throw new BadRequest("remember must be a boolean");
+      return {
+        method: "answerQuit",
+        requestId: text(raw["requestId"], "requestId"),
+        choice,
+        remember: raw["remember"],
+      };
+    }
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }

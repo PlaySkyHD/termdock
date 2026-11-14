@@ -8,10 +8,12 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { connect, defaultPipeName } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
-import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
-import type { LayoutWindow } from "@termdock/protocol";
+import { DEFAULT_SETTINGS, MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
+import type { LayoutWindow, Settings } from "@termdock/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
+import { countActive, outcomeOfAnswer, planQuit } from "../shared/quit-decision.js";
+import type { QuitReason } from "../shared/quit-decision.js";
 import { DesktopBridge } from "./bridge.js";
 import type { WindowLayouts } from "./bridge.js";
 import {
@@ -23,6 +25,7 @@ import {
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
+import { QuitPrompt } from "./quit-prompt.js";
 import {
   cleanStaleSockets,
   isolatedCore,
@@ -148,13 +151,17 @@ async function main(): Promise<void> {
     windowOf: (windowId) => coordinator.windowOf(windowId),
     report: (windowId, part) => coordinator.report(windowId, part),
   };
-  const bridge = new DesktopBridge(port, layouts);
+  // The quit dialog (#60) is a view of a window: the prompt sends the question there and takes the answer back.
+  const quitPrompt: QuitPrompt = new QuitPrompt((windowId, event): boolean => bridge.sendTo(windowId, event));
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt);
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
   // scenario can ask to forget them.
   let quitting = false;
   let forgetOnClose = false;
+  /** Starts the quit of the user (dialog if sessions run); set below, once the quit handlers exist. */
+  let requestQuit: () => void = () => {};
 
   /** Every open window stays in the layout with its current geometry (quit, end of the Windows session). */
   const retainAll = (): void => {
@@ -166,11 +173,19 @@ async function main(): Promise<void> {
     }
   };
 
-  /** The last save, then the end of the connection; once, however often it is asked for. */
+  /**
+   * The last save, then the end of the connection; once, however often it is asked for (the first call decides
+   * `stopSessions`). With `stopSessions` the core ends every session and itself after the layout is saved (#60).
+   */
   let finishing: Promise<void> | undefined;
-  const finishLayoutAndClient = (): Promise<void> =>
+  const finishLayoutAndClient = (stopSessions = false): Promise<void> =>
     (finishing ??= (async () => {
       await Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]);
+      if (stopSessions) {
+        await port
+          .request("core.shutdown", { stopSessions: true })
+          .catch((error: unknown) => log(`core.shutdown: ${error instanceof Error ? error.message : error}`));
+      }
       await client.close().catch(() => {});
     })());
 
@@ -209,12 +224,22 @@ async function main(): Promise<void> {
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     // A reload (Ctrl+R) or a crashed renderer takes its views with it; the core must not keep them, a dead
     // view could hold the writer. The first load has no views yet, so detaching there is a no-op.
+    contents.on("did-finish-load", () => quitPrompt.resend(id));
     contents.on("did-start-navigation", (details) => {
-      if (details.isMainFrame && !details.isSameDocument) void bridge.resetWindow(id);
+      if (details.isMainFrame && !details.isSameDocument) {
+        void bridge.resetWindow(id);
+        quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
+      }
     });
-    contents.on("render-process-gone", () => void bridge.resetWindow(id));
+    contents.on("render-process-gone", () => {
+      void bridge.resetWindow(id);
+      quitPrompt.windowGone(id);
+    });
     contents.on("destroyed", () => void bridge.removeWindow(id));
-    win.on("closed", () => void bridge.removeWindow(id));
+    win.on("closed", () => {
+      quitPrompt.windowGone(id);
+      void bridge.removeWindow(id);
+    });
 
     coordinator.addWindow(
       id,
@@ -235,12 +260,57 @@ async function main(): Promise<void> {
       retainAll();
       void finishLayoutAndClient();
     });
-    win.on("close", () => {
+    win.on("close", (event) => {
+      // Closing the last window quits the app: with running sessions the dialog decides first (#60). Other
+      // windows, a quit that is already decided and the screenshot run close as before.
+      if (shotDir === undefined && !quitting && coordinator.openWindows() <= 1) {
+        event.preventDefault();
+        requestQuit();
+        return;
+      }
       geometry();
       coordinator.closeWindow(id, { keep: !forgetOnClose && (quitting || coordinator.openWindows() <= 1) });
     });
     void win.loadFile(RENDERER);
     return win;
+  };
+
+  /**
+   * Whether and how the app quits (#60): `undefined` when the user cancels. Counts the sessions that run, reads the
+   * settings, and only when the plan says "ask" opens the dialog in `target` (default: the focused window). A choice
+   * with "Nicht mehr fragen" is stored before the quit goes on. Never blocks the quit on a core that cannot answer.
+   */
+  const decideQuit = async (
+    reason: QuitReason,
+    target?: BrowserWindow,
+  ): Promise<{ stopSessions: boolean } | undefined> => {
+    const failed = (what: string) => (error: unknown) => {
+      log(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    };
+    const sessions = await port
+      .request("session.list", {})
+      .then((reply) => reply.result.sessions, failed("session.list"));
+    if (sessions === undefined) return { stopSessions: false };
+    // A core without settings (protocol 1.2) asks like the defaults; a broken answer must not block the quit.
+    const settings: Settings =
+      (await port
+        .request("settings.get", {})
+        .then((reply) => reply.result.settings, failed("settings.get"))) ?? DEFAULT_SETTINGS;
+    const activeSessions = countActive(sessions);
+    const plan = planQuit({ reason, activeSessions, settings });
+    if (plan.kind === "quit") return { stopSessions: plan.stopSessions };
+    const win = target ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    if (!win) return { stopSessions: false };
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    const outcome = outcomeOfAnswer(await quitPrompt.ask(win.webContents.id, activeSessions));
+    if (outcome.kind === "cancel") return undefined;
+    if (outcome.remember) {
+      await port.request("settings.set", { settings: outcome.remember }).catch(failed("settings.set"));
+    }
+    return { stopSessions: outcome.stopSessions };
   };
 
   /** Opens the windows of the stored layout; a window in its start state without one (also when it is unusable). */
@@ -301,27 +371,56 @@ async function main(): Promise<void> {
         return openStartWindows();
       },
       flushLayout: () => coordinator.flush(),
+      decideQuit: (win) => decideQuit("user", win),
     });
     return;
   }
 
   // Closing the UI keeps the sessions (ADR 0001): only the connection ends, the core keeps running. The layout is
-  // saved first, but never waits for long.
+  // saved first, but never waits for long. With `stopSessions` (dialog or stored choice, #60) the core ends the
+  // sessions after the save.
   let quitReady = false;
-  const quitAfterSave = (): void =>
-    void finishLayoutAndClient().finally(() => {
+  const quitAfterSave = (stopSessions = false): void =>
+    void finishLayoutAndClient(stopSessions).finally(() => {
       quitReady = true;
       app.quit();
     });
-  // `app.quit()` ("Beenden", Ctrl+Q) closes the windows without `window-all-closed`: stop it once, keep the
-  // windows in the layout, save and close the connection, then quit for real.
+  // The quit of the user (menu, Ctrl+Q, last window). Once at a time; every further request waits for it.
+  let quitFlow: Promise<void> | undefined;
+  requestQuit = (): void => {
+    // Stays set once the quit is decided (save and shutdown still run), so a second request cannot start a second
+    // decision on a closing connection; only a cancelled quit frees it.
+    quitFlow ??= (async () => {
+      const decision = await decideQuit("user");
+      if (decision === undefined) return false; // cancelled: nothing changed, the windows stay
+      retainAll();
+      quitAfterSave(decision.stopSessions);
+      return true;
+    })()
+      .catch((error: unknown) => {
+        // Never trap the user: a failed decision quits like before (keep the sessions).
+        log(`quit decision: ${error instanceof Error ? error.message : String(error)}`);
+        retainAll();
+        quitAfterSave();
+        return true;
+      })
+      .then((quitting) => {
+        if (!quitting) quitFlow = undefined;
+      });
+  };
+  // `app.quit()` ("Beenden", Ctrl+Q) closes the windows without `window-all-closed`: stop it once, ask if
+  // sessions run, keep the windows in the layout, save and close the connection, then quit for real.
   app.on("before-quit", (event) => {
-    retainAll();
-    if (quitReady) return;
+    if (quitReady) {
+      retainAll();
+      return;
+    }
     event.preventDefault();
-    quitAfterSave();
+    requestQuit();
   });
-  app.on("window-all-closed", quitAfterSave);
+  // Closing the last window is intercepted in its `close` handler; this is the fallback for a window that went
+  // away another way.
+  app.on("window-all-closed", () => quitAfterSave());
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();

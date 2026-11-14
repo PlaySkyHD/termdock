@@ -30,6 +30,14 @@ export {
   SqliteSettingsRepository,
 } from "./storage/settings-repository.js";
 export type { SettingsRepository } from "./storage/settings-repository.js";
+export { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./storage/workspace-repository.js";
+export type { WorkspaceRepository } from "./storage/workspace-repository.js";
+
+// workspaces
+export { defaultCwd } from "./workspace/default-cwd.js";
+export type { DefaultCwdInput } from "./workspace/default-cwd.js";
+export { projectPathProblem } from "./workspace/paths.js";
+export { WorkspaceService } from "./workspace/service.js";
 
 // ipc
 export { defaultPipeName, sanitizePipeUser } from "./ipc/pipe-name.js";

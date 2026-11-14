@@ -10,6 +10,8 @@ import { SqliteSessionRepository } from "./session-repository.js";
 import type { SessionRepository } from "./session-repository.js";
 import { SqliteSettingsRepository } from "./settings-repository.js";
 import type { SettingsRepository } from "./settings-repository.js";
+import { SqliteWorkspaceRepository } from "./workspace-repository.js";
+import type { WorkspaceRepository } from "./workspace-repository.js";
 
 export const DATABASE_FILE = "termdock.db";
 
@@ -47,6 +49,7 @@ export interface Storage extends Disposable {
   readonly sessions: SessionRepository;
   readonly layouts: LayoutRepository;
   readonly settings: SettingsRepository;
+  readonly workspaces: WorkspaceRepository;
   /** Highest applied migration. */
   schemaVersion(): number;
   /** Closes the database. */
@@ -67,10 +70,12 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
   let sessions: SessionRepository;
   let layouts: LayoutRepository;
   let settings: SettingsRepository;
+  let workspaces: WorkspaceRepository;
   try {
     sessions = new SqliteSessionRepository(db);
     layouts = new SqliteLayoutRepository(db, options.onLayoutInvalid);
     settings = new SqliteSettingsRepository(db, options.onLayoutInvalid);
+    workspaces = new SqliteWorkspaceRepository(db);
   } catch (error) {
     db.close();
     throw error;
@@ -80,6 +85,7 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
     sessions,
     layouts,
     settings,
+    workspaces,
     schemaVersion: () => schemaVersion(db),
     dispose: () => {
       if (!open) return;

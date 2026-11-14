@@ -1,6 +1,6 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
-import type { LayoutDocument, SessionInfo, Settings, SettingsPatch } from "@termdock/protocol";
+import type { LayoutDocument, SessionInfo, Settings, SettingsPatch, Workspace } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -12,6 +12,7 @@ import type { Storage } from "../storage/database.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { SettingsRepository } from "../storage/settings-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
+import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
 export const ALREADY_RUNNING_EXIT_CODE = 10;
@@ -69,6 +70,10 @@ class StorageRepository implements SessionRepository {
     this.open().save(session);
   }
 
+  clearWorkspace(workspaceId: string, updatedAt: string): void {
+    this.open().clearWorkspace(workspaceId, updatedAt);
+  }
+
   private open(): SessionRepository {
     if (!this.target) throw new Error("The database is not open yet");
     return this.target;
@@ -111,6 +116,28 @@ class StorageSettingsRepository implements SettingsRepository {
   }
 }
 
+/** Same forwarding for workspaces and projects. */
+class StorageWorkspaceRepository implements WorkspaceRepository {
+  target: WorkspaceRepository | undefined;
+
+  list(): Workspace[] {
+    return this.open().list();
+  }
+
+  save(workspace: Workspace): void {
+    this.open().save(workspace);
+  }
+
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean {
+    return this.open().delete(workspaceId, alsoInTransaction);
+  }
+
+  private open(): WorkspaceRepository {
+    if (!this.target) throw new Error("The database is not open yet");
+    return this.target;
+  }
+}
+
 export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResult> {
   const stderr = options.stderr ?? process.stderr;
   // Only messages: stack traces stay out of logs, as they stay out of IPC answers.
@@ -121,6 +148,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
   const settings = new StorageSettingsRepository();
+  const workspaces = new StorageWorkspaceRepository();
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
@@ -140,6 +168,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       registry,
       layouts,
       settings,
+      workspaces,
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),
@@ -198,6 +227,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     repository.target = storage.sessions;
     layouts.target = storage.layouts;
     settings.target = storage.settings;
+    workspaces.target = storage.workspaces;
     const restoring = registry.restore();
     // After a close nothing waits for the reconcile any more; its outcome no longer matters.
     restoring.catch(() => {});

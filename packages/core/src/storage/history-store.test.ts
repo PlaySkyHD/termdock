@@ -468,6 +468,26 @@ describe("HistoryStore: forget and remove", () => {
     await store.remove("never");
   });
 
+  it("waits for an open reader before it deletes the directory", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir);
+    store.append("s1", numbered(0));
+    store.append("s1", numbered(1));
+    await store.flush();
+    const reader = store.read("s1");
+    await reader.next();
+
+    let removed = false;
+    const removing = store.remove("s1").then(() => void (removed = true));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(removed).toBe(false);
+    expect(existsSync(historyDir(dir, "s1"))).toBe(true);
+
+    await reader.return(undefined);
+    await removing;
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+  });
+
   it("starts a fresh log when output arrives after remove", async () => {
     const dir = tempDir();
     const store = makeStore(dir);

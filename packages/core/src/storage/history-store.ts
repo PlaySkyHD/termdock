@@ -222,10 +222,15 @@ export class HistoryStore {
     if (this.logs.get(sessionId) === log) this.logs.delete(sessionId);
   }
 
-  /** `forget` plus deleting `history/<id>/` with both segments. Idempotent: nothing there is no error. */
+  /**
+   * `forget` plus deleting `history/<id>/` with both segments, after open readers ended (an open file blocks the
+   * delete on Windows). Idempotent: nothing there is no error. Call only when the session produces no more output.
+   */
   async remove(sessionId: SessionId): Promise<void> {
     const dir = historyDir(this.options.dataDir, sessionId);
+    const log = this.logs.get(sessionId);
     await this.forget(sessionId);
+    while (log?.readersIdle) await log.readersIdle.promise;
     await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
 

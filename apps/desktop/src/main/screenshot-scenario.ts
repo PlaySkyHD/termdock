@@ -141,7 +141,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
     if (!found) throw new Error(`no session ${name}`);
     return found;
   };
-  // Every window learned about them from `sessionCreated`.
+  // Every window learned about them from the core's `session.created`.
   await waitFor(main, `document.querySelectorAll('[data-session-name]').length === 5`, "five sessions");
 
   // Notes stays detached; the other four open as tabs.

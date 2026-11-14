@@ -71,6 +71,7 @@ export class DesktopBridge {
           ...(lastExitCode === undefined ? {} : { lastExitCode }),
         }),
       ),
+      core.on("session.created", ({ session }) => this.toAll({ kind: "sessionCreated", session })),
       core.onClose(() => this.toAll({ kind: "coreClosed" })),
     ];
   }
@@ -127,10 +128,8 @@ export class DesktopBridge {
       case "listSessions":
         return (await core.request("session.list", {})).result.sessions;
       case "createSession": {
-        const { session } = (await core.request("session.create", call.params)).result;
-        // The core has no event for new sessions; every window's sidebar learns about it from here.
-        this.toAll({ kind: "sessionCreated", session });
-        return session;
+        // The windows learn about the new session from the core's `session.created` (protocol 1.2).
+        return (await core.request("session.create", call.params)).result.session;
       }
       case "attach":
         return this.attach(windowId, call.sessionId, call.size);

@@ -198,6 +198,12 @@ export class CoreServer {
         const data = writerViewId === undefined ? { sessionId } : { sessionId, writerViewId };
         this.route(viewIds, [], eventFrame("view.writerChanged", data));
       }),
+      this.registry.onCreated(({ session }) => {
+        // Like `session.stateChanged`: clients that list sessions. One that never lists would see the session
+        // in `Starting` for ever. Older clients drop events they do not know.
+        const listers = [...this.connections].filter((conn) => conn.listSubscriber);
+        this.route([], listers, eventFrame("session.created", { session }));
+      }),
       this.registry.onStateChange(({ sessionId, session }) => {
         const viewIds = [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
         const listers = [...this.connections].filter((conn) => conn.listSubscriber);

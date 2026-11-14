@@ -46,6 +46,10 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
           Alle anderen Tasten, auch Strg+C und Strg+B (tmux), gehen unverändert an die Shell. Rechtsklick fügt
           ein; Einfügen gilt nur im schreibenden Pane.
         </p>
+        <p className="dialog__note" data-note="same-session">
+          Teilen startet eine neue Session. Dieselbe Session in einem weiteren Pane: Umschalt+Klick in der
+          Seitenleiste; das Pane liest mit, bis du „Eingabe übernehmen“ wählst oder doppelt hineinklickst.
+        </p>
         <div className="dialog__actions">
           <button className="button button--primary" type="button" ref={close} onClick={onClose}>
             Schließen

@@ -1,9 +1,9 @@
-import type { SessionInfo } from "@termdock/protocol";
+import type { SessionCreateParams, SessionInfo } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { canRun, PASTE_REFUSED, pasteInto, runCommand } from "./commands.js";
+import { canRun, PASTE_REFUSED, pasteInto, runCommand, SPLIT_BUSY, SPLIT_UNKNOWN } from "./commands.js";
 import type { Clipboard, CommandDeps } from "./commands.js";
 import type { CommandId } from "./keymap.js";
-import { activeTab, UiStore } from "./ui-store.js";
+import { activeTab, paneCount, panesOf, UiStore } from "./ui-store.js";
 
 /** The part of a TerminalController the commands use. */
 class FakeController {
@@ -46,20 +46,30 @@ function session(id: string): SessionInfo {
   };
 }
 
-function setup(sessions: string[] = []) {
+function setup(sessions: Array<string | SessionInfo> = []) {
   let next = 0;
   const store = new UiStore({ newId: () => `id${++next}` });
-  store.setSessions(sessions.map(session));
-  for (const id of sessions) store.openSession(id);
+  const infos = sessions.map((each) => (typeof each === "string" ? session(each) : each));
+  store.setSessions(infos);
+  for (const { id } of infos) store.openSession(id);
   const controller = new FakeController();
   const clipboard = new FakeClipboard();
   const notices: Array<string | undefined> = [];
   const calls: string[] = [];
+  /** What `createSession` was asked for; each answer is a new Running session `new1`, `new2` … */
+  const created: SessionCreateParams[] = [];
+  let createFailure: Error | undefined;
+  let answer: Promise<void> | undefined;
   const deps: CommandDeps = {
     store,
     clipboard,
     activeController: () => controller,
-    split: (direction) => calls.push(`split ${direction}`),
+    createSession: async (params) => {
+      created.push(params);
+      await answer;
+      if (createFailure) throw createFailure;
+      return { ...session(`new${created.length}`), name: params.name, launch: params.launch };
+    },
     showForm: () => calls.push("showForm"),
     shortcutsOpen: false,
     toggleShortcuts: () => calls.push("toggleShortcuts"),
@@ -69,8 +79,175 @@ function setup(sessions: string[] = []) {
   const run = (command: CommandId) => runCommand(command, deps);
   const activeIndex = () =>
     store.getState().window.tabs.findIndex((tab) => tab.id === activeTab(store.getState())?.id);
-  return { store, controller, clipboard, notices, calls, run, deps, activeIndex };
+  return {
+    store,
+    controller,
+    clipboard,
+    notices,
+    calls,
+    run,
+    deps,
+    activeIndex,
+    created,
+    failCreate: (error: Error) => (createFailure = error),
+    /** Holds the answers of `createSession` until the returned function is called. */
+    holdCreate: (): (() => void) => {
+      let release!: () => void;
+      answer = new Promise((resolve) => (release = resolve));
+      return release;
+    },
+  };
 }
+
+describe("runCommand: splitting starts a new session (#66)", () => {
+  const shell: SessionInfo = {
+    ...session("a"),
+    name: "Shell",
+    launch: { backend: "wsl", distro: "Ubuntu", cwd: "/srv", command: ["vim"], env: { EDITOR: "vim" } },
+    workspaceId: "w1",
+    profileId: "p1",
+  };
+
+  it("creates a session with backend, distro and directory of the active one and shows it in the new, active pane", async () => {
+    const { run, store, created } = setup([shell]);
+
+    await run("splitRow");
+
+    // Neither the command nor the environment nor the profile: splitting starts a shell.
+    expect(created).toEqual([
+      { name: "Shell 2", launch: { backend: "wsl", distro: "Ubuntu", cwd: "/srv" }, workspaceId: "w1" },
+    ]);
+    const tab = activeTab(store.getState())!;
+    expect(tab.root).toMatchObject({ kind: "split", direction: "row", sizes: [0.5, 0.5] });
+    const panes = panesOf(tab.root);
+    expect(panes.map((pane) => pane.sessionId)).toEqual(["a", "new1"]);
+    expect(tab.activePaneId).toBe(panes[1]!.id);
+    expect(store.getState().sessions.map((each) => each.id)).toEqual(["a", "new1"]);
+  });
+
+  it("splits down with the next free number and gives every pane its own session", async () => {
+    const { run, store, created, calls } = setup([shell, { ...session("b"), name: "Shell 2" }]);
+    store.focusTab(store.getState().window.tabs[0]!.id);
+
+    await run("splitColumn");
+    await run("splitRow");
+
+    expect(created.map((params) => params.name)).toEqual(["Shell 3", "Shell 4"]);
+    const tab = activeTab(store.getState())!;
+    expect(panesOf(tab.root).map((pane) => pane.sessionId)).toEqual(["a", "new1", "new2"]);
+    expect(tab.activePaneId).toBe(panesOf(tab.root)[2]!.id);
+    expect(calls).toEqual(["refocus", "refocus"]);
+  });
+
+  it("starts no session when the tab is full", async () => {
+    const { run, store, created, notices } = setup([shell]);
+    const tab = activeTab(store.getState())!;
+    for (let i = 0; i < 3; i++) store.splitPane(tab.id, tab.activePaneId, "row", "a");
+
+    await run("splitRow");
+
+    expect(created).toEqual([]);
+    expect(notices.at(-1)).toBe("Höchstens 4 Panes je Tab");
+  });
+
+  it("ignores a second split while the first session is being created", async () => {
+    const { run, store, created, notices, holdCreate } = setup([shell]);
+    const release = holdCreate();
+
+    const first = run("splitRow");
+    await run("splitRow");
+    release();
+    await first;
+
+    expect(created).toHaveLength(1);
+    expect(notices).toContain(SPLIT_BUSY);
+    expect(paneCount(activeTab(store.getState())!)).toBe(2);
+  });
+
+  it("reports a failed create and leaves the tab as it is", async () => {
+    const { run, store, notices, failCreate } = setup([shell]);
+    failCreate(new Error("backend_unavailable"));
+
+    await run("splitRow");
+
+    expect(notices.at(-1)).toBe("Neue Session nicht gestartet: backend_unavailable");
+    expect(activeTab(store.getState())!.root.kind).toBe("pane");
+  });
+
+  it("brings the split tab to the front when the user switched tabs while the session was created", async () => {
+    const { run, store, holdCreate } = setup([shell, "b"]);
+    const [first, second] = store.getState().window.tabs;
+    store.focusTab(first!.id);
+    const release = holdCreate();
+
+    const split = run("splitRow");
+    store.focusTab(second!.id);
+    release();
+    await split;
+
+    const tab = activeTab(store.getState())!;
+    expect(tab.id).toBe(first!.id);
+    expect(panesOf(tab.root).map((pane) => pane.sessionId)).toEqual(["a", "new1"]);
+    expect(tab.activePaneId).toBe(panesOf(tab.root)[1]!.id);
+  });
+
+  it("gives the focus back to the terminal after a failed create too", async () => {
+    const { run, calls, failCreate } = setup([shell]);
+    failCreate(new Error("backend_unavailable"));
+
+    await run("splitRow");
+
+    expect(calls).toEqual(["refocus"]);
+  });
+
+  it("keeps a trailing number that is part of the name", async () => {
+    const { run, created } = setup([{ ...shell, name: "Python 3" }]);
+
+    await run("splitRow");
+
+    expect(created.map((params) => params.name)).toEqual(["Python 3 2"]);
+  });
+
+  it("says why it cannot split a pane whose session is unknown", async () => {
+    const { run, store, created, notices } = setup([shell]);
+    store.setSessions([]); // the session was deleted; the pane shows a placeholder
+
+    await run("splitRow");
+
+    expect(created).toEqual([]);
+    expect(notices.at(-1)).toBe(SPLIT_UNKNOWN);
+  });
+
+  it("names the session it could not show when the window is out of tabs as well", async () => {
+    const { run, store, holdCreate, notices } = setup([shell]);
+    for (let i = 1; i < 64; i++) store.openSession("a", { forceNew: true });
+    store.focusTab(store.getState().window.tabs[0]!.id);
+    const release = holdCreate();
+
+    const split = run("splitRow");
+    store.closeTab(store.getState().window.tabs[0]!.id);
+    store.openSession("a", { forceNew: true }); // the window is full again
+    release();
+    await split;
+
+    expect(notices.at(-1)).toBe("Höchstens 64 Tabs je Fenster: „Shell 2“ steht in der Seitenleiste");
+  });
+
+  it("opens the new session in a tab of its own when the pane closed meanwhile", async () => {
+    const { run, store, holdCreate } = setup([shell]);
+    const release = holdCreate();
+    const tab = activeTab(store.getState())!;
+
+    const split = run("splitRow");
+    store.closeTab(tab.id);
+    release();
+    await split;
+
+    const tabs = store.getState().window.tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]!.root).toMatchObject({ kind: "pane", sessionId: "new1" });
+  });
+});
 
 describe("runCommand: tabs", () => {
   it("goes to the next and the previous tab and wraps around", async () => {
@@ -215,15 +392,6 @@ describe("while the overview is open", () => {
 });
 
 describe("runCommand: panes, sidebar and dialogs", () => {
-  it("splits right and down through the window", async () => {
-    const { run, calls } = setup(["a"]);
-
-    await run("splitRow");
-    await run("splitColumn");
-
-    expect(calls).toEqual(["split row", "split column"]);
-  });
-
   it("moves the focus between panes by direction", async () => {
     const { run, store } = setup(["a"]);
     const tab = () => activeTab(store.getState())!;
@@ -319,6 +487,8 @@ describe("runCommand: clipboard", () => {
     expect(controller.pasted).toEqual([]);
     expect(read).not.toHaveBeenCalled();
     expect(notices.at(-1)).toBe(PASTE_REFUSED);
+    // It names the button the reading pane offers (#66).
+    expect(PASTE_REFUSED).toBe("Einfügen nur im schreibenden Pane: zuerst „Eingabe übernehmen“");
   });
 
   it("reports a clipboard that cannot be read and pastes nothing", async () => {

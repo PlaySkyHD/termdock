@@ -217,6 +217,10 @@ interface PaneShot {
   cursor: { x: number; y: number } | null;
   width: number;
   height: number;
+  /** Font size of the terminal rows in px (a reader zooms out, #66). */
+  fontSize: number;
+  /** Size of xterm's screen element: the grid at that font. */
+  screen: { width: number; height: number };
 }
 
 /** Reads the panes of the visible tab from the DOM (xterm.js draws rows as DOM elements). */
@@ -231,7 +235,11 @@ const PANES_EXPRESSION = `[...document.querySelectorAll('.tab-panel[data-active=
     cursor = { x, y };
   });
   const box = pane.getBoundingClientRect();
+  const screen = pane.querySelector('.xterm-screen')?.getBoundingClientRect();
+  const firstRow = pane.querySelector('.xterm-rows');
   return {
+    fontSize: firstRow ? parseFloat(getComputedStyle(firstRow).fontSize) : 0,
+    screen: { width: screen?.width ?? 0, height: screen?.height ?? 0 },
     id: pane.dataset.paneId,
     active: pane.dataset.activePane === 'true',
     role: pane.querySelector('[data-role]')?.dataset.role ?? null,
@@ -412,19 +420,71 @@ async function splitScenes(
     }
   };
 
-  // --- The same session in two panes: the new one reads, clipped to its pane ------------------------
+  /** A session another action created (splitting starts one, #66), found by its name in the core. */
+  const adopt = async (name: string): Promise<SessionInfo> => {
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const listed = await bridge.call(windowId, { method: "listSessions" });
+      const found = listed.ok
+        ? (listed.value as SessionInfo[]).find((each) => each.name === name)
+        : undefined;
+      if (found) {
+        sessions.set(name, found);
+        return found;
+      }
+      if (Date.now() > deadline) throw new Error(`no session ${name} after splitting`);
+      await sleep(200);
+    }
+  };
+  /** Double click with real mouse events: the second press and release carry `clickCount: 2`. */
+  const doubleClickAt = async (selector: string): Promise<void> => {
+    const { x, y } = await center(selector);
+    for (const clickCount of [1, 2]) {
+      for (const type of ["mouseDown", "mouseUp"] as const)
+        win.webContents.sendInputEvent({
+          type,
+          x: Math.round(x),
+          y: Math.round(y),
+          button: "left",
+          clickCount,
+        });
+    }
+    await sleep(300);
+  };
+  const sessionSize = async (name: string): Promise<string> => {
+    const { cols, rows } = await tmuxInfo(name);
+    return `${cols}x${rows}`;
+  };
+
+  // --- Splitting starts a new session (#66): every pane has its own shell and size -------------------
   await sidebarClick("Shell");
   await waitForViews(session("Shell").id, 1);
   await typeCommand("Shell", "ls --color /; stty size");
   await button("split-row");
-  await waitForViews(session("Shell").id, 2);
-  await dragDivider(0, 0.68);
+  const shell2 = await adopt("Shell 2");
+  await waitForViews(shell2.id, 1);
+  if (viewsOf(session("Shell").id).length !== 1) throw new Error("splitting must not show Shell twice");
+  await typeCommand("Shell 2", "echo eigene Session; stty size");
+  await typeCommand("Shell", "stty size", false);
   let shot = await panes();
+  if (shot.length !== 2 || shot.some((pane) => pane.role !== "writer") || !shot[1]?.active)
+    throw new Error(
+      `expected two writing panes, the new one active: ${JSON.stringify(shot.map((p) => [p.role, p.active]))}`,
+    );
+  log(`split into a new session: ${shot.map(sttyOf).join(" | ")}`);
+  await capture(win, "06a-split-new-session.png");
+  await button("close-pane"); // the new pane; Shell 2 stays in the sidebar
+  await waitFor(`document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 1`, "one pane");
+
+  // --- The same session in two panes (Shift+click in the sidebar): the new one reads, zoomed out ------
+  await sidebarClick("Shell", "shiftKey");
+  await waitForViews(session("Shell").id, 2);
+  await dragDivider(0, 0.58); // the reader has 42 % of the width: its font shrinks until the grid fits
+  await sleep(500);
+  shot = await panes();
   const [writer, reader] = shot;
   if (writer?.role !== "writer" || reader?.role !== "reader" || !reader.hint)
-    throw new Error(
-      `expected writer and clipped reader, got ${JSON.stringify(shot.map((p) => [p.role, p.hint]))}`,
-    );
+    throw new Error(`expected writer and reader, got ${JSON.stringify(shot.map((p) => [p.role, p.hint]))}`);
   // The reader shows the writer's screen row for row; output twice would shift its rows (#34).
   const differing = writer.rows.findIndex((row, index) => row !== reader.rows[index]);
   if (differing >= 0 || writer.rows.length !== reader.rows.length)
@@ -434,14 +494,36 @@ async function splitScenes(
   // The second view of the same session reads, so the writing pane stays active.
   if (!writer.active)
     throw new Error("the writing pane must stay active after splitting with the same session");
-  log(`reader hint: ${reader.hint}`);
-  await capture(win, "06-same-session-reader-clipped.png");
+  // Zoomed out: a smaller font than the writer's, and the whole grid fits the pane.
+  log(
+    `reader zoom: font ${reader.fontSize} (writer ${writer.fontSize}), screen ${reader.screen.width}x${reader.screen.height} in ${reader.width}x${reader.height}, ${reader.hint}`,
+  );
+  if (
+    !(reader.fontSize < writer.fontSize) ||
+    reader.screen.width > reader.width ||
+    reader.screen.height > reader.height
+  )
+    throw new Error("the reader must zoom out until the writer's grid fits");
+  await capture(win, "06-same-session-reader-zoomed.png");
+
+  // A narrower reader stops at the minimum font and clips the rest.
+  await dragDivider(0, 0.78);
+  await sleep(500);
+  shot = await panes();
+  log(
+    `reader below the minimum: font ${shot[1]?.fontSize}, screen ${shot[1]?.screen.width} in ${shot[1]?.width}`,
+  );
+  if (shot[1]?.fontSize !== 8 || !(shot[1].screen.width > shot[1].width))
+    throw new Error("a narrow reader must keep the minimum font and clip");
+  await capture(win, "06b-same-session-reader-clipped.png");
+  await dragDivider(0, 0.58);
+  await sleep(500);
 
   // Selecting text in the reader makes it active but does not take the writer.
   const from = await center(paneSelector(reader.id));
-  mouse("mouseDown", from.x - 100, from.y - 300);
-  for (let step = 1; step <= 5; step++) mouse("mouseMove", from.x - 100 + step * 20, from.y - 300);
-  mouse("mouseUp", from.x, from.y - 300);
+  mouse("mouseDown", from.x - 100, from.y - 150);
+  for (let step = 1; step <= 5; step++) mouse("mouseMove", from.x - 100 + step * 20, from.y - 150);
+  mouse("mouseUp", from.x, from.y - 150);
   await sleep(800);
   shot = await panes();
   if (shot[1]?.role !== "reader" || !shot[1].active)
@@ -449,15 +531,44 @@ async function splitScenes(
       `selecting text must not take the writer: ${JSON.stringify(shot.map((p) => [p.role, p.active]))}`,
     );
 
-  // A click into the reading pane takes the writer; the other pane reads and is dimmed around the terminal.
+  // A single click into the reader only makes it active: neither the writer nor the size of the session move.
+  await clickAt(paneSelector(writer.id));
+  const sizeBefore = await sessionSize("Shell");
   await clickAt(paneSelector(reader.id));
+  await sleep(800);
+  shot = await panes();
+  const sizeAfter = await sessionSize("Shell");
+  log(
+    `single click into the reader: roles ${JSON.stringify(shot.map((p) => p.role))}, size ${sizeBefore} -> ${sizeAfter}`,
+  );
+  if (shot[0]?.role !== "writer" || shot[1]?.role !== "reader" || !shot[1].active || sizeAfter !== sizeBefore)
+    throw new Error("a single click into a reader must neither take the writer nor change the size");
+  await capture(win, "07a-reader-before-take-input.png");
+
+  // "Eingabe übernehmen" in the reading pane takes the writer; the other pane reads and zooms out.
+  await clickAt(`${paneSelector(reader.id)} [data-action="take-input"]`);
   await waitFor(
     `document.querySelector('${paneSelector(reader.id)} [data-role="writer"]') && document.querySelector('${paneSelector(writer.id)} [data-role="reader"]')`,
-    "the writer to move to the clicked pane",
+    "the writer to move to the pane of the button",
   );
   await sleep(800);
   await typeCommand("Shell", "stty size", false);
-  await capture(win, "07-same-session-writer-claimed.png");
+  shot = await panes();
+  const taken = await tmuxInfo("Shell");
+  log(
+    `after the button: ${sttyOf(shot[1]!)} in the new writer, tmux ${taken.cols}x${taken.rows}, font ${shot[1]?.fontSize}`,
+  );
+  if (shot[1]?.fontSize !== 14 || Number(sttyOf(shot[1]).split(" ")[1]) !== taken.cols)
+    throw new Error("the pane that takes the input writes in the normal font and sets the size");
+  await capture(win, "07b-reader-after-take-input.png");
+
+  // A double click into the other pane takes the input back.
+  await doubleClickAt(paneSelector(writer.id));
+  await waitFor(
+    `document.querySelector('${paneSelector(writer.id)} [data-role="writer"]') && document.querySelector('${paneSelector(reader.id)} [data-role="reader"]')`,
+    "a double click to take the writer back",
+  );
+  log("double click took the input back");
 
   // --- Two panes with two sessions: stty size follows the divider -------------------------------
   await sidebarClick("Editor");
@@ -501,8 +612,10 @@ async function splitScenes(
   await capture(win, "10-three-panes.png");
 
   await clickAt(paneSelector(editorPane.id));
-  await button("split-column");
-  await waitForViews(session("Editor").id, 2);
+  await button("split-column"); // a new session below the Editor (#66)
+  const editor2 = await adopt("Editor 2");
+  await waitForViews(editor2.id, 1);
+  await typeCommand("Editor 2", "stty size");
   await waitFor(
     `document.querySelector('[data-action="split-row"]:disabled')`,
     "splitting to be locked at 4",
@@ -518,7 +631,7 @@ async function splitScenes(
   await expectCursor("Vim", 0, "vim before");
   await capture(win, "12-vim-before.png");
 
-  await button("split-row");
+  await sidebarClick("Vim", "shiftKey"); // the same session as a reader
   await waitForViews(session("Vim").id, 2);
   await sleep(800);
   // The new view attached while vim runs: its snapshot puts the cursor where tmux has it (#32).
@@ -704,29 +817,44 @@ async function keymapScenes(
   await key("C", ["control"]); // cancels the pasted lines in the shell
   await settle();
 
-  // Split with the keys: right, then the left pane downwards; the new views read, the first pane keeps writing.
+  // Split with the keys (#66): right, then the new pane downwards; each split starts a new session, whose pane
+  // becomes active and writes.
   await key("D", ctrlShift, 1_500);
   await waitFor(
-    `document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 2`,
-    "two panes",
+    `document.querySelectorAll('.tab-panel[data-active="true"] [data-role="writer"]').length === 2`,
+    "two writing panes",
   );
   await key("E", ctrlShift, 1_500);
   await waitFor(
-    `document.querySelectorAll('.tab-panel[data-active="true"] .pane').length === 3`,
-    "three panes",
+    `document.querySelectorAll('.tab-panel[data-active="true"] [data-role="writer"]').length === 3`,
+    "three writing panes",
   );
   let shot = await panes();
-  if (shot.filter((pane) => pane.active).length !== 1 || !shot[0]?.active || shot[0].role !== "writer")
+  const sessionsShown = await evaluate<string[]>(
+    `[...document.querySelectorAll('.tab-panel[data-active="true"] .pane')].map((pane) => pane.dataset.sessionId)`,
+  );
+  if (new Set(sessionsShown).size !== 3 || !shot[2]?.active)
     throw new Error(
-      `the writing pane must stay active: ${JSON.stringify(shot.map((p) => [p.role, p.active]))}`,
+      `each split must start its own session, the last pane active: ${JSON.stringify([sessionsShown, shot.map((p) => p.active)])}`,
     );
+  // The short prompt in the new sessions too: the default one names user and host.
+  for (const other of bridge.viewsOf(windowId).filter((each) => each !== view))
+    await bridge.call(windowId, { method: "input", viewId: other, data: "PS1='$ '; clear\r" });
+  await settle();
 
-  // Alt+Right moves the focus into the right pane (a reader); pasting there is refused.
-  await key("Right", ["alt"], 600);
+  // Shift+click on Keys in the sidebar shows the same session in a fourth pane, a reader; pasting there is refused.
+  await evaluate(
+    `document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`,
+  );
+  await waitFor(`document.querySelector('${ACTIVE_PANE} [data-role="reader"]')`, "the active reader of Keys");
+  win.focus();
+  await evaluate(`document.querySelector('${ACTIVE_PANE} .xterm-helper-textarea')?.focus()`);
   shot = await panes();
-  const rightPane = shot[2];
-  if (!rightPane?.active)
-    throw new Error(`Alt+Right did not focus the right pane: ${JSON.stringify(shot.map((p) => p.active))}`);
+  const rightPane = shot[3];
+  if (!rightPane?.active || rightPane.role !== "reader")
+    throw new Error(
+      `the reader of Keys must be active: ${JSON.stringify(shot.map((p) => [p.role, p.active]))}`,
+    );
   await writeClipboard("darf nicht ankommen");
   await key("V", ctrlShift, 800);
   const refusal = await notice();
@@ -738,7 +866,9 @@ async function keymapScenes(
     throw new Error("the reader pasted into the session");
   await capture(win, "22-paste-refused-in-reader.png");
 
-  // Alt+Left goes back (the first pane of the two on the left), Ctrl+Shift+B hides the sidebar.
+  // Alt+Left goes back through the bottom row to the first pane, Ctrl+Shift+B hides the sidebar.
+  await key("Left", ["alt"], 600);
+  if (!(await panes())[2]?.active) throw new Error("Alt+Left did not focus the pane left of the reader");
   await key("Left", ["alt"], 600);
   if (!(await panes())[0]?.active) throw new Error("Alt+Left did not focus the first pane");
   await key("B", ctrlShift, 1_000);

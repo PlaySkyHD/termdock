@@ -1,12 +1,12 @@
 // What the commands of the key map do (#28). They run on the store and the controller of the active pane; the
 // window supplies what depends on React (the form, the overview, the notice), so this module stays testable
 // without DOM. "newWindow" is the application menu's (main process): nothing to do here.
-import type { LayoutTab } from "@termdock/protocol";
+import type { LayoutTab, SessionCreateParams, SessionInfo } from "@termdock/protocol";
 import { neighborPane } from "./pane-focus.js";
 import type { FocusDirection } from "./pane-focus.js";
 import type { CommandId } from "./keymap.js";
 import type { TerminalController } from "./terminal-controller.js";
-import { activeTab } from "./ui-store.js";
+import { activeTab, MAX_PANES, MAX_TABS, paneCount, tabSessionId } from "./ui-store.js";
 import type { SplitDirection, UiStore } from "./ui-store.js";
 
 /**
@@ -20,28 +20,115 @@ export interface Clipboard {
 }
 
 /** Shown when pasting is refused because the pane only reads (ADR 0003: only the writing view sends input). */
-export const PASTE_REFUSED = "Einfügen nur im schreibenden Pane: zuerst „Schreibrecht übernehmen“";
+export const PASTE_REFUSED = "Einfügen nur im schreibenden Pane: zuerst „Eingabe übernehmen“";
 const CLIPBOARD_FAILED = "Zwischenablage nicht verfügbar";
 
 type PasteTarget = Pick<TerminalController, "canPaste" | "paste">;
 type CopySource = Pick<TerminalController, "selectedText">;
 
-export interface CommandDeps {
+/** What splitting needs (#66): the store, `session.create` through the bridge, the notice and the focus. */
+export interface SplitDeps {
   store: UiStore;
+  createSession(params: SessionCreateParams): Promise<SessionInfo>;
+  /** Sets the notice of the status bar; undefined clears it. */
+  notify(text: string | undefined): void;
+  /** The active terminal takes the keyboard focus (App). */
+  refocus(): void;
+}
+
+export interface CommandDeps extends SplitDeps {
   clipboard: Clipboard;
   /** Controller of the active pane of the active tab, if it has a view. */
   activeController(): (PasteTarget & CopySource) | undefined;
-  /** Splits the active pane; the new pane shows the same session (App). */
-  split(direction: SplitDirection): void;
   /** Opens the form for a new session, showing the sidebar if needed (App). */
   showForm(): void;
   /** The overview of the shortcuts is open. */
   shortcutsOpen: boolean;
   toggleShortcuts(): void;
-  /** Sets the notice of the status bar; undefined clears it. */
-  notify(text: string | undefined): void;
-  /** The active terminal takes the keyboard focus (App). */
-  refocus(): void;
+}
+
+/** Stores with a split whose session is still being created; a second split waits for it (no session over the limit). */
+const splitting = new WeakSet<UiStore>();
+
+export const SPLIT_BUSY = "Neue Session wird noch gestartet …";
+export const SPLIT_UNKNOWN = "Teilen nicht möglich: Die Session des aktiven Panes ist unbekannt";
+export const panesFull = (max: number): string => `Höchstens ${max} Panes je Tab`;
+
+/**
+ * Splits the active pane of the active tab (#66): starts a new session with backend, distro, shell, working
+ * directory and workspace of the active pane's session and shows it in the new pane, which becomes active and
+ * writes. The command, environment and profile are not taken over: splitting starts a shell. The same session in
+ * a second pane is Shift+click in the sidebar (`UiStore.splitPane`). Used by the keys and the buttons.
+ */
+export async function splitActivePane(deps: SplitDeps, direction: SplitDirection): Promise<void> {
+  const { store } = deps;
+  const state = store.getState();
+  const tab = activeTab(state);
+  if (!tab) return;
+  if (paneCount(tab) >= MAX_PANES) {
+    deps.notify(panesFull(MAX_PANES));
+    return;
+  }
+  const source = state.sessions.find((each) => each.id === tabSessionId(tab));
+  if (!source) {
+    deps.notify(SPLIT_UNKNOWN);
+    return;
+  }
+  if (splitting.has(store)) {
+    deps.notify(SPLIT_BUSY);
+    return;
+  }
+  const paneId = tab.activePaneId;
+  const { backend, distro, shell, cwd } = source.launch;
+  const params: SessionCreateParams = {
+    name: nextName(source.name, state.sessions),
+    launch: {
+      backend,
+      ...(distro === undefined ? {} : { distro }),
+      ...(shell === undefined ? {} : { shell }),
+      cwd,
+    },
+    ...(source.workspaceId === undefined ? {} : { workspaceId: source.workspaceId }),
+  };
+  splitting.add(store);
+  let created: SessionInfo;
+  try {
+    created = await deps.createSession(params);
+  } catch (error) {
+    deps.notify(`Neue Session nicht gestartet: ${error instanceof Error ? error.message : String(error)}`);
+    deps.refocus();
+    return;
+  } finally {
+    splitting.delete(store);
+  }
+  // The event of the main process may have added it already; the store keeps what it has.
+  store.sessionCreated(created);
+  // Split the pane that was active when the user asked; when it is gone or the tab filled up meanwhile, the
+  // session gets a tab of its own instead of staying out of sight.
+  const added = store.splitPane(tab.id, paneId, direction, created.id);
+  // The user asked for this pane: when another tab came to the front meanwhile, the split one does again, so
+  // the new session does not start out of sight. Its tab keeps the context of the split (not a tab of its own).
+  if (added !== undefined) store.focusTab(tab.id);
+  const shown = added ?? store.openSession(created.id, { forceNew: true });
+  deps.notify(
+    shown === undefined
+      ? `Höchstens ${MAX_TABS} Tabs je Fenster: „${created.name}“ steht in der Seitenleiste`
+      : undefined,
+  );
+  deps.refocus();
+}
+
+/**
+ * `<name> 2`, `<name> 3` …: the smallest number no session of that name has. A trailing number is replaced only
+ * when it came from this scheme (a session named like the rest exists), so "Python 3" becomes "Python 3 2".
+ */
+function nextName(name: string, sessions: readonly SessionInfo[]): string {
+  const taken = new Set(sessions.map((each) => each.name));
+  const stripped = name.replace(/ \d+$/, "");
+  const base = stripped !== name && taken.has(stripped) ? stripped : name;
+  let number = 2;
+  while (taken.has(`${base} ${number}`)) number++;
+  return `${base} ${number}`;
 }
 
 const DIRECTIONS: Partial<Record<CommandId, FocusDirection>> = {
@@ -122,10 +209,8 @@ export async function runCommand(command: CommandId, deps: CommandDeps): Promise
       goTo(tabTarget(command, deps));
       return;
     case "splitRow":
-      if (tab) deps.split("row");
-      return;
     case "splitColumn":
-      if (tab) deps.split("column");
+      await splitActivePane(deps, command === "splitRow" ? "row" : "column");
       return;
     case "focusLeft":
     case "focusRight":

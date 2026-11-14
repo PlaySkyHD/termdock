@@ -50,8 +50,13 @@ export function StatusBar({ session, view, hints, notice, onClaimWriter }: Statu
         </span>
       ))}
       {reader && (
-        <button className="status-bar__button" type="button" onClick={onClaimWriter}>
-          Schreibrecht übernehmen
+        <button
+          className="status-bar__button"
+          type="button"
+          data-action="take-input-status"
+          onClick={onClaimWriter}
+        >
+          Eingabe übernehmen
         </button>
       )}
     </footer>

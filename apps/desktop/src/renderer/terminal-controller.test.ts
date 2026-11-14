@@ -31,7 +31,29 @@ class FakeSurface implements TerminalSurface {
     this.rows = rows;
   }
   proposeSize(): TerminalSize | undefined {
+    this.proposedAt.push(this.fontSize);
     return this.area;
+  }
+  /** Font size at each `proposeSize`: the fit must measure in the normal font. */
+  proposedAt: number[] = [];
+  fontSize = 14;
+  fontSizes: number[] = [];
+  setFontSize(size: number): void {
+    this.fontSize = size;
+    this.fontSizes.push(size);
+  }
+  /** Room of the element in px; undefined while it is not drawn. Large enough for every grid by default. */
+  room: { width: number; height: number } | undefined = { width: 2_000, height: 1_200 };
+  /** Cell at a font size as xterm.js renders it; linear by default. */
+  cellAt = (size: number) => ({ width: (8.4 * size) / 14, height: (17 * size) / 14 });
+  measure() {
+    return (
+      this.room && {
+        area: this.room,
+        cell: { width: 8.4, height: 17 },
+        current: this.cellAt(this.fontSize),
+      }
+    );
   }
   onData(listener: (data: string) => void): () => void {
     this.listener = listener;
@@ -356,6 +378,101 @@ describe("TerminalController", () => {
     api.emit({ kind: "resized", sessionId: "s1", size: { cols: 90, rows: 25 } });
 
     expect([surface.cols, surface.rows]).toEqual([90, 25]);
+  });
+
+  describe("reader zoom (#66)", () => {
+    // The writer's grid is 100×30, 840×510 px at the normal 14 px with cells of 8.4×17 px.
+    it("keeps the normal font where the writer's grid fits", async () => {
+      const { surface } = await opened({ writerViewId: "v0" });
+
+      expect(surface.fontSizes).toEqual([]);
+      expect(surface.fontSize).toBe(14);
+    });
+
+    it("zooms out when its area gets smaller, until the whole grid fits, and sends no resize", async () => {
+      const { api, surface, controller, delay } = await opened({ writerViewId: "v0" });
+
+      surface.room = { width: 588, height: 510 }; // 70 % of the width
+      controller.layoutChanged();
+      delay.elapse();
+
+      expect(surface.fontSize).toBe(9);
+      expect([surface.cols, surface.rows]).toEqual([100, 30]);
+      expect(api.resizes).toEqual([]);
+    });
+
+    it("zooms again when the writer's grid changes, never above the normal font", async () => {
+      const { api, surface, controller, delay } = await opened({ writerViewId: "v0" });
+      surface.room = { width: 588, height: 510 };
+      controller.layoutChanged();
+      delay.elapse();
+
+      api.emit({ kind: "resized", sessionId: "s1", size: { cols: 50, rows: 15 } });
+
+      expect(surface.fontSize).toBe(14);
+      expect(surface.fontSizes).toEqual([9, 14]);
+    });
+
+    it("steps down further when the rendered cells do not shrink in step with the font", async () => {
+      const { surface, controller, delay } = await opened({ writerViewId: "v0" });
+      // Rounded to whole pixels: at 9 px a cell is 6 px wide, so 100 columns need 600 px.
+      surface.cellAt = (size) => ({
+        width: Math.ceil((8.4 * size) / 14),
+        height: Math.ceil((17 * size) / 14),
+      });
+
+      surface.room = { width: 588, height: 510 };
+      controller.layoutChanged();
+      delay.elapse();
+
+      expect(surface.fontSize).toBe(8);
+      expect(100 * surface.cellAt(surface.fontSize).width).toBeLessThanOrEqual(588);
+    });
+
+    it("stops at the minimum font and keeps the grid, which is then clipped", async () => {
+      const { surface, controller, delay } = await opened({ writerViewId: "v0" });
+
+      surface.room = { width: 200, height: 100 };
+      controller.layoutChanged();
+      delay.elapse();
+
+      expect(surface.fontSize).toBe(8);
+      expect([surface.cols, surface.rows]).toEqual([100, 30]);
+    });
+
+    it("keeps its font while it cannot be measured", async () => {
+      const { surface, controller, delay } = await opened({ writerViewId: "v0" });
+
+      surface.room = undefined;
+      controller.layoutChanged();
+      delay.elapse();
+
+      expect(surface.fontSizes).toEqual([]);
+    });
+
+    it("takes the input in the normal font: the fit measures after the font is back", async () => {
+      const { api, surface, controller, delay } = await opened({ writerViewId: "v0" });
+      surface.room = { width: 588, height: 510 };
+      controller.layoutChanged();
+      delay.elapse();
+
+      await controller.claimWriter();
+      api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
+
+      expect(surface.fontSize).toBe(14);
+      expect(surface.proposedAt.at(-1)).toBe(14);
+      expect(api.resizes).toEqual([["v1", { cols: 120, rows: 40 }]]);
+    });
+
+    it("never zooms as writer", async () => {
+      const { surface, controller, delay } = await opened({ writerViewId: "v1" });
+
+      surface.room = { width: 200, height: 100 };
+      controller.layoutChanged();
+      delay.elapse();
+
+      expect(surface.fontSizes).toEqual([]);
+    });
   });
 
   it("claims the writer on request and becomes writer only when the core reports it", async () => {

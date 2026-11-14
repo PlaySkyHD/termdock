@@ -118,6 +118,19 @@ describe("runCore", () => {
     expect(backend.attaches.map((a) => a.id)).toEqual([session.id]);
   });
 
+  it("takes the logging default of new sessions from the stored settings (issues #59, #60)", async () => {
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    await start({ pipePath, dataDir: tempDir(), backends: [backend] });
+    const c = await client(pipePath);
+    await c.request("settings.set", { settings: { historyEnabledByDefault: false } });
+
+    const { session } = (await c.request("session.create", { name: "a", launch })).result;
+
+    expect(session.loggingEnabled).toBe(false);
+    await c.close();
+  });
+
   it("writes the output of sessions into history/<id> and flushes it on close (issue #59)", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

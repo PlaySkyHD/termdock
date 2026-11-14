@@ -11,6 +11,7 @@ import { startLayoutSync } from "./layout-sync.js";
 import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
+import { QuitDialog } from "./QuitDialog.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { OpenMode } from "./Sidebar.js";
@@ -142,6 +143,28 @@ export function App({ api }: { api: TermdockApi }) {
   // Key bindings (#28): the terminal hands bound keys to `run` (attachCustomKeyEventHandler), the window catches
   // them while the focus is elsewhere (sidebar, empty window). The latest closures are read through the ref.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // The main process asks this window to show the quit dialog (#60); it answers once.
+  const [quit, setQuit] = useState<{ requestId: string; activeSessions: number }>();
+  useEffect(
+    () =>
+      api.onEvent((event) => {
+        // The main process repeats a question until it is confirmed; one that is answered stays answered.
+        if (event.kind === "quitRequested" && !answeredQuits.current.has(event.requestId))
+          setQuit((open) =>
+            open?.requestId === event.requestId
+              ? open
+              : { requestId: event.requestId, activeSessions: event.activeSessions },
+          );
+      }),
+    [api],
+  );
+  const answeredQuits = useRef(new Set<string>());
+  // The dialog confirms to the main process that it is shown; without that the question is cancelled there.
+  const quitRequestId = quit?.requestId;
+  useEffect(() => {
+    if (quitRequestId !== undefined)
+      api.quitShown(quitRequestId).catch((error: unknown) => console.error(error));
+  }, [api, quitRequestId]);
   const commandDeps: CommandDeps = {
     store,
     clipboard: navigator.clipboard,
@@ -159,9 +182,12 @@ export function App({ api }: { api: TermdockApi }) {
   };
   const commandRef = useRef(commandDeps);
   commandRef.current = commandDeps;
+  // The quit dialog (#60) is modal: while it is open no key binding of the window runs.
+  const quitOpenRef = useRef(false);
+  quitOpenRef.current = quit !== undefined;
   const keyCommands = useMemo<KeyCommands>(
     () => ({
-      applies: (command) => canRun(command, commandRef.current),
+      applies: (command) => !quitOpenRef.current && canRun(command, commandRef.current),
       run: (command) => void runCommand(command, commandRef.current),
     }),
     [],
@@ -169,7 +195,7 @@ export function App({ api }: { api: TermdockApi }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       // The terminal has handled a bound key already (and prevented it).
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || quitOpenRef.current) return;
       // The form's fields keep copy and paste.
       const command = resolveKey(event);
       if ((command === "copy" || command === "paste") && isTextField(event.target)) return;
@@ -270,6 +296,19 @@ export function App({ api }: { api: TermdockApi }) {
           refocus(); // like the button in the pane: the terminal takes the keys again
         }}
       />
+      {quit && (
+        <QuitDialog
+          activeSessions={quit.activeSessions}
+          onAnswer={(answer) => {
+            const { requestId } = quit;
+            answeredQuits.current.add(requestId);
+            setQuit(undefined);
+            // A refused answer (the main process asked nobody) changes nothing: the dialog is closed either way.
+            api.answerQuit(requestId, answer).catch((error: unknown) => console.error(error));
+            refocus();
+          }}
+        />
+      )}
       {shortcutsOpen && (
         <ShortcutsDialog
           onClose={() => {

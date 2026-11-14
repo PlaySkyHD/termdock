@@ -43,6 +43,8 @@ export interface ScenarioControl {
   restartUi(): Promise<BrowserWindow[]>;
   /** Saves the layout now. */
   flushLayout(): Promise<void>;
+  /** The decision of a quit by the user, with the dialog in `win` (#60); `undefined` when the user cancels. */
+  decideQuit(win: BrowserWindow): Promise<{ stopSessions: boolean } | undefined>;
 }
 
 export interface ScenarioDeps extends ScenarioControl {
@@ -203,6 +205,78 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await splitScenes(deps, capture, session("Notes"));
   await keymapScenes(deps, capture);
   await restoreScenes(deps, wsl);
+  await quitScenes(deps, capture);
+}
+
+// --- Quit dialog (#60) ------------------------------------------------------------------------------
+
+/**
+ * The dialog of a quit while sessions run: unchecked and with "Nicht mehr fragen"; the answers go through the real
+ * path (click in the renderer, bridge call, prompt, settings in the isolated core). Nothing quits: the decision
+ * is only read.
+ */
+async function quitScenes(
+  { createWindow, core, decideQuit, log }: ScenarioDeps,
+  capture: (win: BrowserWindow, name: string) => Promise<void>,
+): Promise<void> {
+  const win = createWindow(1100, 680);
+  win.webContents.setBackgroundThrottling(false);
+  win.show();
+  win.moveTop();
+  const evaluate = <T>(expression: string): Promise<T> =>
+    win.webContents.executeJavaScript(expression, true) as Promise<T>;
+  const waitFor = async (expression: string, what: string, timeoutMs = 30_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await evaluate<boolean>(`Boolean(${expression})`).catch(() => false))) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+      await sleep(100);
+    }
+  };
+  const click = async (selector: string): Promise<void> => {
+    await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  };
+  const settings = async () => (await core.request("settings.get", {})).result.settings;
+  const expectEqual = (actual: unknown, expected: unknown, what: string): void => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected))
+      throw new Error(`${what}: ${JSON.stringify(actual)} instead of ${JSON.stringify(expected)}`);
+  };
+  const DIALOG = `document.querySelector('[data-dialog="quit"]')`;
+
+  // Sessions of the earlier scenes still run or are detached, so the question is asked.
+  await waitFor(`document.querySelectorAll('[data-session-name]').length > 0`, "the sessions");
+  const asked = decideQuit(win);
+  await waitFor(DIALOG, "the quit dialog");
+  await sleep(500);
+  await capture(win, "24-quit-dialog.png");
+
+  // "Nicht mehr fragen" with "Abbrechen": cancelled, nothing stored.
+  await click('[data-quit="remember"]');
+  await waitFor(`document.querySelector('[data-quit="remember"]').checked`, "the checkbox");
+  await capture(win, "25-quit-dialog-do-not-ask-again.png");
+  await click('[data-quit-choice="cancel"]');
+  expectEqual(await asked, undefined, "cancel");
+  await waitFor(`!${DIALOG}`, "the dialog to close");
+  expectEqual((await settings()).confirmQuitWhileRunning, true, "cancel stores nothing");
+
+  // The same with "Sessions beenden": the answer is stored, and the next quit does not ask.
+  const again = decideQuit(win);
+  await waitFor(DIALOG, "the quit dialog again");
+  await click('[data-quit="remember"]');
+  await click('[data-quit-choice="stopSessions"]');
+  expectEqual(await again, { stopSessions: true }, "stop with the checkbox");
+  expectEqual(
+    [(await settings()).confirmQuitWhileRunning, (await settings()).quitAction],
+    [false, "stopSessions"],
+    "stored choice",
+  );
+  expectEqual(await decideQuit(win), { stopSessions: true }, "the stored choice applies");
+  if ((await evaluate<boolean>(`Boolean(${DIALOG})`)) === true)
+    throw new Error("a stored choice must not ask");
+
+  // Back to the start state, so the isolated core ends like any other run.
+  await core.request("settings.set", { settings: { confirmQuitWhileRunning: true, quitAction: null } });
+  log("quit dialog scenes done");
 }
 
 // --- Split panes (#27) ------------------------------------------------------------------------------

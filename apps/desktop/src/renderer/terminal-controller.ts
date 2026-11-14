@@ -236,7 +236,8 @@ export class TerminalController {
       this.setStatus({ ...this.status, role: "closed" });
       return;
     }
-    if (event.kind === "sessionCreated" || event.sessionId !== this.sessionId) return;
+    if (event.kind === "sessionCreated" || event.kind === "quitRequested") return;
+    if (event.sessionId !== this.sessionId) return;
     switch (event.kind) {
       case "output":
         if (this.pending) this.pending.push({ seq: event.seq, data: event.data });

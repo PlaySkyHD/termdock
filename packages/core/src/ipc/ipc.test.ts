@@ -906,7 +906,7 @@ describe("client library", () => {
 
 describe("phase 3 (issue #55)", () => {
   /** Valid params per phase-3 method; a stub answers each of them with internal. */
-  const stubCalls: Record<(typeof PHASE_3_METHODS)[number], unknown> = {
+  const stubCalls: Record<Exclude<(typeof PHASE_3_METHODS)[number], `settings.${string}`>, unknown> = {
     "workspace.list": {},
     "workspace.create": { name: "TermDock" },
     "workspace.update": { workspaceId: "w1", name: "Neu" },
@@ -921,8 +921,6 @@ describe("phase 3 (issue #55)", () => {
     "session.update": { sessionId: "s1", workspaceId: null },
     "session.archive": { sessionId: "s1" },
     "session.delete": { sessionId: "s1" },
-    "settings.get": {},
-    "settings.set": { settings: { historyEnabledByDefault: false } },
     "history.search": { query: "error" },
   };
 
@@ -958,7 +956,9 @@ describe("phase 3 (issue #55)", () => {
   });
 
   it("has a stub for every phase-3 method", () => {
-    expect(Object.keys(stubCalls).sort()).toEqual([...PHASE_3_METHODS].sort());
+    // `settings.*` is implemented (issue #60) and tested in "settings (issue #60)".
+    const stubbed = PHASE_3_METHODS.filter((method) => !method.startsWith("settings."));
+    expect(Object.keys(stubCalls).sort()).toEqual([...stubbed].sort());
   });
 
   it("sends the phase-3 events once to each client that listed sessions, never to others", async () => {
@@ -1059,6 +1059,53 @@ describe("layout", () => {
     raw.send({ kind: "request", id: "bad", method: "layout.save", params: { layout: duplicate } });
     await waitFor(() => raw.frames.length === 2, "two responses");
     expect(raw.frames[1]?.header).toMatchObject({ id: "bad", error: { code: "bad_request" } });
+  });
+});
+
+describe("settings (issue #60)", () => {
+  it("answers settings.get with the defaults and settings.set with the merged settings", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
+    const set = await client.request("settings.set", {
+      settings: { confirmQuitWhileRunning: false, quitAction: "stopSessions" },
+    });
+    const expected = { ...DEFAULT_SETTINGS, confirmQuitWhileRunning: false, quitAction: "stopSessions" };
+    expect(set.result.settings).toEqual(expected);
+    expect((await client.request("settings.get", {})).result.settings).toEqual(expected);
+    await client.request("settings.set", { settings: { quitAction: null } });
+    expect((await client.request("settings.get", {})).result.settings.quitAction).toBeUndefined();
+  });
+
+  it("sends settings.changed to every lister, the caller included, and to nobody else", async () => {
+    const { pipePath } = await startCore();
+    const caller = await newClient(pipePath);
+    const other = await newClient(pipePath);
+    const stranger = await newClient(pipePath);
+    const seenByCaller: unknown[] = [];
+    const seenByOther: unknown[] = [];
+    const seenByStranger: unknown[] = [];
+    caller.on("settings.changed", ({ settings }) => seenByCaller.push(settings));
+    other.on("settings.changed", ({ settings }) => seenByOther.push(settings));
+    stranger.on("settings.changed", ({ settings }) => seenByStranger.push(settings));
+    await caller.request("session.list", {});
+    await other.request("session.list", {});
+    await caller.request("settings.set", { settings: { confirmQuitWhileRunning: false } });
+    await waitFor(() => seenByCaller.length === 1 && seenByOther.length === 1, "settings.changed");
+    expect(seenByCaller[0]).toEqual({ ...DEFAULT_SETTINGS, confirmQuitWhileRunning: false });
+    expect(seenByOther[0]).toEqual(seenByCaller[0]);
+    await stranger.request("settings.get", {});
+    expect(seenByStranger).toEqual([]);
+  });
+
+  it("answers an invalid or empty patch with bad_request and keeps the settings", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    expect(await errorCode(client.request("settings.set", { settings: {} }))).toBe("bad_request");
+    expect(await errorCode(client.request("settings.set", { settings: { historyLimitBytes: 1 } }))).toBe(
+      "bad_request",
+    );
+    expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
   });
 });
 

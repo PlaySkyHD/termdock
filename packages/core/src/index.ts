@@ -43,6 +43,12 @@ export type {
 export { recordHistory } from "./storage/history-recorder.js";
 export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
 export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
+export {
+  applySettingsPatch,
+  InMemorySettingsRepository,
+  SqliteSettingsRepository,
+} from "./storage/settings-repository.js";
+export type { SettingsRepository } from "./storage/settings-repository.js";
 export { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./storage/workspace-repository.js";
 export type { WorkspaceRepository } from "./storage/workspace-repository.js";
 

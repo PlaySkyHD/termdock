@@ -26,6 +26,8 @@ import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput, SessionRegistry } from "../session/registry.js";
 import type { LayoutRepository } from "../storage/layout-repository.js";
+import { InMemorySettingsRepository } from "../storage/settings-repository.js";
+import type { SettingsRepository } from "../storage/settings-repository.js";
 import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 import { WorkspaceService } from "../workspace/service.js";
@@ -56,6 +58,8 @@ export interface CoreServerOptions {
   registry: SessionRegistry;
   /** Stored layout behind `layout.get` and `layout.save`. */
   layouts: LayoutRepository;
+  /** Stored settings behind `settings.get` and `settings.set`; defaults to an in-memory repository. */
+  settings?: SettingsRepository;
   /** Stored workspaces and projects behind `workspace.*` and `project.*`; defaults to an in-memory repository. */
   workspaces?: WorkspaceRepository;
   /** Pipe path; defaults to `\\.\pipe\termdock-core-<user>`. Tests pass a unique name. */
@@ -118,6 +122,7 @@ export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
   private readonly layouts: LayoutRepository;
+  private readonly settings: SettingsRepository;
   private readonly workspaces: WorkspaceService;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
@@ -141,6 +146,7 @@ export class CoreServer {
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.layouts = options.layouts;
+    this.settings = options.settings ?? new InMemorySettingsRepository();
     this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
@@ -481,11 +487,13 @@ export class CoreServer {
         throw notImplemented(request.method);
       case "session.delete":
         throw notImplemented(request.method);
-      // Settings: issue #64.
       case "settings.get":
-        throw notImplemented(request.method);
-      case "settings.set":
-        throw notImplemented(request.method);
+        return { result: { settings: this.settings.get() } };
+      case "settings.set": {
+        const settings = this.settings.set(request.params.settings);
+        // The event follows the answer; every lister gets it, the caller too.
+        return { result: { settings }, after: () => this.notifyListers("settings.changed", { settings }) };
+      }
       // History search: issue #62.
       case "history.search":
         throw notImplemented(request.method);

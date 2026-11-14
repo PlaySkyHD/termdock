@@ -17,7 +17,7 @@ You plan, brief, verify, open the pull requests and merge. Subagents only implem
 - Map each issue to the packages and files it changes (`packages/<name>/`).
 - Docs or skill changes of up to about ten lines in one file you make yourself. Longer docs go to a `haiku` subagent. OpenSpec changes go to a `sonnet` subagent or bigger.
 - Disjoint packages: run in parallel. Same file, different places: parallel with exact anchors, check later with `git merge-tree`. Same lines or dependent work: sequential or stacked (branch B on branch A).
-- Shared building blocks (protocol types, backend interface, a helper used by two packages) you build first on `main`, then brief the agents.
+- Shared building blocks (protocol types, backend interface, a helper used by two packages) you build first on `main`, then brief the agents. A contract PR gives each follow-up issue its own anchor in code, specs and tests (one stub `case`, one requirement, one test entry per method); no requirement or test list that every follow-up edits (PR #79: one „Platzhalter“ requirement caused a conflict in every wave-1 merge).
 - Model: set `model` explicitly on every Agent call.
   - Default `sonnet`.
   - `haiku` for docs and skill texts.
@@ -38,7 +38,7 @@ Every prompt contains:
 - file edits through Read, Edit and Write. A script that writes files is allowed only for a mechanical change across many lines (rename, conflict markers) and must be named with its exact command in the report under Umwege; never for logic changes. Formatters (`npm run format`) and generators may write. Commit messages via several `git commit -m`, not a heredoc,
 - "the repository is public: no secrets, personal data or content about other private projects",
 - the exact scope, the OpenSpec change name and capability, and which packages not to touch,
-- the OpenSpec flow: create the change (`openspec-propose` skill), `bash scripts/openspec-check.sh <change>` (validates `--strict` plus what the CLI misses: Purpose of new capabilities, MODIFIED requirements over 500 characters), implement test-first (`tdd` skill), before archiving run the check again, archive in the same branch (`tools/openspec/node_modules/.bin/openspec archive <change> -y`), then `bash scripts/openspec-check.sh --specs`,
+- the OpenSpec flow: create the change (`openspec-propose` skill), `bash scripts/openspec-check.sh <change>` (validates `--strict` plus what the CLI misses: Purpose of new capabilities, MODIFIED requirements over 500 characters), implement test-first (`tdd` skill), before archiving run the check again, archive in the same branch (`tools/openspec/node_modules/.bin/openspec archive <change> -y`), then `bash scripts/openspec-check.sh --specs`. After archiving, review fixes change only the main spec (`openspec/specs/<cap>/spec.md`) and the code; the archived change stays as archived; then run `bash scripts/openspec-check.sh --specs` again (wave 1: delta and main spec were edited twice, partly by script),
 - the checks: `npm run typecheck`, `npm run lint`, `npm test -w <package>`; WSL integration tests with `TERMDOCK_WSL_TESTS=1` (see lessons section 2); never return unfiltered test output,
 - for a bug fix: show the new test fails without the fix and put the red line in the report,
 - for a visible UI change (`apps/desktop`, `poc/` UI): PNG screenshots of every changed state via the app's screenshot mode (`--screenshot <dir>`, `webContents.capturePage()`), before and after for changed behavior, saved outside the repo (`P:/Temp/td-shots/<branch>/`); list the paths in the report, do not commit them,

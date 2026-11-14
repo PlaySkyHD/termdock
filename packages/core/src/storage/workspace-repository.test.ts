@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Project, Workspace } from "@termdock/protocol";
+import type { Project, SessionInfo, Workspace } from "@termdock/protocol";
+import { SqliteSessionRepository } from "./session-repository.js";
 import { DATABASE_FILE, openDatabase } from "./database.js";
 import { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./workspace-repository.js";
 import type { WorkspaceRepository } from "./workspace-repository.js";
@@ -125,6 +126,46 @@ describe("SqliteWorkspaceRepository", () => {
     expect(() => repo.save(broken)).toThrow();
     expect(db.isTransaction).toBe(false);
     expect(repo.list()).toEqual([workspace("a", [project("p1", "a")])]);
+  });
+
+  it("deletes together with the caller's writes in one transaction, or not at all", () => {
+    const db = open(tempDir());
+    const repo = new SqliteWorkspaceRepository(db);
+    const sessions = new SqliteSessionRepository(db);
+    const session = (id: string, workspaceId: string): SessionInfo => ({
+      id,
+      name: id,
+      state: "Running",
+      launch: { backend: "wsl", cwd: "/" },
+      workspaceId,
+      size: { cols: 80, rows: 24 },
+      loggingEnabled: true,
+      createdAt: "2026-11-14T10:00:00.000Z",
+      updatedAt: "2026-11-14T10:00:00.000Z",
+    });
+    const groups = () => sessions.list().map((s) => s.workspaceId ?? null);
+    repo.save(workspace("a", [project("p1", "a")]));
+    sessions.save(session("s1", "a"));
+    const clear = () => sessions.clearWorkspace("a", "2026-11-14T11:00:00.000Z");
+
+    // The removal itself fails: the caller's write is undone.
+    expect(() =>
+      repo.delete("a", () => {
+        clear();
+        throw new Error("disk full");
+      }),
+    ).toThrow("disk full");
+    expect(db.isTransaction).toBe(false);
+    expect(groups()).toEqual(["a"]);
+    expect(repo.list()).toHaveLength(1);
+
+    // Unknown workspace: false, and the caller's write is undone too.
+    expect(repo.delete("nope", clear)).toBe(false);
+    expect(groups()).toEqual(["a"]);
+
+    expect(repo.delete("a", clear)).toBe(true);
+    expect(groups()).toEqual([null]);
+    expect(repo.list()).toEqual([]);
   });
 
   it("lets a profile survive its workspace and project, without the binding", () => {

@@ -824,6 +824,27 @@ describe("SessionRegistry: clearWorkspace (issue #56)", () => {
     expect(registry.clearWorkspace("w1")).toEqual([]);
   });
 
+  it("changes memory only after the wrapped write went through", async () => {
+    const { registry } = setup({ repository: new InMemorySessionRepository() });
+    const a = await registry.create({ name: "a", launch: spec, workspaceId: "w1" });
+
+    expect(() =>
+      registry.clearWorkspace("w1", () => {
+        throw new Error("rolled back");
+      }),
+    ).toThrow("rolled back");
+    expect(registry.get(a.id).workspaceId).toBe("w1");
+
+    let wrote = 0;
+    registry.clearWorkspace("w1", (write) => {
+      write();
+      wrote += 1;
+      expect(registry.get(a.id).workspaceId).toBe("w1");
+    });
+    expect(wrote).toBe(1);
+    expect(registry.get(a.id).workspaceId).toBeUndefined();
+  });
+
   it("clears stored rows that are not in memory", () => {
     const repository = new InMemorySessionRepository();
     repository.save({

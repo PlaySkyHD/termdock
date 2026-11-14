@@ -371,6 +371,8 @@ export class CoreServer {
         throw new CoreError("bad_request", "hello was already sent");
       case "session.create": {
         const { name, launch, size, workspaceId, profileId, loggingEnabled } = request.params;
+        // A deleted or unknown workspace must not collect sessions that no delete can ungroup any more.
+        if (workspaceId !== undefined) this.workspaces.assertWorkspace(workspaceId);
         // Stub until issue #58: the launch spec of the profile.
         if (launch === undefined) throw notImplemented("session.create ohne launch");
         const input: CreateSessionInput = { name, launch };
@@ -440,14 +442,12 @@ export class CoreServer {
       case "workspace.delete": {
         const { workspaceId } = request.params;
         this.workspaces.assertWorkspace(workspaceId);
+        // Ungrouping and deleting share one transaction; the registry changes memory only after the commit.
+        const ungrouped = registry.clearWorkspace(workspaceId, (write) =>
+          this.workspaces.deleteWorkspace(workspaceId, write),
+        );
         // Sessions first: no client may see a session of a workspace that `workspace.changed` no longer lists.
-        const ungrouped = registry.clearWorkspace(workspaceId);
-        try {
-          this.workspaces.deleteWorkspace(workspaceId);
-        } finally {
-          // Also when deleting fails: the sessions are ungrouped by now and clients must hear of it.
-          for (const session of ungrouped) this.notifyListers("session.updated", { session });
-        }
+        for (const session of ungrouped) this.notifyListers("session.updated", { session });
         this.notifyWorkspaces();
         return EMPTY_RESULT;
       }

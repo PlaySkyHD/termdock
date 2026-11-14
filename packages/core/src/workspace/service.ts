@@ -43,8 +43,9 @@ export class WorkspaceService {
     this.workspace(workspaceId);
   }
 
-  deleteWorkspace(workspaceId: string): void {
-    if (!this.repository.delete(workspaceId)) throw notFound("workspace", workspaceId);
+  /** `alsoInTransaction` runs in the transaction of the removal (see `WorkspaceRepository.delete`). */
+  deleteWorkspace(workspaceId: string, alsoInTransaction?: () => void): void {
+    if (!this.repository.delete(workspaceId, alsoInTransaction)) throw notFound("workspace", workspaceId);
   }
 
   createProject(params: ProjectCreateParams): Project {

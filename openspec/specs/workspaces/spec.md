@@ -103,15 +103,41 @@ Beim Löschen eines Workspace SHALL der Core seine Projekte löschen und `worksp
 - **WHEN** einer gelöscht wird
 - **THEN** behält die Session des anderen ihre `workspaceId` und erhält kein `session.updated`
 
+### Requirement: Löschen eines Workspace ist atomar
+
+Der Core SHALL das Ungruppieren der Sessions und das Löschen des Workspace in einer Datenbank-Transaktion ausführen und den Speicher der Registry erst nach dem Commit ändern. Schlägt eines fehl oder gibt es den Workspace nicht, MUST Datenbank und Speicher unverändert bleiben und kein Event gesendet werden.
+
+#### Scenario: Löschen scheitert
+
+- **GIVEN** ein Workspace mit einer Session
+- **WHEN** das Löschen des Workspace in der Datenbank fehlschlägt
+- **THEN** besteht der Workspace, die Session hat weiter ihre `workspaceId` in Speicher und Datenbank, und kein Client erhält `session.updated`
+
+### Requirement: Sessions nur in bestehenden Workspaces
+
+Der Core SHALL `session.create` mit einer `workspaceId`, die keinen bestehenden Workspace nennt (unbekannt oder gelöscht), mit `not_found` ablehnen und keine Session anlegen.
+
+#### Scenario: Gelöschter Workspace
+
+- **GIVEN** ein gelöschter Workspace
+- **WHEN** ein Client `session.create` mit seiner `workspaceId` aufruft
+- **THEN** antwortet der Core mit `not_found` und legt keine Session an
+
 ### Requirement: Standardverzeichnis für neue Sessions
 
-Der Core SHALL eine reine Funktion `defaultCwd` bereitstellen, die für eine Session ohne `cwd` das erste gesetzte aus Projektpfad, `defaultCwd` des Workspace und `defaultCwd` der Einstellungen liefert, sonst `~`. Die Einstellungen MUST als Parameter übergeben werden; die Funktion MUST weder das Dateisystem noch ein Repository lesen.
+Der Core SHALL eine reine Funktion `defaultCwd` bereitstellen, die für das Ziel-Backend einer Session ohne `cwd` das erste gesetzte aus Projektpfad, `defaultCwd` des Workspace und `defaultCwd` der Einstellungen liefert, dessen Syntax zum Backend passt (wie die Pfadprüfung der Projekte), sonst `~`. Für `windows` ist `~` ein Platzhalter bis #65. Die Einstellungen MUST als Parameter übergeben werden; die Funktion MUST weder das Dateisystem noch ein Repository lesen.
 
 #### Scenario: Rangfolge
 
 - **GIVEN** ein Projekt mit Pfad `/p`, ein Workspace mit `defaultCwd` `/w` und Einstellungen mit `defaultCwd` `/s`
 - **WHEN** `defaultCwd` mit allen dreien, danach ohne Projekt, ohne Workspace-Wert und ohne Einstellung aufgerufen wird
 - **THEN** liefert sie nacheinander `/p`, `/w`, `/s` und `~`
+
+#### Scenario: Syntax passt nicht zum Backend
+
+- **GIVEN** ein Projekt mit Pfad `C:dev`, ein Workspace mit `defaultCwd` `D:w` und Einstellungen mit `defaultCwd` `/s`
+- **WHEN** `defaultCwd` für das Backend `wsl` aufgerufen wird
+- **THEN** liefert sie `/s`; ohne die Einstellung `~`, für `windows` mit denselben Werten `C:dev`
 
 ### Requirement: Persistenz der Workspaces
 

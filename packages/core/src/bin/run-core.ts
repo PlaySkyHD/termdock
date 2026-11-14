@@ -109,8 +109,8 @@ class StorageWorkspaceRepository implements WorkspaceRepository {
     this.open().save(workspace);
   }
 
-  delete(workspaceId: string): boolean {
-    return this.open().delete(workspaceId);
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean {
+    return this.open().delete(workspaceId, alsoInTransaction);
   }
 
   private open(): WorkspaceRepository {

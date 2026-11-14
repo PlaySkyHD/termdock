@@ -10,8 +10,12 @@ export interface WorkspaceRepository {
    * that are no longer listed are removed. The caller has validated the workspace.
    */
   save(workspace: Workspace): void;
-  /** Removes the workspace and its projects; false when it did not exist. */
-  delete(workspaceId: string): boolean;
+  /**
+   * Removes the workspace and its projects; false when it did not exist (then nothing was changed).
+   * `alsoInTransaction` runs in the same transaction, before the removal: when it or the removal throws, or the
+   * workspace does not exist, its writes are rolled back. For SQLite it must use the same connection.
+   */
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean;
 }
 
 /** Repository without a file, for tests and a Core without storage. */
@@ -27,7 +31,9 @@ export class InMemoryWorkspaceRepository implements WorkspaceRepository {
     this.workspaces.set(workspace.id, structuredClone(workspace));
   }
 
-  delete(workspaceId: string): boolean {
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean {
+    if (!this.workspaces.has(workspaceId)) return false;
+    alsoInTransaction?.();
     return this.workspaces.delete(workspaceId);
   }
 }
@@ -106,23 +112,34 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository {
     });
   }
 
-  delete(workspaceId: string): boolean {
+  delete(workspaceId: string, alsoInTransaction?: () => void): boolean {
     // Projects go with the workspace (ON DELETE CASCADE); profiles lose their binding (ON DELETE SET NULL).
-    return Number(this.deleteWorkspace.run({ id: workspaceId }).changes) > 0;
+    let removed = false;
+    this.transaction(() => {
+      alsoInTransaction?.();
+      removed = Number(this.deleteWorkspace.run({ id: workspaceId }).changes) > 0;
+      // Nothing to delete: undo what the caller wrote in the same transaction.
+      if (!removed) throw new NothingToDelete();
+    }, NothingToDelete);
+    return removed;
   }
 
   /** All writes of one save under one write lock, so a crash or a second connection never sees half of it. */
-  private transaction(work: () => void): void {
+  private transaction(work: () => void, rolledBackQuietly?: new () => Error): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       work();
       this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      if (rolledBackQuietly && error instanceof rolledBackQuietly) return;
       throw error;
     }
   }
 }
+
+/** Internal signal: `delete` found no workspace and rolls back. */
+class NothingToDelete extends Error {}
 
 function projectFromRow(row: Record<string, unknown>): Project {
   const project: Project = {

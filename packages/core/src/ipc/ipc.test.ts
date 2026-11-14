@@ -1252,7 +1252,22 @@ describe("workspaces and projects (issue #56)", () => {
     expect((await client.request("workspace.list", {})).result.workspaces[0]?.projects).toHaveLength(created);
   });
 
-  it("reports ungrouped sessions even when deleting the workspace row fails, and survives a failing list", async () => {
+  it("refuses a session for an unknown or deleted workspace with not_found", async () => {
+    const { pipePath, registry } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "w" })).result;
+    await client.request("session.create", { name: "ok", launch, workspaceId: workspace.id });
+    await client.request("workspace.delete", { workspaceId: workspace.id });
+
+    for (const workspaceId of [workspace.id, "never-existed"]) {
+      expect(await errorCode(client.request("session.create", { name: "x", launch, workspaceId }))).toBe(
+        "not_found",
+      );
+    }
+    expect(registry.list().map((session) => session.name)).toEqual(["ok"]);
+  });
+
+  it("keeps sessions grouped when deleting the workspace fails, and survives a failing list", async () => {
     const workspaces = new InMemoryWorkspaceRepository();
     const errors: unknown[] = [];
     const { pipePath } = await startCore({ workspaces, onInternalError: (error) => errors.push(error) });
@@ -1267,7 +1282,12 @@ describe("workspaces and projects (issue #56)", () => {
       throw new Error("disk full");
     };
     expect(await errorCode(a.request("workspace.delete", { workspaceId: workspace.id }))).toBe("internal");
-    expect(updated).toEqual(["in"]);
+    // Memory changes only after the commit: no event, the session keeps its workspace.
+    expect(await errorCode(a.request("session.kill", { sessionId: "nope" }))).toBe("not_found");
+    expect(updated).toEqual([]);
+    expect(
+      (await a.request("session.list", {})).result.sessions.map((session) => session.workspaceId),
+    ).toEqual([workspace.id]);
 
     // A read that fails after the write is committed does not fail the request.
     const list = workspaces.list.bind(workspaces);

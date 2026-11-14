@@ -1,12 +1,21 @@
 // Stored session metadata (ADR 0004). Views and the writer are runtime state and are not stored.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import type { BackendKind, LaunchSpec, SessionInfo, SessionState, WindowsShell } from "@termdock/protocol";
+import type {
+  BackendKind,
+  LaunchSpec,
+  SessionId,
+  SessionInfo,
+  SessionState,
+  WindowsShell,
+} from "@termdock/protocol";
 
 export interface SessionRepository {
   /** All stored sessions, oldest first (by `createdAt`, then id). */
   list(): SessionInfo[];
   /** Inserts the session or replaces the stored one with the same id. */
   save(session: SessionInfo): void;
+  /** Removes the stored session; an unknown id is not an error (issue #57). */
+  delete(sessionId: SessionId): void;
   /**
    * Makes every stored session of the workspace ungrouped (`workspaceId` unset) and stamps `updatedAt`.
    * `sessions.workspace_id` has no foreign key (ADR 0004), so the Core does this when it deletes a workspace.
@@ -28,6 +37,10 @@ export class InMemorySessionRepository implements SessionRepository {
     this.sessions.set(session.id, toStored(session));
   }
 
+  delete(sessionId: SessionId): void {
+    this.sessions.delete(sessionId);
+  }
+
   clearWorkspace(workspaceId: string, updatedAt: string): void {
     for (const [id, session] of this.sessions) {
       if (session.workspaceId !== workspaceId) continue;
@@ -40,10 +53,12 @@ export class InMemorySessionRepository implements SessionRepository {
 export class SqliteSessionRepository implements SessionRepository {
   private readonly selectAll: StatementSync;
   private readonly upsert: StatementSync;
+  private readonly deleteOne: StatementSync;
   private readonly unbindWorkspace: StatementSync;
 
   constructor(db: DatabaseSync) {
     this.selectAll = db.prepare("SELECT * FROM sessions ORDER BY created_at, id");
+    this.deleteOne = db.prepare("DELETE FROM sessions WHERE id = ?");
     this.unbindWorkspace = db.prepare(
       "UPDATE sessions SET workspace_id = NULL, updated_at = :updated_at WHERE workspace_id = :workspace_id",
     );
@@ -93,6 +108,10 @@ export class SqliteSessionRepository implements SessionRepository {
       last_exit_code: session.lastExitCode ?? null,
       logging_enabled: session.loggingEnabled ? 1 : 0,
     });
+  }
+
+  delete(sessionId: SessionId): void {
+    this.deleteOne.run(sessionId);
   }
 }
 

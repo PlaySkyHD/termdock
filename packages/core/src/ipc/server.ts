@@ -221,7 +221,7 @@ export class CoreServer {
       }),
       this.registry.onCreated(({ session }) => this.notifyListers("session.created", { session })),
       this.registry.onStateChange(({ sessionId, session }) => {
-        const viewIds = [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
+        const viewIds = this.sessionViewIds(sessionId);
         const listers = this.listers();
         const data: EventMap["session.stateChanged"] = { sessionId, state: session.state };
         if (session.lastExitCode !== undefined) data.lastExitCode = session.lastExitCode;
@@ -519,12 +519,35 @@ export class CoreServer {
         this.notifyProfiles();
         return EMPTY_RESULT;
       // Rename, move, archive, delete: issue #57.
-      case "session.update":
-        throw notImplemented(request.method);
-      case "session.archive":
-        throw notImplemented(request.method);
-      case "session.delete":
-        throw notImplemented(request.method);
+      case "session.update": {
+        const { sessionId, ...patch } = request.params;
+        // As in session.create: an unknown workspace would collect a session no workspace delete ungroups.
+        if (typeof patch.workspaceId === "string") this.workspaces.assertWorkspace(patch.workspaceId);
+        const session = registry.update(sessionId, patch);
+        // Before the answer, like session.created: every lister sees the same order.
+        this.notifyListers("session.updated", { session });
+        return { result: { session } };
+      }
+      case "session.archive": {
+        const { sessionId } = request.params;
+        // `session.stateChanged` with `Archived` goes out through the state listener.
+        await registry.archive(sessionId);
+        this.forgetSessionViews(sessionId);
+        return EMPTY_RESULT;
+      }
+      case "session.delete": {
+        const { sessionId } = request.params;
+        await registry.delete(sessionId);
+        // Like session.stateChanged: also the owners of a view learn it, even if they never listed sessions.
+        // Routed before the views are forgotten: `route` finds their connections through them.
+        this.route(
+          this.sessionViewIds(sessionId),
+          this.listers(),
+          eventFrame("session.removed", { sessionId }),
+        );
+        this.forgetSessionViews(sessionId);
+        return EMPTY_RESULT;
+      }
       case "settings.get":
         return { result: { settings: this.settings.get() } };
       case "settings.set": {
@@ -581,6 +604,19 @@ export class CoreServer {
   private forgetView(viewId: ViewId): void {
     this.views.get(viewId)?.conn.views.delete(viewId);
     this.views.delete(viewId);
+  }
+
+  /**
+   * Forgets the views of all connections on a session the registry has detached them from (archive, delete),
+   * so no record outlives it. Their connections were told by `view.writerChanged` and the state or remove event.
+   */
+  private forgetSessionViews(sessionId: SessionId): void {
+    for (const viewId of this.sessionViewIds(sessionId)) this.forgetView(viewId);
+  }
+
+  /** Views of all connections on the session. */
+  private sessionViewIds(sessionId: SessionId): ViewId[] {
+    return [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
   }
 
   /** Detaches a view in the registry (a session that is gone or archived is fine) and forgets it. */

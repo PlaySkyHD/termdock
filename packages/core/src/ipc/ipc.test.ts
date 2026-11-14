@@ -925,6 +925,21 @@ describe("phase 3 (issue #55)", () => {
     "session.delete": { sessionId: "s1" },
     "history.search": { query: "error" },
   };
+  /** Phase-3 methods whose logic is built; their own tests replace the stub check. */
+  const implemented = new Set<string>([
+    // Issue #56: tests in "workspaces and projects".
+    "workspace.list",
+    "workspace.create",
+    "workspace.update",
+    "workspace.delete",
+    "project.create",
+    "project.update",
+    "project.delete",
+    // Issue #57: ipc/session-management.test.ts.
+    "session.update",
+    "session.archive",
+    "session.delete",
+  ]);
 
   it("answers every phase-3 method with internal 'noch nicht umgesetzt' and keeps serving", async () => {
     const errors: unknown[] = [];
@@ -932,9 +947,10 @@ describe("phase 3 (issue #55)", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     const calls: [string, unknown][] = [
-      // workspace.* and project.* are implemented (issue #56, tests in "workspaces and projects").
       // profile.* and session.create from a profile are implemented too (issue #58, "launch profiles").
-      ...Object.entries(stubCalls).filter(([method]) => !/^(workspace|project|profile)\./.test(method)),
+      ...Object.entries(stubCalls).filter(
+        ([method]) => !implemented.has(method) && !/^profile\./.test(method),
+      ),
     ];
     for (const [method, params] of calls) raw.send({ kind: "request", id: method, method, params });
     raw.send({ kind: "request", id: "list", method: "session.list", params: {} });

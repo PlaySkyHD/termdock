@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "@termdock/protocol";
 import type {
   LaunchProfile,
   LayoutDocument,
+  SessionId,
   SessionInfo,
   Settings,
   SettingsPatch,
@@ -80,6 +81,10 @@ class StorageRepository implements SessionRepository {
 
   save(session: SessionInfo): void {
     this.open().save(session);
+  }
+
+  delete(sessionId: SessionId): void {
+    this.open().delete(sessionId);
   }
 
   clearWorkspace(workspaceId: string, updatedAt: string): void {
@@ -187,11 +192,18 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   const getSettings = (): HistorySettings => settings.target?.get() ?? DEFAULT_SETTINGS;
   const workspaces = new StorageWorkspaceRepository();
   const profiles = new StorageProfileRepository();
+  // Opened with the storage below; requests wait for the reconcile, so a delete always finds it.
+  let history: HistoryStore | undefined;
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
     defaultLoggingEnabled: () => getSettings().historyEnabledByDefault,
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
+    // Forgets the session in the store and deletes `history/<id>/` (path check in `historyDir`, ADR 0004).
+    removeHistory: async (sessionId) => {
+      if (!history) throw new Error("The history store is not open yet");
+      await history.remove(sessionId);
+    },
   });
   let markReady: () => void = () => {};
   let markFailed: (error: unknown) => void = () => {};
@@ -225,7 +237,6 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   }
 
   let storage: Storage | undefined;
-  let history: HistoryStore | undefined;
   const signals = options.signals ?? process;
   const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
   let isReady = false;

@@ -37,6 +37,18 @@ async function tdSessions(distro: string): Promise<string[]> {
   return listed.stdout.split("\n").filter((line) => line.startsWith("td-"));
 }
 
+/**
+ * Waits for the tmux session: the backend binds the PTY of `tmux new-session` before tmux has created the
+ * session, so `Detached` can come first (as in session-management.wsl.test.ts).
+ */
+async function waitForSession(distro: string, sessionId: string, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await tdSessions(distro)).includes(`td-${sessionId}`)) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for tmux session td-${sessionId}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
   const pipePath = `\\\\.\\pipe\\termdock-autostart-${randomUUID()}`;
   let dataDir = "";
@@ -110,7 +122,7 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     expect(session).toMatchObject({ name: "auto", profileId: profile.id, state: "Detached" });
     const distro = session!.launch.distro!;
     distros.add(distro);
-    expect(await tdSessions(distro)).toContain(`td-${session!.id}`);
+    await waitForSession(distro, session!.id);
     await closeAll();
 
     const third = await startCore();
@@ -131,6 +143,6 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     const restarted = (await c4.request("session.list", {})).result.sessions;
     expect(restarted.map((s) => [s.id, s.state])).toEqual([[session!.id, "Detached"]]);
     expect(fourth.autostart?.restarted.map((s) => s.id)).toEqual([session!.id]);
-    expect(await tdSessions(distro)).toContain(`td-${session!.id}`);
+    await waitForSession(distro, session!.id);
   });
 });

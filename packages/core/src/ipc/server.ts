@@ -431,12 +431,27 @@ export class CoreServer {
       case "profile.delete":
         throw notImplemented(request.method);
       // Rename, move, archive, delete: issue #57.
-      case "session.update":
-        throw notImplemented(request.method);
-      case "session.archive":
-        throw notImplemented(request.method);
-      case "session.delete":
-        throw notImplemented(request.method);
+      case "session.update": {
+        const { sessionId, ...patch } = request.params;
+        const session = registry.update(sessionId, patch);
+        // Before the answer, like session.created: every lister sees the same order.
+        this.notifyListers("session.updated", { session });
+        return { result: { session } };
+      }
+      case "session.archive": {
+        const { sessionId } = request.params;
+        // `session.stateChanged` with `Archived` goes out through the state listener.
+        await registry.archive(sessionId);
+        this.forgetSessionViews(sessionId);
+        return EMPTY_RESULT;
+      }
+      case "session.delete": {
+        const { sessionId } = request.params;
+        await registry.delete(sessionId);
+        this.forgetSessionViews(sessionId);
+        this.notifyListers("session.removed", { sessionId });
+        return EMPTY_RESULT;
+      }
       // Settings: issue #64.
       case "settings.get":
         throw notImplemented(request.method);
@@ -491,6 +506,14 @@ export class CoreServer {
   private forgetView(viewId: ViewId): void {
     this.views.get(viewId)?.conn.views.delete(viewId);
     this.views.delete(viewId);
+  }
+
+  /**
+   * Forgets the views of all connections on a session the registry has detached them from (archive, delete),
+   * so no record outlives it. Their connections were told by `view.writerChanged` and the state or remove event.
+   */
+  private forgetSessionViews(sessionId: SessionId): void {
+    for (const [viewId, view] of [...this.views]) if (view.sessionId === sessionId) this.forgetView(viewId);
   }
 
   /** Detaches a view in the registry (a session that is gone or archived is fine) and forgets it. */

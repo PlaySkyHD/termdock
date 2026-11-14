@@ -1,5 +1,6 @@
 // Session Registry: identities, lifecycle, views and input lock of all sessions in the Core (ADR 0003, ADR 0005).
 import { randomUUID } from "node:crypto";
+import { MAX_NAME_LENGTH } from "@termdock/protocol";
 import type {
   BackendKind,
   LaunchProfileId,
@@ -46,7 +47,22 @@ export interface SessionRegistryOptions {
    * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
    */
   reattachDelaysMs?: readonly number[];
+  /**
+   * Removes the persistent history of a session (`history/<sessionId>/`, ADR 0004); `delete` calls it before
+   * the stored row goes. Must be idempotent. Defaults to doing nothing (a registry without data directory).
+   */
+  removeHistory?: (sessionId: SessionId) => Promise<void>;
 }
+
+/** Changes of `update`: a missing field stays, `workspaceId: null` makes the session ungrouped (issue #57). */
+export interface SessionPatch {
+  name?: string;
+  workspaceId?: WorkspaceId | null;
+  loggingEnabled?: boolean;
+}
+
+/** States `delete` accepts: no process runs (ADR 0005, issue #57). */
+const DELETABLE_STATES: ReadonlySet<SessionState> = new Set(["Exited", "Interrupted", "Archived"]);
 
 /** Three attempts to re-attach a lost backend client: at once, after 0.5 s and after 2 s. */
 export const DEFAULT_REATTACH_DELAYS_MS: readonly number[] = [0, 500, 2000];
@@ -144,7 +160,7 @@ interface SessionEntry {
   /** Redraw in progress; `again` asks for one more after it (see `requestRedraw`). */
   redraw: { again: boolean } | undefined;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
-  busy: "start" | "kill" | "archive" | "reattach" | undefined;
+  busy: "start" | "kill" | "archive" | "reattach" | "delete" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
   endedDuringOp: { exitCode?: number } | undefined;
   /** Re-attach attempts used since the last fresh or stable PTY, and when the last PTY was bound. */
@@ -190,6 +206,7 @@ export class SessionRegistry {
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
   private readonly reattachDelaysMs: readonly number[];
+  private readonly removeHistory: (sessionId: SessionId) => Promise<void>;
   private restored = false;
   private restoring = false;
   private unavailableAtRestore: BackendKind[] = [];
@@ -206,6 +223,7 @@ export class SessionRegistry {
     this.now = options.now ?? (() => new Date());
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
+    this.removeHistory = options.removeHistory ?? (async () => {});
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
@@ -427,6 +445,91 @@ export class SessionRegistry {
   }
 
   /**
+   * Renames a session, moves it into a workspace or out of it (`workspaceId: null`) or switches its history.
+   * Allowed in every state; the process is not touched (issue #57). The change is saved like any other.
+   */
+  update(sessionId: SessionId, patch: SessionPatch): SessionInfo {
+    const entry = this.entry(sessionId);
+    this.assertNotDisposed();
+    // A delete in progress would otherwise find the row saved again after it removed it.
+    if (entry.busy === "delete")
+      throw new CoreError("invalid_state", `Session ${sessionId} is being deleted`);
+    const { name, workspaceId, loggingEnabled } = patch;
+    if (name !== undefined && (name.trim().length === 0 || name.length > MAX_NAME_LENGTH)) {
+      throw new CoreError("bad_request", `Session name must have 1 to ${MAX_NAME_LENGTH} characters`);
+    }
+    const { info } = entry;
+    if (name !== undefined) info.name = name;
+    if (workspaceId === null) delete info.workspaceId;
+    else if (workspaceId !== undefined) info.workspaceId = workspaceId;
+    if (loggingEnabled !== undefined) info.loggingEnabled = loggingEnabled;
+    info.updatedAt = this.now().toISOString();
+    this.persist(entry);
+    return snapshotInfo(info);
+  }
+
+  /**
+   * Deletes a session in `Exited`, `Interrupted` or `Archived` (otherwise `invalid_state`): ends a backend
+   * session an `Interrupted` one may have left behind, removes the history, then the stored row, and finally
+   * detaches all views and forgets the session (issue #57). `Exited` and `Archived` have no backend session (the
+   * backend removes it with the exit code, `archive` ends it). If a step fails, the session stays as it was,
+   * with its views; the steps before are idempotent, so the delete can be repeated.
+   */
+  async delete(sessionId: SessionId): Promise<void> {
+    const entry = this.entry(sessionId);
+    this.assertNotDisposed();
+    this.assertIdle(entry);
+    const { info } = entry;
+    if (!DELETABLE_STATES.has(info.state)) {
+      throw new CoreError("invalid_state", `Session ${sessionId} in state ${info.state} cannot be deleted`);
+    }
+    entry.busy = "delete";
+    try {
+      if (info.state === "Interrupted") await this.endLeftoverBackendSession(entry);
+      this.assertNotDisposed();
+      try {
+        await this.removeHistory(sessionId);
+      } catch (cause) {
+        throw new CoreError("internal", `History of session ${sessionId} could not be removed`, {
+          cause,
+          sessionId,
+        });
+      }
+      this.assertNotDisposed();
+      try {
+        this.repository?.delete(sessionId);
+      } catch (cause) {
+        throw new CoreError("internal", `Session ${sessionId} could not be deleted`, { cause, sessionId });
+      }
+    } finally {
+      entry.busy = undefined;
+    }
+    // The views learn that nobody writes any more before the session is gone.
+    if (info.writerViewId !== undefined) this.setWriter(entry, undefined);
+    entry.views.clear();
+    entry.output.clear();
+    this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Ends the backend session of a session being deleted if it still exists, so no tmux session is left behind.
+   * A failed check counts as "gone" only when the backend is not available at all (no WSL, no tmux): nothing
+   * can be left running there, and the delete must not be blocked forever. Otherwise it is `backend_unavailable`.
+   */
+  private async endLeftoverBackendSession(entry: SessionEntry): Promise<void> {
+    const backend = this.backendFor(entry.info.launch);
+    if (!backend) return;
+    let exists: boolean;
+    try {
+      exists = await this.backendExists(entry, backend);
+    } catch (error) {
+      if (await backend.available().catch(() => false)) throw error;
+      return;
+    }
+    if (exists) await this.killBackend(entry, backend);
+  }
+
+  /**
    * Attaches a view. A view that attaches to a session without other views becomes the writer (ADR 0005).
    * Allowed in every state except `Archived`. The view gets exactly the output numbered above `outputSeq`.
    */
@@ -547,6 +650,10 @@ export class SessionRegistry {
 
   private assertNotRestoring(): void {
     if (this.restoring) throw new CoreError("invalid_state", "Sessions are being restored");
+    this.assertNotDisposed();
+  }
+
+  private assertNotDisposed(): void {
     if (this.disposed) throw new CoreError("invalid_state", "The session registry is shut down");
   }
 
@@ -559,6 +666,8 @@ export class SessionRegistry {
   private assertAttachable(entry: SessionEntry, viewId: ViewId): void {
     if (entry.info.state === "Archived")
       throw new CoreError("invalid_state", `Session ${entry.info.id} is archived`);
+    if (entry.busy === "delete")
+      throw new CoreError("invalid_state", `Session ${entry.info.id} is being deleted`);
     if (entry.views.has(viewId)) throw new CoreError("bad_request", `View ${viewId} is already attached`);
   }
 

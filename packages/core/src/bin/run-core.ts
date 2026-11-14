@@ -1,14 +1,15 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
-import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
+import type { LayoutDocument, SessionId, SessionInfo } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
 import { CoreError } from "../session/errors.js";
 import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
-import { openStorage } from "../storage/database.js";
+import { openStorage, resolveDataDir } from "../storage/database.js";
 import type { Storage } from "../storage/database.js";
+import { removeSessionHistory } from "../storage/history-files.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
 
@@ -68,6 +69,10 @@ class StorageRepository implements SessionRepository {
     this.open().save(session);
   }
 
+  delete(sessionId: SessionId): void {
+    this.open().delete(sessionId);
+  }
+
   private open(): SessionRepository {
     if (!this.target) throw new Error("The database is not open yet");
     return this.target;
@@ -101,10 +106,16 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
+  // Set with the storage below; requests wait for the reconcile, so a delete always finds it.
+  let dataDir: string | undefined;
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
+    removeHistory: async (sessionId) => {
+      if (dataDir === undefined) throw new Error("The data directory is not known yet");
+      await removeSessionHistory(dataDir, sessionId);
+    },
   });
   let markReady: () => void = () => {};
   let markFailed: (error: unknown) => void = () => {};
@@ -170,10 +181,9 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
   let restore: RestoreResult;
   try {
-    storage = openStorage({
-      ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
-      onLayoutInvalid: log,
-    });
+    const resolvedDataDir = options.dataDir ?? resolveDataDir();
+    storage = openStorage({ dataDir: resolvedDataDir, onLayoutInvalid: log });
+    dataDir = resolvedDataDir;
     repository.target = storage.sessions;
     layouts.target = storage.layouts;
     const restoring = registry.restore();

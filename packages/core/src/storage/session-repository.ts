@@ -1,12 +1,21 @@
 // Stored session metadata (ADR 0004). Views and the writer are runtime state and are not stored.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import type { BackendKind, LaunchSpec, SessionInfo, SessionState, WindowsShell } from "@termdock/protocol";
+import type {
+  BackendKind,
+  LaunchSpec,
+  SessionId,
+  SessionInfo,
+  SessionState,
+  WindowsShell,
+} from "@termdock/protocol";
 
 export interface SessionRepository {
   /** All stored sessions, oldest first (by `createdAt`, then id). */
   list(): SessionInfo[];
   /** Inserts the session or replaces the stored one with the same id. */
   save(session: SessionInfo): void;
+  /** Removes the stored session; an unknown id is not an error (issue #57). */
+  delete(sessionId: SessionId): void;
 }
 
 /** Repository without a file, for tests and a Core without storage. */
@@ -22,14 +31,20 @@ export class InMemorySessionRepository implements SessionRepository {
   save(session: SessionInfo): void {
     this.sessions.set(session.id, toStored(session));
   }
+
+  delete(sessionId: SessionId): void {
+    this.sessions.delete(sessionId);
+  }
 }
 
 export class SqliteSessionRepository implements SessionRepository {
   private readonly selectAll: StatementSync;
   private readonly upsert: StatementSync;
+  private readonly deleteOne: StatementSync;
 
   constructor(db: DatabaseSync) {
     this.selectAll = db.prepare("SELECT * FROM sessions ORDER BY created_at, id");
+    this.deleteOne = db.prepare("DELETE FROM sessions WHERE id = ?");
     this.upsert = db.prepare(`
       INSERT INTO sessions (
         id, name, backend, distro, shell, cwd, command, env, state, workspace_id, profile_id,
@@ -72,6 +87,10 @@ export class SqliteSessionRepository implements SessionRepository {
       last_exit_code: session.lastExitCode ?? null,
       logging_enabled: session.loggingEnabled ? 1 : 0,
     });
+  }
+
+  delete(sessionId: SessionId): void {
+    this.deleteOne.run(sessionId);
   }
 }
 

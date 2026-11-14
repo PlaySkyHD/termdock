@@ -16,6 +16,7 @@ Kapitel 6 definiert die Zustände `Starting`, `Running`, `Detached`, `Exited`, `
   - `Exited | Interrupted → Starting` (Neustart derselben Session-ID)
   - `Exited | Interrupted | Detached | Running → Archived` (bei laufendem Prozess wird er zuerst beendet)
   - Alle anderen Übergänge sind `invalid_state`.
+- **Ändern und Löschen (#57):** `update` ändert Name, Workspace (`null` = gruppenlos) und Verlauf-Schalter in jedem Zustand, ohne Prozess und Zustand zu berühren. `delete` ist kein Zustand, sondern das Ende der Session, und nur aus `Exited`, `Interrupted` oder `Archived` erlaubt (sonst `invalid_state`). Reihenfolge: bei `Interrupted` eine noch existierende Backend-Session beenden (keine verwaiste tmux-Session; scheitert die Prüfung, nur bei nicht verfügbarem Backend weiter, sonst `backend_unavailable`), Verlauf entfernen, Zeile entfernen, dann alle Views trennen (Schreiberwechsel ohne Schreiber) und die Session vergessen. Scheitert ein Schritt, bleibt die Session mit ihren Views; währenddessen sind Anhängen, Ändern und alle Lifecycle-Aufrufe `invalid_state`.
 - **Reconcile beim Core-Start:** Für jede gespeicherte Session in `Starting`, `Running` oder `Detached`:
   - WSL: `exists()` true → neu anbinden, Zustand `Detached`; false → `Interrupted`.
   - Windows: immer `Interrupted` (PTY gehörte dem alten Core).

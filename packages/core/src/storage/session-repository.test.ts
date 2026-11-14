@@ -104,4 +104,15 @@ describe.each([
     expect(repository.list()[0]?.size.cols).toBe(1);
     expect(repository.list()[0]?.launch.command).toEqual(["a"]);
   });
+
+  it("deletes only the given session and ignores an unknown id (issue #57)", () => {
+    const repository = create();
+    repository.save(full);
+    repository.save(minimal);
+
+    repository.delete(full.id);
+    repository.delete("unknown");
+
+    expect(repository.list()).toEqual([minimal]);
+  });
 });

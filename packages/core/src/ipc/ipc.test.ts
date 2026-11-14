@@ -921,6 +921,13 @@ describe("phase 3 (issue #55)", () => {
     "settings.set": { settings: { historyEnabledByDefault: false } },
     "history.search": { query: "error" },
   };
+  /** Phase-3 methods whose logic is built; their own tests replace the stub check. */
+  const implemented = new Set<string>([
+    // Issue #57: ipc/session-management.test.ts.
+    "session.update",
+    "session.archive",
+    "session.delete",
+  ]);
 
   it("answers every phase-3 method with internal 'noch nicht umgesetzt' and keeps serving", async () => {
     const errors: unknown[] = [];
@@ -928,7 +935,7 @@ describe("phase 3 (issue #55)", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     const calls: [string, unknown][] = [
-      ...Object.entries(stubCalls),
+      ...Object.entries(stubCalls).filter(([method]) => !implemented.has(method)),
       // Creating from a profile without launch belongs to issue #58.
       ["session.create", { name: "Claude", profileId: "pr1" }],
     ];

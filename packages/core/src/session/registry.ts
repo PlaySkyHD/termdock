@@ -139,6 +139,8 @@ export interface RestoreResult {
   sessions: ReconciledSession[];
   /** Backends that could not be reached; the Core reports `backend_unavailable` in the status bar (ADR 0005). */
   backendUnavailable: BackendKind[];
+  /** Backends the reconcile checked and reached; the autostart does not check them again (issue #61). */
+  backendAvailable: BackendKind[];
 }
 
 /** Stored states whose process may still be alive and must be checked on start. */
@@ -375,7 +377,13 @@ export class SessionRegistry {
       this.sessions.set(info.id, entry);
     }
     this.unavailableAtRestore = [...unavailable];
+    // Settled already: every check was awaited by the reconcile of its session.
+    const reachable: BackendKind[] = [];
+    for (const [backend, available] of availability) {
+      if ((await available) && !unavailable.has(backend.kind)) reachable.push(backend.kind);
+    }
     return {
+      backendAvailable: reachable,
       sessions: reconciled.map(({ entry, from }) => ({
         sessionId: entry.info.id,
         from,

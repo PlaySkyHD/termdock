@@ -325,6 +325,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     settings: () => settings.get(),
     backends: options.backends ?? ownBackends,
     knownUnavailable: restore.backendUnavailable,
+    knownAvailable: restore.backendAvailable,
     cancelled: () => closing !== undefined,
     report: log,
   });

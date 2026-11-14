@@ -184,29 +184,88 @@ describe("runAutostart", () => {
     expect(t.registry.list()).toHaveLength(1);
   });
 
-  it("gives a profile whose session is Interrupted, Exited or Archived a new one and keeps the old", async () => {
+  it("starts an Interrupted or Exited session of the profile again under its id instead of a new one", async () => {
     const t = setup();
     const interrupted = t.profiles.create({ name: "a", launch: wsl, autostart: true });
     const exited = t.profiles.create({ name: "b", launch: wsl, autostart: true });
-    const archived = t.profiles.create({ name: "c", launch: wsl, autostart: true });
     t.repository.save(storedSession("old-a", "Interrupted", interrupted.id));
     t.repository.save({ ...storedSession("old-b", "Exited", exited.id), lastExitCode: 0 });
-    t.repository.save(storedSession("old-c", "Archived", archived.id));
+    await t.registry.restore();
+
+    const result = await runAutostart(t.options());
+    // `Starting` before the result: the first `session.list` of a client already shows the restart.
+    expect(result.restarted.map((session) => [session.id, session.state])).toEqual([
+      ["old-a", "Starting"],
+      ["old-b", "Starting"],
+    ]);
+    await result.started;
+
+    expect(result.sessions).toEqual([]);
+    expect(t.created).toEqual([]);
+    expect(t.registry.list().map((session) => [session.id, session.state])).toEqual([
+      ["old-a", "Detached"],
+      ["old-b", "Detached"],
+    ]);
+    expect(t.backend.starts.map((call) => call.id)).toEqual(["old-a", "old-b"]);
+  });
+
+  it("restarts the newest of several ended sessions and leaves the others", async () => {
+    const t = setup();
+    const profile = t.profiles.create({ name: "a", launch: wsl, autostart: true });
+    t.repository.save({
+      ...storedSession("older", "Interrupted", profile.id),
+      updatedAt: "2026-11-13T09:00:00.000Z",
+    });
+    t.repository.save({
+      ...storedSession("newest", "Exited", profile.id),
+      updatedAt: "2026-11-13T11:00:00.000Z",
+    });
+    t.repository.save({
+      ...storedSession("archived", "Archived", profile.id),
+      updatedAt: "2026-11-13T12:00:00.000Z",
+    });
+    await t.registry.restore();
+
+    await (
+      await runAutostart(t.options())
+    ).started;
+
+    const byId = new Map(t.registry.list().map((session) => [session.id, session.state]));
+    expect(byId).toEqual(
+      new Map([
+        ["older", "Interrupted"],
+        ["newest", "Detached"],
+        ["archived", "Archived"],
+      ]),
+    );
+  });
+
+  it("creates a new session for a profile whose only session is Archived", async () => {
+    const t = setup();
+    const profile = t.profiles.create({ name: "a", launch: wsl, autostart: true });
+    t.repository.save(storedSession("old", "Archived", profile.id));
     await t.registry.restore();
 
     const result = await runAutostart(t.options());
     await result.started;
 
-    expect(result.sessions.map((session) => session.profileId)).toEqual([
-      interrupted.id,
-      exited.id,
-      archived.id,
-    ]);
-    const byId = new Map(t.registry.list().map((session) => [session.id, session.state]));
-    expect(byId.get("old-a")).toBe("Interrupted");
-    expect(byId.get("old-b")).toBe("Exited");
-    expect(byId.get("old-c")).toBe("Archived");
-    expect(t.registry.list()).toHaveLength(6);
+    expect(result.restarted).toEqual([]);
+    expect(result.sessions).toEqual([expect.objectContaining({ profileId: profile.id })]);
+    expect(t.registry.get("old").state).toBe("Archived");
+    expect(t.registry.list()).toHaveLength(2);
+  });
+
+  it("does not ask a backend the reconcile has just reached", async () => {
+    const t = setup();
+    await t.registry.restore();
+    t.profiles.create({ name: "a", launch: wsl, autostart: true });
+
+    await (
+      await runAutostart(t.options({ knownAvailable: ["wsl"] }))
+    ).started;
+
+    expect(t.backend.availableCalls).toBe(0);
+    expect(t.registry.list()).toHaveLength(1);
   });
 
   it("starts nothing and reports an unreachable backend once, without asking it again", async () => {
@@ -279,6 +338,8 @@ describe("runAutostart", () => {
     expect(t.backend.starts).toHaveLength(1);
     expect(t.reports).toHaveLength(1);
     expect(t.reports[0]).toContain(profile.id);
+    // The backend's reason (cause), not only "could not be started"; no command of the profile.
+    expect(t.reports[0]).toContain("tmux failed");
     expect(t.reports[0]).not.toContain("claude");
   });
 

@@ -1,6 +1,9 @@
 // Autostart against real WSL and tmux with a Core restart (issue #61): an autostart profile gets one tmux
-// session, and a restarted Core re-attaches it instead of starting a second. Only with TERMDOCK_WSL_TESTS=1
-// (local, not in CI); socket `termdock-test`.
+// session, a restarted Core re-attaches it instead of starting a second, and a lost tmux session is started
+// again under the same session id. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI); own socket
+// `termdock-test-autostart-<nonce>`.
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +15,9 @@ import type { RunCoreResult } from "./bin/run-core.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
 
-const SOCKET = "termdock-test";
+// A socket of its own below `termdock-test`, like the screenshot runs: other worktrees running the WSL tests at
+// the same time clean up every `td-*` session on `termdock-test`, which would end ours between two Cores.
+const SOCKET = `termdock-test-autostart-${randomUUID().slice(0, 8)}`;
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
 
 const cores: RunCoreResult[] = [];
@@ -26,6 +31,9 @@ async function tmux(distro: string, args: string[]) {
 
 async function tdSessions(distro: string): Promise<string[]> {
   const listed = await tmux(distro, ["list-sessions", "-F", "#{session_name}"]);
+  if (listed.code !== 0 && !/no server running|error connecting/.test(listed.stderr)) {
+    throw new Error(`tmux list-sessions failed (${listed.code}): ${listed.stderr.trim()}`);
+  }
   return listed.stdout.split("\n").filter((line) => line.startsWith("td-"));
 }
 
@@ -58,10 +66,18 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     for (const core of cores.splice(0)) await core.close?.();
   }
 
+  // Between two Cores no wsl.exe of the Core runs; WSL would stop the idle distro together with the tmux server
+  // (docs/agent-lessons-learned.md, section 2). The test keeps the default distro awake for its whole run.
+  let keepalive: ChildProcess | undefined;
+
   afterEach(async () => {
+    keepalive?.kill();
+    keepalive = undefined;
     await closeAll();
     for (const distro of distros) {
       for (const name of await tdSessions(distro)) await tmux(distro, ["kill-session", "-t", `=${name}`]);
+      // The socket belongs to this file alone.
+      await tmux(distro, ["kill-server"]);
     }
     distros.clear();
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -70,6 +86,10 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
   it("starts an autostart profile once and re-attaches it after a Core restart", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "termdock-autostart-"));
     tempDirs.push(dataDir);
+    keepalive = spawn("wsl.exe", ["--cd", "~", "--exec", "sleep", "infinity"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
     await startCore();
     const setup = await client();
     const { profile } = (
@@ -100,5 +120,17 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     expect(after.map((s) => [s.id, s.state])).toEqual([[session!.id, "Detached"]]);
     expect(third.autostart?.sessions).toEqual([]);
     expect((await tdSessions(distro)).filter((name) => name === `td-${session!.id}`)).toHaveLength(1);
+    await closeAll();
+
+    // As after a Windows restart: the tmux session is gone, the reconcile makes the session Interrupted, and
+    // the autostart starts it again under the same id instead of adding a new one.
+    await tmux(distro, ["kill-session", "-t", `=td-${session!.id}`]);
+    const fourth = await startCore();
+    await fourth.autostart?.started;
+    const c4 = await client();
+    const restarted = (await c4.request("session.list", {})).result.sessions;
+    expect(restarted.map((s) => [s.id, s.state])).toEqual([[session!.id, "Detached"]]);
+    expect(fourth.autostart?.restarted.map((s) => s.id)).toEqual([session!.id]);
+    expect(await tdSessions(distro)).toContain(`td-${session!.id}`);
   });
 });

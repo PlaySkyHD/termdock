@@ -159,7 +159,7 @@ Der Core SHALL Profile in der Tabelle `launch_profiles` speichern und beim Start
 
 ### Requirement: Autostart beim Core-Start
 
-Nach dem Reconcile SHALL der Core einmal je Core-Start für jedes Profil mit `autostart: true` ohne Session in `Starting`, `Running` oder `Detached` (Bindung über `profileId`) eine Session anlegen, wie `session.create { name, profileId }` mit dem Namen des Profils. Sessions in `Exited`, `Interrupted` oder `Archived` MUST unverändert bleiben. Nur der Core löst den Autostart aus, kein Client. Die neue Session MUST wie jede neue Session mit `session.created` gemeldet werden.
+Nach dem Reconcile SHALL der Core einmal je Core-Start jedes Profil mit `autostart: true` starten, das keine Session in `Starting`, `Running` oder `Detached` hat (Bindung über `profileId`). Hat es auch keine Session in `Exited` oder `Interrupted`, MUST der Core eine neue anlegen wie `session.create { name, profileId }` mit dem Namen des Profils und sie wie jede neue Session mit `session.created` melden. Nur der Core löst den Autostart aus, kein Client.
 
 #### Scenario: Nur markierte Profile
 
@@ -179,21 +179,37 @@ Nach dem Reconcile SHALL der Core einmal je Core-Start für jedes Profil mit `au
 - **WHEN** beide Antworten eintreffen
 - **THEN** nennen beide dieselbe eine Session des Profils, und es wurde genau ein Start an das Backend gegeben
 
-#### Scenario: Unterbrochene Session
-
-- **GIVEN** ein Autostart-Profil, dessen einzige Session `Interrupted` ist
-- **WHEN** der Core startet
-- **THEN** gibt es eine neue Session des Profils und die alte ist weiter `Interrupted`
-
 #### Scenario: Standardverzeichnis
 
 - **GIVEN** ein Autostart-Profil mit `cwd: "~"`, gebunden an ein Projekt mit Pfad `/home/dev/api`
 - **WHEN** der Core startet
 - **THEN** startet die Session in `/home/dev/api`
 
+### Requirement: Autostart setzt beendete Sessions fort
+
+Hat ein Autostart-Profil ohne lebende Session Sessions in `Exited` oder `Interrupted`, SHALL der Core die zuletzt geänderte davon (`updatedAt`) unter ihrer ID neu starten (`restart`), statt eine neue anzulegen; Name, Workspace, `LaunchSpec` und Verlauf bleiben die der Session. Die übrigen Sessions des Profils und Sessions in `Archived` MUST unverändert bleiben. Hat das Profil nur `Archived`-Sessions, gilt es als ohne Session.
+
+#### Scenario: Unterbrochene Session
+
+- **GIVEN** ein Autostart-Profil, dessen einzige Session `Interrupted` ist (etwa nach einem Windows-Neustart)
+- **WHEN** der Core startet
+- **THEN** läuft dieselbe Session mit derselben ID wieder (`Detached`), und es gibt keine neue Session
+
+#### Scenario: Mehrere beendete Sessions
+
+- **GIVEN** ein Autostart-Profil mit einer älteren `Interrupted`-, einer neueren `Exited`- und einer `Archived`-Session
+- **WHEN** der Core startet
+- **THEN** läuft nur die `Exited`-Session wieder; die anderen behalten ihren Zustand
+
+#### Scenario: Nur archiviert
+
+- **GIVEN** ein Autostart-Profil, dessen einzige Session `Archived` ist
+- **WHEN** der Core startet
+- **THEN** gibt es eine neue Session des Profils und die alte bleibt `Archived`
+
 ### Requirement: Autostart bei nicht erreichbarem Backend
 
-Fehlt das Backend eines Autostart-Profils oder ist es nicht erreichbar, SHALL der Core für dieses Profil keine Session anlegen und das Backend einmal je Core-Start auf stderr (`backend_unavailable`) und in `core.status` melden. Scheitert ein Start, MUST die Session `Interrupted` werden und der Fehler einmal gemeldet werden. Der Core MUST den Autostart in keinem der Fälle wiederholen.
+Fehlt das Backend eines Autostart-Profils oder ist es nicht erreichbar, SHALL der Core für dieses Profil keine Session anlegen oder neu starten und das Backend einmal je Core-Start auf stderr (`backend_unavailable`) und in `core.status` melden; ein Backend, das der Reconcile erreicht hat, prüft er nicht erneut. Scheitert ein Start, MUST die Session `Interrupted` werden und der Fehler mit dem Grund des Backends einmal gemeldet werden. Der Core MUST den Autostart nicht wiederholen.
 
 #### Scenario: WSL nicht erreichbar
 

@@ -131,7 +131,7 @@ Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Startin
 
 - **GIVEN** eine gespeicherte WSL-Session eines Autostart-Profils in `Running`, deren tmux-Session noch existiert, und eine eines zweiten Autostart-Profils, deren tmux-Session fehlt
 - **WHEN** der Core startet
-- **THEN** ist die erste `Detached` und ihr Profil bekommt keine neue Session; die zweite ist `Interrupted` und ihr Profil bekommt genau eine neue
+- **THEN** ist die erste `Detached` und ihr Profil bekommt keine neue Session; die zweite wird nach dem Reconcile `Interrupted`, danach unter ihrer ID neu gestartet, und es gibt keine weitere Session
 
 ### Requirement: Reconcile bei nicht erreichbarem Backend
 

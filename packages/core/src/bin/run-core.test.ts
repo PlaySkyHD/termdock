@@ -476,7 +476,31 @@ describe("runCore autostart (issue #61)", () => {
     expect(third.autostart?.sessions).toEqual([]);
   });
 
-  it("gives a profile whose session was interrupted exactly one new session and keeps the old", async () => {
+  it("checks a backend once when the reconcile has already reached it", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    let calls = 0;
+    const backend = new (class extends FakeBackend {
+      override available(): Promise<boolean> {
+        calls += 1;
+        return super.available();
+      }
+    })();
+    await prepared(dataDir, pipePath, backend, async (c) => {
+      await c.request("session.create", { name: "build", launch });
+      await c.request("profile.create", { name: "Claude", launch, autostart: true });
+    });
+    calls = 0;
+
+    const next = await start({ pipePath, dataDir, backends: [backend] });
+    await next.autostart?.started;
+
+    expect(next.restore?.backendAvailable).toEqual(["wsl"]);
+    expect(next.autostart?.sessions).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  it("starts the interrupted session of a profile again under its id instead of a new one", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
     const backend = new FakeBackend();
@@ -493,9 +517,9 @@ describe("runCore autostart (issue #61)", () => {
     await next.autostart?.started;
 
     const sessions = await sessionsOf(pipePath);
-    expect(sessions).toHaveLength(2);
-    expect(sessions.find((session) => session.id === old)?.state).toBe("Interrupted");
-    expect(sessions.find((session) => session.id !== old)?.state).toBe("Detached");
+    expect(sessions.map((session) => [session.id, session.state])).toEqual([[old, "Detached"]]);
+    expect(next.autostart?.sessions).toEqual([]);
+    expect(backend.starts.map((call) => call.id)).toEqual([old, old]);
   });
 
   it("holds requests until the autostart sessions are registered; two clients see one start", async () => {

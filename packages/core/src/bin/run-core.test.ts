@@ -117,6 +117,40 @@ describe("runCore", () => {
     expect(backend.attaches.map((a) => a.id)).toEqual([session.id]);
   });
 
+  it("keeps workspaces and the ungrouped sessions of a deleted workspace across a restart (issue #56)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const first = await start({ pipePath, dataDir, backends: [backend] });
+    const c1 = await client(pipePath);
+    const kept = (await c1.request("workspace.create", { name: "kept", defaultCwd: "/srv" })).result
+      .workspace;
+    const gone = (await c1.request("workspace.create", { name: "gone" })).result.workspace;
+    const project = (
+      await c1.request("project.create", {
+        workspaceId: kept.id,
+        name: "api",
+        path: "/home/dev/api",
+        backend: "wsl",
+        distro: "Ubuntu",
+      })
+    ).result.project;
+    const { session } = (await c1.request("session.create", { name: "s", launch, workspaceId: gone.id }))
+      .result;
+    await c1.request("workspace.delete", { workspaceId: gone.id });
+    await c1.close();
+    await first.close?.();
+
+    await start({ pipePath, dataDir, backends: [backend] });
+    const c2 = await client(pipePath);
+    expect((await c2.request("workspace.list", {})).result.workspaces).toEqual([
+      { ...kept, projects: [project] },
+    ]);
+    const stored = (await c2.request("session.list", {})).result.sessions.find((s) => s.id === session.id);
+    expect(stored).toBeDefined();
+    expect("workspaceId" in stored!).toBe(false);
+  });
+
   it("answers hello at once but holds other requests until the reconcile is done", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

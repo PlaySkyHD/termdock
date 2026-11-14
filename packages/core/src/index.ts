@@ -24,6 +24,14 @@ export { InMemorySessionRepository, SqliteSessionRepository } from "./storage/se
 export type { SessionRepository } from "./storage/session-repository.js";
 export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
 export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
+export { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./storage/workspace-repository.js";
+export type { WorkspaceRepository } from "./storage/workspace-repository.js";
+
+// workspaces
+export { defaultCwd } from "./workspace/default-cwd.js";
+export type { DefaultCwdInput } from "./workspace/default-cwd.js";
+export { projectPathProblem } from "./workspace/paths.js";
+export { WorkspaceService } from "./workspace/service.js";
 
 // ipc
 export { defaultPipeName, sanitizePipeUser } from "./ipc/pipe-name.js";

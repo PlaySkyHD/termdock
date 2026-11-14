@@ -102,6 +102,39 @@ describe("SessionRegistry: failing repository", () => {
     expect(registry.list()).toEqual([]);
     expect(backend.starts).toEqual([]);
   });
+
+  it("announces a new session once and nothing when the first save fails (issue #46)", async () => {
+    const repository = new FailingRepository();
+    const registry = new SessionRegistry({
+      backends: [new FakeBackend()],
+      repository,
+      onPersistError: () => {},
+    });
+    const created: SessionInfo[] = [];
+    registry.onCreated(({ session }) => created.push(session));
+
+    repository.failSave = () => true;
+    await expect(registry.create({ name: "lost", launch: wsl })).rejects.toMatchObject({ code: "internal" });
+    expect(created).toEqual([]);
+
+    repository.failSave = undefined;
+    const info = await registry.create({ name: "kept", launch: wsl });
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ id: info.id, name: "kept", state: "Starting" });
+  });
+
+  it("does not announce sessions that restore loads", async () => {
+    const repository = new InMemorySessionRepository();
+    repository.save(stored({ id: "old", state: "Exited" }));
+    const registry = new SessionRegistry({ backends: [new FakeBackend()], repository });
+    const created: string[] = [];
+    registry.onCreated(({ session }) => created.push(session.id));
+
+    await registry.restore();
+
+    expect(registry.list().map((s) => s.id)).toEqual(["old"]);
+    expect(created).toEqual([]);
+  });
 });
 
 describe("SessionRegistry: write-through", () => {

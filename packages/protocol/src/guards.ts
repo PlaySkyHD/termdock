@@ -434,6 +434,8 @@ const EVENT_CHECK: Record<EventName, Check> = {
     string(obj, "sessionId", path);
     optional(obj, "writerViewId", path, isId);
   },
+  "session.created": (value, path) =>
+    checkSessionInfo(present(record(value, path), "session", path), `${path}.session`),
 };
 
 function checkPayload(rule: PayloadRule, payload: Uint8Array, what: string): void {

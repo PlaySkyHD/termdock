@@ -69,6 +69,11 @@ export interface StateChangeEvent {
   session: SessionInfo;
 }
 
+/** A session `create` has registered, in state `Starting`. */
+export interface CreatedEvent {
+  session: SessionInfo;
+}
+
 export interface WriterChangedEvent {
   sessionId: SessionId;
   /** Undefined when the writer detached and no view has claimed the input since. */
@@ -162,8 +167,15 @@ class ListenerSet<T> {
     return { dispose: () => this.listeners.delete(listener) };
   }
 
+  /** A throwing listener is reported on stderr and does not keep the others or the caller from running. */
   emit(event: T): void {
-    for (const listener of [...this.listeners]) listener(event);
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error("TermDock: registry listener failed:", error);
+      }
+    }
   }
 }
 
@@ -181,6 +193,7 @@ export class SessionRegistry {
   private disposed = false;
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly stateListeners = new ListenerSet<StateChangeEvent>();
+  private readonly createdListeners = new ListenerSet<CreatedEvent>();
   private readonly writerListeners = new ListenerSet<WriterChangedEvent>();
   private readonly resizedListeners = new ListenerSet<ResizedEvent>();
   private readonly outputListeners = new ListenerSet<OutputEvent>();
@@ -200,6 +213,11 @@ export class SessionRegistry {
 
   onStateChange(listener: Listener<StateChangeEvent>): Disposable {
     return this.stateListeners.add(listener);
+  }
+
+  /** Reports sessions `create` registers; sessions loaded by `restore` are not reported. */
+  onCreated(listener: Listener<CreatedEvent>): Disposable {
+    return this.createdListeners.add(listener);
   }
 
   onWriterChanged(listener: Listener<WriterChangedEvent>): Disposable {
@@ -274,6 +292,8 @@ export class SessionRegistry {
       throw new CoreError("internal", `Session ${info.id} could not be saved`, { cause });
     }
     this.sessions.set(info.id, entry);
+    // Before the start: listeners see `Starting`, and every later state change of the session follows this event.
+    this.createdListeners.emit({ session: snapshotInfo(info) });
     await this.launch(entry, { reuseExisting: false, clearOutput: false });
     return snapshotInfo(entry.info);
   }

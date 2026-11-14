@@ -121,6 +121,26 @@ describe("connectStore", () => {
     ]);
   });
 
+  it("shows a session once when the event arrives twice or the answer of create comes on top (issue #46)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.emit({ kind: "sessionCreated", session: session("n", "Starting") });
+    api.emit({ kind: "sessionCreated", session: session("n", "Starting") });
+    api.answer([session("a", "Running")]);
+    await connection.ready;
+
+    api.emit({ kind: "sessionCreated", session: session("n", "Starting") });
+    api.emit({ kind: "stateChanged", sessionId: "n", state: "Running" });
+    // The answer of createSession, as App does with it.
+    s.sessionCreated(session("n", "Running"));
+
+    expect(states(s).sort()).toEqual([
+      ["a", "Running"],
+      ["n", "Running"],
+    ]);
+  });
+
   it("follows events after the list", async () => {
     const api = new FakeApi();
     const s = store();

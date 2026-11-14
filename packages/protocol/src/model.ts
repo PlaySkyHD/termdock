@@ -139,5 +139,8 @@ export const ERROR_CODES = [
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
-/** 1.1: `outputSeq` in the `session.attach` result and `seq` in `session.output` (optional fields). */
-export const PROTOCOL_VERSION = "1.1" as const;
+/**
+ * 1.1: `outputSeq` in the `session.attach` result and `seq` in `session.output` (optional fields).
+ * 1.2: event `session.created`.
+ */
+export const PROTOCOL_VERSION = "1.2" as const;

@@ -44,9 +44,6 @@ export interface ViewStatus {
   error?: string;
 }
 
-/** `ESC [ ? 2004 h`: the application wants pasted text in `ESC [ 200 ~` ... `ESC [ 201 ~`. */
-const BRACKETED_PASTE_ON = "\x1b[?2004h";
-
 /** Delay between a change of the element and the fit; bounds resizes while a divider is dragged (#27). */
 export const LAYOUT_DELAY_MS = 60;
 
@@ -58,14 +55,6 @@ export interface ControllerOptions {
    * other key does. Without it the terminal takes all keys.
    */
   commands?: KeyCommands;
-  /**
-   * The session runs in tmux, which switches bracketed paste on at its terminal once, when its client starts, and
-   * strips or keeps the markers for the pane as the application wants. That one sequence went to the core's client
-   * long before this view exists and a snapshot carries no modes, so the view asks for it itself. Without it a
-   * late view would paste multi-line text as typed lines. A workaround: the other terminal modes (mouse tracking,
-   * DECCKM) are missing in late views too; the real fix is modes in the attach answer, issue #42.
-   */
-  bracketedPaste?: boolean;
 }
 
 function delayLayout(run: () => void): () => void {
@@ -90,7 +79,6 @@ export class TerminalController {
   private sizeFromEvent = false;
   private disposed = false;
   private readonly unsubscribe: Array<() => void> = [];
-  private readonly bracketedPaste: boolean;
   private readonly scheduleLayout: (run: () => void) => () => void;
   /** Set while a fit after a change of the element is planned. */
   private cancelLayout: (() => void) | undefined;
@@ -102,7 +90,6 @@ export class TerminalController {
     options: ControllerOptions = {},
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
-    this.bracketedPaste = options.bracketedPaste ?? false;
     const { commands } = options;
     if (commands) this.surface.onKey((event) => handleKey(event, commands));
   }
@@ -164,7 +151,8 @@ export class TerminalController {
     if (view.size.cols !== this.surface.cols || view.size.rows !== this.surface.rows)
       this.surface.resize(view.size.cols, view.size.rows);
     this.surface.reset();
-    if (this.bracketedPaste) this.surface.write(BRACKETED_PASTE_ON);
+    // The snapshot begins with the terminal modes of the session (mouse, cursor keys, bracketed paste, issue #42),
+    // so this view takes input like one that saw all output.
     this.surface.write(trimTrailingBlankLines(view.snapshot));
     // A reader pane may never get the focus; it still shows where the writer's cursor is.
     this.surface.showCursor();

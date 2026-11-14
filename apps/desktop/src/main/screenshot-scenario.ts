@@ -645,8 +645,8 @@ async function keymapScenes(
   log("overview opened with Ctrl+Shift+H and closed with Escape");
 
   // Paste: two lines with umlauts. The shell asks for bracketed paste, so it keeps both lines for editing.
-  // This view attached long after tmux switched bracketed paste on at the core's client; the view asks for it
-  // itself (TerminalController `bracketedPaste`), otherwise the first line would run.
+  // This view attached long after tmux switched bracketed paste on at the core's client; the core puts that mode
+  // in front of the attach snapshot (issue #42), otherwise the first line would run.
   await type("clear\r");
   await waitRows((current) => current.every((row) => !row.includes("clear")), "the screen to clear");
   await waitRows((current) => current.some((row) => row.startsWith("$ ")), "the prompt after clear");

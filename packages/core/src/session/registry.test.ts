@@ -296,6 +296,50 @@ describe("SessionRegistry: output", () => {
     expect(snapshot.cursor).toEqual({ x: 6, y: 0 });
   });
 
+  it("puts the terminal modes of the output before the backend snapshot (issue #42)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    // What tmux 3.6 writes to its client at start and for `set -g mouse on`.
+    backend.pty(id).emitData("\x1b[?1h\x1b=\x1b[?2004h$ ");
+    backend.pty(id).emitData("\x1b[?1006l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006h\x1b[?1000h\x1b[?1002h");
+    backend.setSnapshot(id, { data: new TextEncoder().encode("screen"), cursor: { x: 6, y: 0 } });
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(decode(snapshot.data)).toBe("\x1b[?1h\x1b=\x1b[?1002h\x1b[?1006h\x1b[?2004hscreen");
+    expect(snapshot.cursor).toEqual({ x: 6, y: 0 });
+  });
+
+  it("puts the terminal modes before the core buffer too, and none that were switched off (issue #42)", async () => {
+    const { registry, backend } = setup({}, new FakeBackend({ kind: "windows" }));
+    const { id } = await registry.create({
+      name: "pwsh",
+      launch: { backend: "windows", shell: "pwsh", cwd: "C:\\" },
+    });
+    backend.pty(id).emitData("\x1b[?1000h\x1b[?20");
+    backend.pty(id).emitData("04h\x1b[?1004h a ");
+    backend.pty(id).emitData("\x1b[?1000l b");
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(decode(snapshot.data)).toBe(
+      "\x1b[?1004h\x1b[?2004h\x1b[?1000h\x1b[?20" + "04h\x1b[?1004h a \x1b[?1000l b",
+    );
+  });
+
+  it("starts without modes after a restart (issue #42)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitData("\x1b[?2004h");
+    backend.pty(id).emitExit(0);
+    await registry.restart(id);
+    backend.setSnapshot(id, "screen");
+
+    const { snapshot } = await registry.attachView(id, "view-a");
+
+    expect(decode(snapshot.data)).toBe("screen");
+  });
+
   it("numbers the output of a session and gives a new view the number before it as mark (issue #34)", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });

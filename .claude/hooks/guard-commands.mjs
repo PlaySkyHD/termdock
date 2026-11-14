@@ -8,9 +8,10 @@
 // Detection: the command is split into words, redirects and heredoc bodies with a small shell lexer
 // (Bash or PowerShell quoting). Only the command word of each segment is inspected, so text in quotes,
 // commit messages, heredoc bodies and comments does not match. `bash -c`, `powershell -Command` and
-// `wsl.exe [-- | --exec]` are checked recursively. Relative paths count as repository paths unless an
-// earlier `cd` in the same command left the repository. The guard prefers missing a case over a false
-// alarm.
+// `wsl.exe [-- | --exec]` are checked recursively. Relative paths count as repository paths if the
+// working directory (`cwd` of the event, after any `cd` in the command; a `cd` inside `( … )` stays
+// inside) is in the repository, or if the event has no `cwd`. A command the lexer cannot split cleanly
+// (unbalanced `$(`) is allowed. The guard prefers missing a case over a false alarm.
 //
 // Known gaps (not detected):
 // - writes through other programs: `cp`, `mv`, `dd`, `truncate`, `git apply`, `git checkout -- <file>`,
@@ -76,6 +77,9 @@ function codeWritesToRepo(code, ctx) {
 // ---------------------------------------------------------------------------------------------------
 // Lexer: splits a command into segments { words, redirects, heredocs }.
 
+// A command the lexer cannot split cleanly (e.g. an unbalanced `$(`): rather allow than block.
+class Unparseable extends Error {}
+
 function newSegment() {
   return { words: [], redirects: [], heredocs: [], test: false };
 }
@@ -115,20 +119,51 @@ function parse(src, dialect) {
   };
   const isFdWord = () => word !== null && !word.quoted && /^(?:\d+|\*)$/.test(word.text);
 
+  // Copies `$( … )` into the current word without inspecting it. Quotes and heredoc bodies inside count
+  // as data. Throws Unparseable if the end cannot be found cleanly.
   const readBalanced = (start) => {
     // src[start] is "$", src[start + 1] is "(".
     let depth = 0;
+    let heredocs = [];
     let j = start + 1;
     for (; j < src.length; j++) {
       const ch = src[j];
       if (ch === "(") depth++;
-      else if (ch === ")" && --depth === 0) break;
-      else if (ch === "'" || ch === '"') {
-        const close = src.indexOf(ch, j + 1);
-        if (close === -1) break;
+      else if (ch === ")") {
+        if (--depth === 0) break;
+      } else if (ch === esc) j++;
+      else if (ch === "'") {
+        const close = src.indexOf("'", j + 1);
+        if (close === -1) throw new Unparseable();
         j = close;
+      } else if (ch === '"') {
+        let k = j + 1;
+        while (k < src.length && src[k] !== '"') k += src[k] === esc ? 2 : 1;
+        if (k >= src.length) throw new Unparseable();
+        j = k;
+      } else if (!ps && src.startsWith("<<", j) && src[j + 2] !== "<") {
+        const m = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2/.exec(src.slice(j));
+        if (m) {
+          heredocs.push({ delim: m[3], strip: m[1] === "-" });
+          j += m[0].length - 1;
+        }
+      } else if (ch === "\n" && heredocs.length) {
+        let k = j + 1;
+        for (const h of heredocs) {
+          for (;;) {
+            if (k >= src.length) throw new Unparseable();
+            let end = src.indexOf("\n", k);
+            if (end === -1) end = src.length;
+            const line = src.slice(k, end).replace(/\r$/, "");
+            k = end + 1;
+            if ((h.strip ? line.replace(/^\t+/, "") : line) === h.delim) break;
+          }
+        }
+        heredocs = [];
+        j = k - 1;
       }
     }
+    if (j >= src.length) throw new Unparseable();
     word.text += src.slice(start, j + 1);
     return j + 1;
   };
@@ -301,6 +336,9 @@ function parse(src, dialect) {
     }
     if (c === "|" || c === ";" || c === "(" || c === ")" || (ps && (c === "{" || c === "}"))) {
       endSegment();
+      // Markers so that a `cd` inside `( … )` does not leak out.
+      if (c === "(") segments.push({ scope: "open" });
+      if (c === ")") segments.push({ scope: "close" });
       i += c === "|" && next === "|" ? 2 : 1;
       continue;
     }
@@ -376,7 +414,8 @@ function checkGit(args) {
       "`git stash` versteckt Änderungen, sie gehen zwischen Worktrees leicht verloren.",
       "Änderungen committen oder einen eigenen Worktree anlegen.",
     );
-  if (sub === "reset" && rest.includes("--hard"))
+  // git accepts unique abbreviations such as `--har`.
+  if (sub === "reset" && rest.some((a) => a.length >= 3 && "--hard".startsWith(a)))
     return block(
       "`git reset --hard` verwirft Änderungen ohne Rückweg.",
       "`git reset --soft <ref>` oder ein neuer Commit, der die Änderung zurücknimmt.",
@@ -416,11 +455,18 @@ function checkWsl(args, ctx) {
         "Bei WSL-Fehlern stoppen und dem Orchestrator berichten.",
       );
     if (a === "--exec" || a === "-e") return checkWords(args.slice(i + 1), { ...ctx }, "bash", []);
-    if (a === "--") return checkSource(args.slice(i + 1).join(" "), "bash", { ...ctx });
+    if (a === "--") return checkArgv(args.slice(i + 1), "bash", ctx);
     if (withValue.includes(a)) i++;
-    else if (!a.startsWith("-")) return checkSource(args.slice(i).join(" "), "bash", { ...ctx });
+    else if (!a.startsWith("-")) return checkArgv(args.slice(i), "bash", ctx);
   }
   return null;
+}
+
+// A command passed on as arguments (`wsl -- …`, `powershell -Command …`). The words are already split
+// with their quoting; only a single argument is parsed again as a command line (`wsl -- "a; b"`).
+function checkArgv(argv, dialect, ctx) {
+  if (argv.length === 1) return checkSource(argv[0], dialect, { ...ctx });
+  return checkWords(argv, { ...ctx }, dialect, []);
 }
 
 function checkShell(args, ctx) {
@@ -436,7 +482,7 @@ function checkPowerShell(args, ctx) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i].toLowerCase();
     if (a === "-c" || (a.length >= 4 && "-command".startsWith(a)))
-      return checkSource(args.slice(i + 1).join(" "), "ps", { ...ctx });
+      return checkArgv(args.slice(i + 1), "ps", ctx);
   }
   return null;
 }
@@ -460,6 +506,17 @@ function checkInPlace(name, args, ctx) {
     else if (/^-[^-]/.test(a)) {
       for (let j = 1; j < a.length; j++) {
         const c = a[j];
+        if (name === "perl" && "MmIxFdDC".includes(c)) {
+          // Options with an attached value (`-MFile::Spec`, `-Ilib`): the rest is not a cluster.
+          if (j === a.length - 1 && "MmI".includes(c)) i++;
+          break;
+        }
+        if (name === "perl" && (c === "l" || c === "0")) {
+          // Optional octal (or `-0x` hex) value, then the cluster continues (`-lpi`).
+          const value = c === "0" ? /^(?:[xX][0-9a-fA-F]*|[0-7]*)/ : /^[0-7]*/;
+          j += value.exec(a.slice(j + 1))[0].length;
+          continue;
+        }
         if (c === "i") {
           inPlace = true;
           break;
@@ -516,7 +573,9 @@ function checkTee(args, ctx) {
   return target === undefined ? null : writeBlock("`tee`", target);
 }
 
-const PS_WRITERS = new Set(["set-content", "add-content", "out-file", "tee-object", "sc", "ac"]);
+const PS_WRITERS = new Set(["set-content", "add-content", "out-file", "tee-object"]);
+// Aliases count only in PowerShell and only as written (`sc.exe` is the service control tool).
+const PS_WRITER_ALIASES = new Set(["sc", "ac"]);
 const PS_SWITCHES = new Set([
   "-append",
   "-force",
@@ -580,7 +639,9 @@ function checkWords(words, ctx, dialect, heredocs) {
     case "tee":
       return checkTee(args, ctx);
     default:
-      return PS_WRITERS.has(name) ? checkPsWriter(w[0], args, ctx) : null;
+      if (PS_WRITERS.has(name) || (dialect === "ps" && PS_WRITER_ALIASES.has(w[0].toLowerCase())))
+        return checkPsWriter(w[0], args, ctx);
+      return null;
   }
 }
 
@@ -591,7 +652,11 @@ function checkSource(src, dialect, ctx) {
     codeWritesToRepo(src, ctx)
   )
     return block("`[IO.File]::Write…`/`Append…` schreibt eine Datei im Repo-Checkout.", EDIT_HINT);
+  const outer = [];
   for (const seg of parse(src, dialect)) {
+    if (seg.scope === "open") outer.push(ctx.cwdInRepo);
+    if (seg.scope === "close" && outer.length) ctx.cwdInRepo = outer.pop();
+    if (seg.scope) continue;
     const target = seg.redirects.find((t) => isRepoPath(t, ctx));
     if (target !== undefined) return writeBlock("Die Umleitung `>`/`>>`", target);
     const verdict = checkWords(seg.words, ctx, dialect, seg.heredocs);
@@ -604,9 +669,16 @@ function checkSource(src, dialect, ctx) {
  * Checks one command. Returns null if it is allowed, otherwise { reason, alternative } (German).
  * @param {string} command
  * @param {string} toolName "Bash" or "PowerShell"
+ * @param {string} [cwd] working directory from the hook event; without it the repository is assumed
  */
-export function checkCommand(command, toolName) {
-  return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", { cwdInRepo: true });
+export function checkCommand(command, toolName, cwd) {
+  const cwdInRepo = typeof cwd === "string" && cwd !== "" ? isRepoAbsolute(cwd) : true;
+  try {
+    return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", { cwdInRepo });
+  } catch (error) {
+    if (error instanceof Unparseable) return null;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -628,7 +700,7 @@ if (isMain()) {
       if (event?.tool_name !== "Bash" && event?.tool_name !== "PowerShell") return;
       const command = event?.tool_input?.command;
       if (typeof command !== "string") return;
-      const verdict = checkCommand(command, event.tool_name);
+      const verdict = checkCommand(command, event.tool_name, event.cwd);
       if (!verdict) return;
       process.stderr.write(
         `Blockiert von .claude/hooks/guard-commands.mjs: ${verdict.reason}\nStattdessen: ${verdict.alternative}\nRegeln: docs/agent-lessons-learned.md, Abschnitt 5.\n`,

@@ -66,6 +66,16 @@ const blocked = [
   ["PowerShell", 'Add-Content -LiteralPath "P:/GitHub/termdock/a.md" "x"'],
   ["PowerShell", "$c = Get-Content a.ts; $c | set-content a.ts -Encoding utf8"],
   ["PowerShell", "[IO.File]::WriteAllText('src\\a.ts', 'x')"],
+  // PR #48 review: the fixes for false positives must keep these blocked
+  ["Bash", "git reset --har HEAD"],
+  ["Bash", 'wsl.exe -d Ubuntu -- "tmux -L termdock kill-server"'],
+  ["Bash", 'powershell -Command "Set-Content src/a.ts x"'],
+  ["Bash", "perl -Mstrict -pi -e 's/a/b/' src/x.ts"],
+  ["Bash", "perl -l -pi -e 's/a/b/' src/x.ts"],
+  ["PowerShell", "'x' | sc src\\a.ts"],
+  ["Bash", "(cd P:/Temp && echo x > a.txt); echo y > b.txt"],
+  ["Bash", "node gen.mjs > out.json", "P:/GitHub/termdock-wt/feat/x"],
+  ["Bash", "cd P:/Temp && cd P:/GitHub/termdock && echo x > a.md", "P:/Temp"],
 ];
 
 const allowed = [
@@ -127,20 +137,36 @@ const allowed = [
   ["PowerShell", "'x' | Out-File -FilePath $env:TEMP\\a.txt"],
   ["PowerShell", "Get-Content src\\a.ts | Select-String foo"],
   ["PowerShell", "[IO.File]::WriteAllText('P:\\Temp\\a.txt', 'x')"],
+  // PR #48 review: false positives
+  ["Bash", "wsl -d Ubuntu -- awk '$1 > 5' /tmp/x"],
+  ["Bash", "wsl.exe -d Ubuntu -- bash -c 'cd /tmp && echo x > y.txt'"],
+  ["Bash", "powershell -Command Write-Output 'a > b'"],
+  ["Bash", "perl -MFile::Spec -ne 'print' README.md"],
+  ["Bash", "perl -Mwarnings -ne 'print' README.md"],
+  ["Bash", "perl -I lib -ne 'print' README.md"],
+  ["PowerShell", "sc.exe query wslservice"],
+  ["Bash", "sc.exe query wslservice"],
+  ["Bash", "sc query wslservice"],
+  ["Bash", "node gen.mjs > out.json", "P:/Temp"],
+  ["PowerShell", "node gen.mjs > out.json", "C:\\Users\\nicma\\AppData\\Local\\Temp"],
+  ["Bash", "(cd P:/Temp && echo x > a.txt)"],
+  ["Bash", 'git commit -m "$(cat <<\'EOF\'\nFix 1) parse "a > b" ok\nEOF\n)"'],
+  ["Bash", 'git commit -m "$(cat <<\'EOF\'\nFix 1) parse \\"a > b\\" ok\nEOF\n)"'],
+  ["Bash", 'echo "$(echo (unbalanced" > src/a.ts'],
 ];
 
-for (const [tool, command] of blocked) {
-  test(`blocks ${tool}: ${JSON.stringify(command)}`, () => {
-    const verdict = checkCommand(command, tool);
+for (const [tool, command, cwd] of blocked) {
+  test(`blocks ${tool}: ${JSON.stringify(command)}${cwd ? ` in ${cwd}` : ""}`, () => {
+    const verdict = checkCommand(command, tool, cwd);
     assert.ok(verdict, "expected a block");
     assert.match(verdict.reason, /\S/);
     assert.match(verdict.alternative, /\S/);
   });
 }
 
-for (const [tool, command] of allowed) {
-  test(`allows ${tool}: ${JSON.stringify(command)}`, () => {
-    assert.equal(checkCommand(command, tool), null);
+for (const [tool, command, cwd] of allowed) {
+  test(`allows ${tool}: ${JSON.stringify(command)}${cwd ? ` in ${cwd}` : ""}`, () => {
+    assert.equal(checkCommand(command, tool, cwd), null);
   });
 }
 
@@ -158,6 +184,13 @@ test("hook exits 0 for an allowed command", () => {
   const result = runHook(JSON.stringify({ tool_name: "PowerShell", tool_input: { command: "git status" } }));
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
+});
+
+test("hook takes the working directory from the event", () => {
+  const event = (cwd) =>
+    JSON.stringify({ tool_name: "Bash", cwd, tool_input: { command: "node g.mjs > o.json" } });
+  assert.equal(runHook(event("P:\\Temp\\td")).status, 0);
+  assert.equal(runHook(event("P:\\GitHub\\termdock-wt\\feat\\x")).status, 2);
 });
 
 test("hook exits 0 for other tools", () => {

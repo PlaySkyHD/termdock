@@ -523,6 +523,51 @@ describe("UiStore core", () => {
   });
 });
 
+describe("UiStore loadWindow and sessionsLoaded (#29)", () => {
+  it("takes over the window of the main process with its id, tabs and sidebar", () => {
+    const store = newStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    const window = {
+      id: "w-main",
+      sidebarVisible: false,
+      activeTabId: "t1",
+      tabs: [
+        {
+          id: "t1",
+          root: { kind: "pane" as const, id: "p1", sessionId: "s1" },
+          activePaneId: "p1",
+        },
+      ],
+    };
+
+    store.loadWindow(window);
+
+    expect(store.getState().window).toEqual(window);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // The loaded tabs work like any others.
+    store.focusPane("t1", "p1");
+    expect(store.splitPane("t1", "p1", "row", "s2")).toBeDefined();
+  });
+
+  it("knows the sessions only after the first list", () => {
+    const store = newStore();
+    expect(store.getState().sessionsLoaded).toBe(false);
+
+    store.sessionCreated(session("s1"));
+    expect(store.getState().sessionsLoaded).toBe(false);
+
+    store.setSessions([session("s1")]);
+    expect(store.getState().sessionsLoaded).toBe(true);
+  });
+
+  it("keeps the sessions unknown for a list that could not be fetched", () => {
+    const store = newStore();
+    store.setSessions([], false);
+    expect(store.getState().sessionsLoaded).toBe(false);
+  });
+});
+
 describe("UiStore subscription", () => {
   it("notifies on a change, not for a focus that changes nothing, and stops after unsubscribe", () => {
     const store = newStore();

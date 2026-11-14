@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import { startLayoutSync } from "./layout-sync.js";
 import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
@@ -23,10 +24,22 @@ export function App({ api }: { api: TermdockApi }) {
   const [formOpen, setFormOpen] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
+  // The window of the main process (restored layout, #29) is in the store; until then the page shows nothing.
+  const [restored, setRestored] = useState(false);
 
   useEffect(() => {
     const connection = connectStore(store, api, setLoadError);
     return connection.dispose;
+  }, [store, api]);
+
+  useEffect(() => {
+    const sync = startLayoutSync(store, api, (message) => console.error(`termdock layout: ${message}`));
+    let current = true;
+    void sync.ready.then(() => current && setRestored(true));
+    return () => {
+      current = false;
+      sync.dispose();
+    };
   }, [store, api]);
 
   // Creating a session and its error live here, not in the form: hiding the sidebar unmounts the form, and a
@@ -117,6 +130,8 @@ export function App({ api }: { api: TermdockApi }) {
     setFormOpen(true);
   };
 
+  if (!restored) return <div className="app app--loading" data-view="restoring" />;
+
   return (
     <div className={`app${sidebarVisible ? "" : " app--sidebar-hidden"}`}>
       {sidebarVisible && (
@@ -171,6 +186,7 @@ export function App({ api }: { api: TermdockApi }) {
                   api={api}
                   tab={each}
                   sessions={state.sessions}
+                  sessionsLoaded={state.sessionsLoaded}
                   active={active}
                   focusSignal={focusSignal}
                   onStatus={setStatus}
@@ -182,6 +198,7 @@ export function App({ api }: { api: TermdockApi }) {
                     if (statuses[paneId]?.role === "reader")
                       void controllers.current.get(paneId)?.claimWriter();
                   }}
+                  onClosePane={(paneId) => store.closePane(each.id, paneId)}
                   onMoveDivider={(splitId, index, delta, minShare) =>
                     store.moveDivider(each.id, splitId, index, delta, minShare)
                   }

@@ -171,6 +171,20 @@ describe("connectStore", () => {
 
     expect(errors).toEqual(["[timeout] Request session.list timed out"]);
     expect(states(s)).toEqual([["a", "Detached"]]);
+    // A list that failed does not make panes of unknown sessions "missing" (#29).
+    expect(s.getState().sessionsLoaded).toBe(false);
+  });
+
+  it("marks the sessions as loaded once the list has arrived", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    expect(s.getState().sessionsLoaded).toBe(false);
+
+    api.answer([]);
+    await connection.ready;
+
+    expect(s.getState().sessionsLoaded).toBe(true);
   });
 
   it("works without the core status", async () => {

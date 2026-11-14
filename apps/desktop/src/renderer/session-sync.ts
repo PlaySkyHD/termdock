@@ -54,15 +54,17 @@ export function connectStore(store: UiStore, api: Api, onError: (message: string
 
   const ready = (async () => {
     let sessions: SessionInfo[] = [];
+    let loaded = true;
     try {
       sessions = await api.listSessions();
     } catch (error) {
+      loaded = false;
       onError(error instanceof Error ? error.message : String(error));
     }
     // A disposed connection must not overwrite what a newer one has put into the store (StrictMode, reload).
     if (disposed) return;
     // From here on, to the end of this block, nothing can interleave: events go straight to the store after it.
-    store.setSessions(sessions);
+    store.setSessions(sessions, loaded);
     const known = new Set(sessions.map((session) => session.id));
     for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
     for (const change of changes)

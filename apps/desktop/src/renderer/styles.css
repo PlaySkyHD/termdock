@@ -543,6 +543,24 @@ input {
   color: #f48771;
 }
 
+/* Placeholder of a pane whose session is not alive (#29): state and last exit code. */
+.placeholder-facts {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 12px;
+  margin: 0 0 14px;
+  text-align: left;
+}
+
+.placeholder-facts dt {
+  color: var(--td-muted);
+}
+
+.placeholder-facts dd {
+  margin: 0;
+  color: var(--td-foreground);
+}
+
 /* --- Status bar ------------------------------------------------------------------------------ */
 
 .status-bar {

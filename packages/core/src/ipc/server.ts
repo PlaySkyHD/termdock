@@ -26,6 +26,9 @@ import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput, SessionRegistry } from "../session/registry.js";
 import type { LayoutRepository } from "../storage/layout-repository.js";
+import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
+import type { WorkspaceRepository } from "../storage/workspace-repository.js";
+import { WorkspaceService } from "../workspace/service.js";
 import { defaultPipeName } from "./pipe-name.js";
 
 /** Not-yet-written bytes per client above which the client is disconnected (16 MiB). */
@@ -53,6 +56,8 @@ export interface CoreServerOptions {
   registry: SessionRegistry;
   /** Stored layout behind `layout.get` and `layout.save`. */
   layouts: LayoutRepository;
+  /** Stored workspaces and projects behind `workspace.*` and `project.*`; defaults to an in-memory repository. */
+  workspaces?: WorkspaceRepository;
   /** Pipe path; defaults to `\\.\pipe\termdock-core-<user>`. Tests pass a unique name. */
   pipePath?: string;
   /** Per-client limit for output the client has not read yet; defaults to 16 MiB. */
@@ -113,6 +118,7 @@ export class CoreServer {
   readonly pipePath: string;
   private readonly registry: SessionRegistry;
   private readonly layouts: LayoutRepository;
+  private readonly workspaces: WorkspaceService;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -135,6 +141,7 @@ export class CoreServer {
   private constructor(options: CoreServerOptions) {
     this.registry = options.registry;
     this.layouts = options.layouts;
+    this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -217,6 +224,17 @@ export class CoreServer {
    */
   notifyListers<E extends ListerEventName>(event: E, data: EventMap[E]): void {
     this.route([], this.listers(), eventFrame(event, data));
+  }
+
+  /** Reports the full workspace list after a stored change. */
+  private notifyWorkspaces(): void {
+    // The change is stored by now: a failing read must not turn the answer into an error, or a client
+    // would retry a `create` that already happened.
+    try {
+      this.notifyListers("workspace.changed", { workspaces: this.workspaces.list() });
+    } catch (error) {
+      this.onInternalError(error);
+    }
   }
 
   /** Connections that used `session.list`. */
@@ -408,19 +426,45 @@ export class CoreServer {
       // --- Phase 3 stubs (issue #55). Each issue replaces only its own cases. ---------------------------
       // Workspaces and projects: issue #56.
       case "workspace.list":
-        throw notImplemented(request.method);
-      case "workspace.create":
-        throw notImplemented(request.method);
-      case "workspace.update":
-        throw notImplemented(request.method);
-      case "workspace.delete":
-        throw notImplemented(request.method);
-      case "project.create":
-        throw notImplemented(request.method);
-      case "project.update":
-        throw notImplemented(request.method);
+        return { result: { workspaces: this.workspaces.list() } };
+      case "workspace.create": {
+        const workspace = this.workspaces.createWorkspace(request.params);
+        this.notifyWorkspaces();
+        return { result: { workspace } };
+      }
+      case "workspace.update": {
+        const workspace = this.workspaces.updateWorkspace(request.params);
+        this.notifyWorkspaces();
+        return { result: { workspace } };
+      }
+      case "workspace.delete": {
+        const { workspaceId } = request.params;
+        this.workspaces.assertWorkspace(workspaceId);
+        // Sessions first: no client may see a session of a workspace that `workspace.changed` no longer lists.
+        const ungrouped = registry.clearWorkspace(workspaceId);
+        try {
+          this.workspaces.deleteWorkspace(workspaceId);
+        } finally {
+          // Also when deleting fails: the sessions are ungrouped by now and clients must hear of it.
+          for (const session of ungrouped) this.notifyListers("session.updated", { session });
+        }
+        this.notifyWorkspaces();
+        return EMPTY_RESULT;
+      }
+      case "project.create": {
+        const project = this.workspaces.createProject(request.params);
+        this.notifyWorkspaces();
+        return { result: { project } };
+      }
+      case "project.update": {
+        const project = this.workspaces.updateProject(request.params);
+        this.notifyWorkspaces();
+        return { result: { project } };
+      }
       case "project.delete":
-        throw notImplemented(request.method);
+        this.workspaces.deleteProject(request.params.projectId);
+        this.notifyWorkspaces();
+        return EMPTY_RESULT;
       // Launch profiles: issue #58.
       case "profile.list":
         throw notImplemented(request.method);

@@ -798,3 +798,61 @@ describe("SessionRegistry: backend failures", () => {
     expect(decode(snapshot.data)).toBe("last words");
   });
 });
+
+describe("SessionRegistry: clearWorkspace (issue #56)", () => {
+  it("ungroups only the sessions of the workspace, keeps their processes and stores the change", async () => {
+    const repository = new InMemorySessionRepository();
+    const now = new Date("2026-11-14T12:00:00.000Z");
+    const { registry, backend } = setup({ repository, now: () => now });
+    const a = await registry.create({ name: "a", launch: spec, workspaceId: "w1" });
+    const b = await registry.create({ name: "b", launch: spec, workspaceId: "w2" });
+    const c = await registry.create({ name: "c", launch: spec });
+    const stateBefore = registry.get(a.id).state;
+
+    const changed = registry.clearWorkspace("w1");
+
+    expect(changed.map((s) => s.id)).toEqual([a.id]);
+    expect("workspaceId" in changed[0]!).toBe(false);
+    expect(changed[0]).toMatchObject({ state: stateBefore, updatedAt: now.toISOString() });
+    expect("workspaceId" in registry.get(a.id)).toBe(false);
+    expect(registry.get(b.id).workspaceId).toBe("w2");
+    expect(registry.get(c.id).workspaceId).toBeUndefined();
+    expect(backend.pty(a.id).ended).toBe(false);
+    const stored = repository.list();
+    expect("workspaceId" in stored.find((s) => s.id === a.id)!).toBe(false);
+    expect(stored.find((s) => s.id === b.id)?.workspaceId).toBe("w2");
+    expect(registry.clearWorkspace("w1")).toEqual([]);
+  });
+
+  it("clears stored rows that are not in memory", () => {
+    const repository = new InMemorySessionRepository();
+    repository.save({
+      id: "stored-only",
+      name: "x",
+      state: "Exited",
+      launch: spec,
+      workspaceId: "w1",
+      size: { cols: 80, rows: 24 },
+      loggingEnabled: true,
+      createdAt: "2026-11-13T10:00:00.000Z",
+      updatedAt: "2026-11-13T10:00:00.000Z",
+    });
+    const { registry } = setup({ repository });
+
+    expect(registry.clearWorkspace("w1")).toEqual([]);
+    expect(repository.list()[0]?.workspaceId).toBeUndefined();
+  });
+
+  it("changes nothing in memory when the repository fails", async () => {
+    class Failing extends InMemorySessionRepository {
+      override clearWorkspace(): void {
+        throw new Error("disk full");
+      }
+    }
+    const { registry } = setup({ repository: new Failing() });
+    const a = await registry.create({ name: "a", launch: spec, workspaceId: "w1" });
+
+    expect(() => registry.clearWorkspace("w1")).toThrow("disk full");
+    expect(registry.get(a.id).workspaceId).toBe("w1");
+  });
+});

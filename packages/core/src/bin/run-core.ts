@@ -1,5 +1,6 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, then serve requests.
+import { DEFAULT_SETTINGS } from "@termdock/protocol";
 import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
@@ -7,7 +8,10 @@ import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
 import { CoreError } from "../session/errors.js";
 import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
-import { openStorage } from "../storage/database.js";
+import { openStorage, resolveDataDir } from "../storage/database.js";
+import { recordHistory } from "../storage/history-recorder.js";
+import { HistoryStore } from "../storage/history-store.js";
+import type { HistorySettings } from "../storage/history-store.js";
 import type { Storage } from "../storage/database.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { SessionRepository } from "../storage/session-repository.js";
@@ -101,9 +105,12 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
+  // TODO(#60): wird mit dem Settings-Repository (#60) verdrahtet; bis dahin gelten die Standardwerte.
+  const getSettings = (): HistorySettings => DEFAULT_SETTINGS;
   const registry = new SessionRegistry({
     backends: options.backends ?? ownBackends,
     repository,
+    defaultLoggingEnabled: () => getSettings().historyEnabledByDefault,
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
   });
   let markReady: () => void = () => {};
@@ -135,6 +142,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   }
 
   let storage: Storage | undefined;
+  let history: HistoryStore | undefined;
   const signals = options.signals ?? process;
   const signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
   let isReady = false;
@@ -154,6 +162,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       // Also stops a reconcile still running: it changes and saves nothing more and releases late PTYs.
       registry.dispose();
       for (const backend of ownBackends) backend.dispose();
+      // Queued output is written before the process may end.
+      await history?.dispose();
       storage?.dispose();
     })();
     return closing;
@@ -170,10 +180,16 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
   let restore: RestoreResult;
   try {
-    storage = openStorage({
-      ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
-      onLayoutInvalid: log,
+    const dataDir = options.dataDir ?? resolveDataDir();
+    storage = openStorage({ dataDir, onLayoutInvalid: log });
+    history = new HistoryStore({
+      dataDir,
+      getSettings,
+      onError: (error, sessionId) =>
+        log(`could not write history of session ${sessionId}: ${messageOf(error)}`),
     });
+    // The subscription lives as long as the registry; it ends with `registry.dispose()`.
+    recordHistory(registry, history);
     repository.target = storage.sessions;
     layouts.target = storage.layouts;
     const restoring = registry.restore();

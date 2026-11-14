@@ -46,6 +46,8 @@ export interface SessionRegistryOptions {
    * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
    */
   reattachDelaysMs?: readonly number[];
+  /** `loggingEnabled` of a new session that does not say; reads the setting `historyEnabledByDefault`. Defaults to true. */
+  defaultLoggingEnabled?: () => boolean;
 }
 
 /** Three attempts to re-attach a lost backend client: at once, after 0.5 s and after 2 s. */
@@ -190,6 +192,7 @@ export class SessionRegistry {
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
   private readonly reattachDelaysMs: readonly number[];
+  private readonly defaultLoggingEnabled: () => boolean;
   private restored = false;
   private restoring = false;
   private unavailableAtRestore: BackendKind[] = [];
@@ -206,6 +209,7 @@ export class SessionRegistry {
     this.now = options.now ?? (() => new Date());
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
+    this.defaultLoggingEnabled = options.defaultLoggingEnabled ?? (() => true);
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
@@ -280,7 +284,7 @@ export class SessionRegistry {
       state: "Starting",
       launch: input.launch,
       size: { ...(input.size ?? DEFAULT_SIZE) },
-      loggingEnabled: input.loggingEnabled ?? true,
+      loggingEnabled: input.loggingEnabled ?? this.defaultLoggingEnabled(),
       createdAt: timestamp,
       updatedAt: timestamp,
     };

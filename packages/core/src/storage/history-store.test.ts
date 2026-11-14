@@ -41,6 +41,9 @@ function tempDir(): string {
   return dir;
 }
 
+/** Lets a redraw the registry started without awaiting it run to its end. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 /** A clock that moves on at every call, so that segment order never depends on the real time. */
 function ticking(): () => number {
   let t = 1_700_000_000_000;
@@ -339,6 +342,53 @@ describe("recordHistory", () => {
     expect(await collect(store.read(silent.id))).toEqual([]);
   });
 
+  it("does not record the redraw when a second view attaches, but output before and after (issue #88)", async () => {
+    const { backend, registry, store } = recorded(tempDir());
+    const session = await registry.create({ name: "a", launch: spec });
+    backend.setSnapshot(session.id, "hello");
+    // Like tmux after `refresh-client`: the repaint arrives through the PTY before the call returns.
+    backend.onRedraw = (id) => backend.pty(id).emitData("\x1b[Hhello\x1b[K");
+    await registry.attachView(session.id, "view-a");
+    await settle();
+    backend.pty(session.id).emitData("hello\r\n");
+    await store.flush();
+    const before = await collect(store.read(session.id));
+
+    await registry.attachView(session.id, "view-b");
+    await settle();
+    await store.flush();
+    const afterAttach = await collect(store.read(session.id));
+    backend.pty(session.id).emitData("after\r\n");
+    await store.flush();
+
+    expect(before.map((e) => new TextDecoder().decode(e.data))).toEqual(["hello\r\n"]);
+    expect(afterAttach).toHaveLength(1);
+    const text = (await collect(store.read(session.id))).map((e) => new TextDecoder().decode(e.data));
+    expect(text).toEqual(["hello\r\n", "after\r\n"]);
+  });
+
+  it("skips output marked as redraw (issue #88)", async () => {
+    const store = makeStore(tempDir());
+    let listener: Parameters<HistorySource["onOutput"]>[0] | undefined;
+    const source: HistorySource = {
+      onOutput: (l) => {
+        listener = l;
+        return { dispose: () => (listener = undefined) };
+      },
+      get: () => ({ loggingEnabled: true }),
+    };
+    recordHistory(source, store);
+    const encode = (text: string) => new TextEncoder().encode(text);
+
+    listener!({ sessionId: "s1", data: encode("real"), fromRedraw: false });
+    listener!({ sessionId: "s1", data: encode("repaint"), fromRedraw: true });
+    listener!({ sessionId: "s1", data: encode("later"), fromRedraw: false });
+    await store.flush();
+
+    const text = (await collect(store.read("s1"))).map((e) => new TextDecoder().decode(e.data));
+    expect(text).toEqual(["real", "later"]);
+  });
+
   it("takes the default of a new session from the setting", async () => {
     const { registry } = recorded(tempDir(), { defaultLogging: false });
 
@@ -352,7 +402,7 @@ describe("recordHistory", () => {
   it("stops writing when logging is switched off and keeps what is stored", async () => {
     const dir = tempDir();
     const store = makeStore(dir);
-    let listener: ((event: { sessionId: string; data: Uint8Array }) => void) | undefined;
+    let listener: Parameters<HistorySource["onOutput"]>[0] | undefined;
     let loggingEnabled = true;
     const source: HistorySource = {
       onOutput: (l) => {
@@ -362,7 +412,8 @@ describe("recordHistory", () => {
       get: () => ({ loggingEnabled }),
     };
     recordHistory(source, store);
-    const emit = (text: string) => listener!({ sessionId: "s1", data: new TextEncoder().encode(text) });
+    const emit = (text: string) =>
+      listener!({ sessionId: "s1", data: new TextEncoder().encode(text), fromRedraw: false });
 
     emit("before");
     await store.flush();

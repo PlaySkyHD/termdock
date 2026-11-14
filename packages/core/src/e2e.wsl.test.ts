@@ -431,6 +431,51 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     }
   }, 120_000);
 
+  it("does not store the repaint when a second view attaches (issue #88)", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const { session } = (
+      await c.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    distros.add(session.launch.distro!);
+    const first = collect(c);
+    const { viewId } = (await c.request("session.attach", { sessionId: session.id })).result;
+    await c.request("session.input", { viewId }, new TextEncoder().encode("echo seen-$((6*7))\r"));
+    await waitFor(() => first().includes("seen-42"), "marker output");
+
+    const history = async () => {
+      let text = "";
+      for await (const entry of readHistory(dataDir, session.id)) text += decoder.decode(entry.data);
+      return text;
+    };
+    // The core writes in the background, and tmux repaints by itself a few seconds after the start.
+    const settledHistory = async () => {
+      let before: string | undefined;
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const now = await history();
+        if (now === before) return now;
+        before = now;
+      }
+      throw new Error("history did not settle");
+    };
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    const stored = await settledHistory();
+    expect(stored).toContain("seen-42");
+
+    const second = await client();
+    const repaint = collect(second);
+    await second.request("session.attach", { sessionId: session.id });
+    await waitFor(() => repaint().includes("seen-42"), "repaint in the second view");
+    expect(await settledHistory()).toBe(stored);
+
+    await c.request("session.input", { viewId }, new TextEncoder().encode("echo after-$((1+1))\r"));
+    await waitFor(() => first().includes("after-2"), "output after the attach");
+    expect(await settledHistory()).toContain("after-2");
+  }, 60_000);
+
   it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
     freshDataDir();
     await startCore();

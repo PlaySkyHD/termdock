@@ -2,7 +2,7 @@
 // Entry: uint64 BE timestamp ms | uint32 BE length | raw bytes. Writing never blocks the PTY: `append` only queues
 // into a bounded buffer; a background flush writes it. When the writer cannot keep up, the oldest queued entries
 // are dropped and counted.
-import { mkdir, open, stat, truncate, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, open, rm, stat, truncate, writeFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_HISTORY_LIMIT_BYTES,
@@ -94,6 +94,16 @@ interface SessionLog {
   droppedBytes: number;
   timer: NodeJS.Timeout | undefined;
   flushing: Promise<void> | undefined;
+  /** True while a flush touches the files; readers wait for it to end. */
+  writing: boolean;
+  /** Readers iterating the files; a flush waits until there are none, the queue keeps filling meanwhile. */
+  readers: number;
+  /** Resolves when `readers` drops to 0; set while `readers` > 0. */
+  readersIdle: { promise: Promise<void>; resolve: () => void } | undefined;
+  /** `forget` was called: no flush starts any more. */
+  forgotten: boolean;
+  /** Cap the segment sizes were last checked against. */
+  checkedCap: number | undefined;
   /** Undefined until the first write looked at the files. */
   active: ActiveSegment | undefined;
 }
@@ -165,9 +175,69 @@ export class HistoryStore {
     this.logs.clear();
   }
 
-  /** Entries of a session from oldest to newest; see `readHistory`. */
-  read(sessionId: SessionId): AsyncGenerator<HistoryEntry> {
-    return readHistory(this.options.dataDir, sessionId);
+  /**
+   * Entries of a session from oldest to newest, see `readHistory`. Coordinated with the writer of this store: while
+   * a read is open, no flush and no segment change touches the files (the queue keeps filling up to its limit and
+   * drops the oldest entries beyond it), so a rotation never moves bytes under the reader. Iterate to the end or
+   * call `return()` (a `for await` with `break` does); an abandoned iterator holds the writer back.
+   */
+  async *read(sessionId: SessionId): AsyncGenerator<HistoryEntry> {
+    const log = this.log(sessionId);
+    while (log.writing) await log.flushing;
+    log.readers += 1;
+    if (log.readers === 1) {
+      let resolve!: () => void;
+      log.readersIdle = { promise: new Promise<void>((r) => (resolve = r)), resolve };
+    }
+    try {
+      yield* readHistory(this.options.dataDir, sessionId);
+    } finally {
+      log.readers -= 1;
+      if (log.readers === 0) {
+        log.readersIdle?.resolve();
+        log.readersIdle = undefined;
+        // A read of a session that was never written leaves no entry behind.
+        if (this.isPristine(log) && this.logs.get(sessionId) === log) this.logs.delete(sessionId);
+      }
+    }
+  }
+
+  /**
+   * Drops everything queued for a session, waits for a running flush and forgets the session: its entry leaves
+   * the store and no flush creates `history/<id>/` afterwards. Files stay (see `remove`). Call when a session ends
+   * for good; output appended afterwards would start a new log.
+   */
+  async forget(sessionId: SessionId): Promise<void> {
+    const log = this.logs.get(sessionId);
+    if (!log) return;
+    log.forgotten = true;
+    if (log.timer) {
+      clearTimeout(log.timer);
+      log.timer = undefined;
+    }
+    log.queue = [];
+    log.head = 0;
+    log.pendingBytes = 0;
+    while (log.flushing) await log.flushing;
+    if (this.logs.get(sessionId) === log) this.logs.delete(sessionId);
+  }
+
+  /** `forget` plus deleting `history/<id>/` with both segments. Idempotent: nothing there is no error. */
+  async remove(sessionId: SessionId): Promise<void> {
+    const dir = historyDir(this.options.dataDir, sessionId);
+    await this.forget(sessionId);
+    await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+
+  private isPristine(log: SessionLog): boolean {
+    return (
+      log.readers === 0 &&
+      log.head >= log.queue.length &&
+      !log.timer &&
+      !log.flushing &&
+      log.active === undefined &&
+      log.droppedEntries === 0
+    );
   }
 
   private log(sessionId: SessionId): SessionLog {
@@ -181,6 +251,11 @@ export class HistoryStore {
         droppedBytes: 0,
         timer: undefined,
         flushing: undefined,
+        writing: false,
+        readers: 0,
+        readersIdle: undefined,
+        forgotten: false,
+        checkedCap: undefined,
         active: undefined,
       };
       this.logs.set(sessionId, log);
@@ -213,7 +288,7 @@ export class HistoryStore {
   }
 
   private schedule(sessionId: SessionId, log: SessionLog): void {
-    if (log.timer || log.flushing) return;
+    if (log.timer || log.flushing || log.forgotten) return;
     log.timer = setTimeout(() => {
       log.timer = undefined;
       void this.startFlush(sessionId, log);
@@ -223,11 +298,23 @@ export class HistoryStore {
 
   private startFlush(sessionId: SessionId, log: SessionLog): Promise<void> {
     if (log.flushing) return log.flushing;
-    log.flushing = this.writeQueued(sessionId, log).finally(() => {
-      log.flushing = undefined;
-      if (log.head < log.queue.length && !this.disposed) this.schedule(sessionId, log);
-    });
+    if (log.forgotten) return Promise.resolve();
+    log.flushing = this.waitForReaders(log)
+      .then(() => {
+        if (log.forgotten) return;
+        log.writing = true;
+        return this.writeQueued(sessionId, log);
+      })
+      .finally(() => {
+        log.writing = false;
+        log.flushing = undefined;
+        if (log.head < log.queue.length && !this.disposed) this.schedule(sessionId, log);
+      });
     return log.flushing;
+  }
+
+  private async waitForReaders(log: SessionLog): Promise<void> {
+    while (log.readersIdle) await log.readersIdle.promise;
   }
 
   private async writeQueued(sessionId: SessionId, log: SessionLog): Promise<void> {
@@ -241,6 +328,7 @@ export class HistoryStore {
     } catch (error) {
       // Resynchronise with the files at the next write.
       log.active = undefined;
+      log.checkedCap = undefined;
       for (const entry of batch) this.drop(log, entry.buffer.length, 1);
       try {
         (this.options.onError ?? defaultOnError)(error, sessionId);
@@ -255,6 +343,11 @@ export class HistoryStore {
     await mkdir(historyDir(this.options.dataDir, sessionId), { recursive: true });
     let active: ActiveSegment = log.active ?? (await this.findActive(sessionId));
     log.active = active;
+    if (log.checkedCap !== cap) {
+      active = await this.enforceCap(sessionId, active, cap);
+      log.active = active;
+      log.checkedCap = cap;
+    }
     let chunks: Buffer[] = [];
     const write = async (): Promise<void> => {
       if (chunks.length === 0) return;
@@ -287,14 +380,30 @@ export class HistoryStore {
     const newest = ordered.at(-1);
     if (!newest) return { index: 0, size: 0, lastTimestamp: 0 };
     const path = historySegmentPath(this.options.dataDir, sessionId, newest.index);
-    let valid = 0;
-    let lastTimestamp = 0;
-    for await (const entry of readSegment(path)) {
-      valid = entry.end;
-      lastTimestamp = entry.timestamp;
-    }
+    const { valid, lastTimestamp } = await scanHeaders(path, newest.size);
     if (valid < newest.size) await truncate(path, valid);
     return { index: newest.index, size: valid, lastTimestamp };
+  }
+
+  /**
+   * After the limit was lowered a segment may be larger than the new cap: an oversized active segment ends the
+   * history (both segments are emptied, the other one becomes active), an oversized inactive one is emptied. The
+   * consumption is then within the limit again at once, at the price of the output in the emptied segments.
+   */
+  private async enforceCap(sessionId: SessionId, active: ActiveSegment, cap: number): Promise<ActiveSegment> {
+    const other = active.index === 0 ? 1 : 0;
+    const otherPath = historySegmentPath(this.options.dataDir, sessionId, other);
+    if (active.size > cap) {
+      await writeFile(historySegmentPath(this.options.dataDir, sessionId, active.index), "");
+      await writeFile(otherPath, "");
+      return { index: other, size: 0, lastTimestamp: active.lastTimestamp };
+    }
+    try {
+      if ((await stat(otherPath)).size > cap) await writeFile(otherPath, "");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return active;
   }
 }
 
@@ -393,8 +502,35 @@ async function* readSegment(path: string): AsyncGenerator<SegmentEntry> {
 }
 
 /**
+ * End of the last complete entry of a segment and its timestamp, found by walking the headers only (12 bytes per
+ * entry, the data is skipped), so a large segment is not read into memory.
+ */
+async function scanHeaders(path: string, size: number): Promise<{ valid: number; lastTimestamp: number }> {
+  const handle = await open(path, "r");
+  try {
+    const header = Buffer.alloc(ENTRY_HEADER_BYTES);
+    let offset = 0;
+    let lastTimestamp = 0;
+    while (offset + ENTRY_HEADER_BYTES <= size) {
+      const { bytesRead } = await handle.read(header, 0, ENTRY_HEADER_BYTES, offset);
+      if (bytesRead < ENTRY_HEADER_BYTES) break;
+      const length = header.readUInt32BE(8);
+      const end = offset + ENTRY_HEADER_BYTES + length;
+      if (length > MAX_ENTRY_DATA_BYTES || end > size) break;
+      lastTimestamp = Number(header.readBigUInt64BE(0));
+      offset = end;
+    }
+    return { valid: offset, lastTimestamp };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * All stored entries of a session from oldest to newest (older segment first). A truncated or damaged last entry
  * of a segment ends that segment without an error; a missing history yields nothing. Meant for the search (P3-7).
+ * Only safe without a concurrent writer: a segment change during the read can move bytes under it. While a
+ * `HistoryStore` is writing, use `HistoryStore.read`, which holds the writer back.
  */
 export async function* readHistory(dataDir: string, sessionId: SessionId): AsyncGenerator<HistoryEntry> {
   for (const segment of await orderedSegments(dataDir, sessionId)) {

@@ -111,3 +111,61 @@ Der Core SHALL die Ausgabe einer Session nur speichern, solange `loggingEnabled`
 - **GIVEN** ein `historyLimitBytes` von 1 oder kein gültiger Zahlenwert
 - **WHEN** der Core ein Segment füllt
 - **THEN** gilt 64 KiB (Minimum) beziehungsweise 10 MiB (Standard) als Limit
+
+### Requirement: Lesen neben dem Schreiber
+
+Der Lesezugriff des Stores (`HistoryStore.read`) SHALL den Schreiber der Session und jeden Segmentwechsel bis zum Ende des Lesens aufschieben; die Warteschlange füllt sich bis zu ihrer Obergrenze weiter. Ein Segmentwechsel MUST dem Leser keine Bytes verschieben. Die freie Funktion `readHistory` ist nur ohne gleichzeitigen Schreiber sicher.
+
+#### Scenario: Segmentwechsel während des Lesens
+
+- **GIVEN** zwei volle Segmente, ein offener Lesezugriff und genug neue Ausgabe für einen Segmentwechsel
+- **WHEN** der Leser weiterliest und der Core schreiben will
+- **THEN** liefert der Leser alle Einträge lückenlos und der Core schreibt erst nach dem Ende des Lesens
+
+#### Scenario: Leser bricht ab
+
+- **GIVEN** ein Lesezugriff, der nach dem ersten Eintrag beendet wird
+- **WHEN** neue Ausgabe eintrifft und geschrieben wird
+- **THEN** wird sie angehängt und ist lesbar
+
+### Requirement: Verlauf vergessen und entfernen
+
+`HistoryStore.forget` SHALL die wartenden Einträge einer Session verwerfen, einen laufenden Flush abwarten und die Session aus dem Speicher des Stores nehmen; danach MUST kein Flush `history/<sessionId>/` neu anlegen. `HistoryStore.remove` SHALL zusätzlich das Verzeichnis mit beiden Segmenten rekursiv löschen und idempotent sein.
+
+#### Scenario: Vergessen vor dem Schreiben
+
+- **GIVEN** wartende Ausgabe einer Session, die noch nicht geschrieben ist
+- **WHEN** der Core die Session vergisst
+- **THEN** entsteht `history/<sessionId>/` nicht und die Session hat keinen Eintrag im Store
+
+#### Scenario: Entfernen
+
+- **GIVEN** eine Session mit gespeichertem Verlauf, auch während eines laufenden Flushs
+- **WHEN** der Core sie entfernt, auch ein zweites Mal oder für eine unbekannte Session
+- **THEN** existiert das Verzeichnis nicht mehr, ohne Fehler und ohne dass ein späterer Flush es neu anlegt
+
+### Requirement: Gesenktes Limit
+
+Wird `historyLimitBytes` gesenkt, SHALL der Core beim nächsten Schreiben mit geändertem Segmentmaximum den Verbrauch sofort wieder unter das Limit bringen: Ist das aktive Segment über dem Maximum, werden beide Segmente geleert; ist nur das inaktive darüber, wird es geleert.
+
+#### Scenario: Zu großes aktives Segment
+
+- **GIVEN** ein Verlauf von rund 400 KiB im aktiven Segment und ein neues Limit von 64 KiB
+- **WHEN** der Core Ausgabe schreibt
+- **THEN** liegt der Verbrauch höchstens bei 64 KiB und nur die neue Ausgabe ist lesbar
+
+#### Scenario: Zu großes inaktives Segment
+
+- **GIVEN** ein großes inaktives Segment, ein kleines aktives und ein neues Limit von 64 KiB
+- **WHEN** der Core Ausgabe schreibt
+- **THEN** ist das inaktive Segment leer, das aktive und die neue Ausgabe bleiben
+
+### Requirement: Bekannte Grenze: Neuzeichnen beim Anhängen
+
+Der Verlauf SHALL die Ausgabe so speichern, wie die Registry sie meldet, ohne zwischen Programmausgabe und Neuzeichnen zu unterscheiden. Das Neuzeichnen beim Anhängen einer View (Issue #34) erscheint deshalb als weitere Einträge, die eine frühere Ausgabe wiederholen können. Das ist eine bekannte Grenze; ein Folge-Issue behandelt sie.
+
+#### Scenario: Neuzeichnen beim Anhängen
+
+- **GIVEN** eine Session mit Logging, deren Bildschirm beim Anhängen einer View neu gezeichnet wird
+- **WHEN** die Registry diese Bytes als Ausgabe meldet
+- **THEN** speichert der Verlauf sie wie jede andere Ausgabe

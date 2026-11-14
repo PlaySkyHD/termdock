@@ -1,4 +1,12 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -408,4 +416,163 @@ describe("recordHistory", () => {
     expect(Date.now() - startedAt).toBeLessThan(60_000);
     expect(store.stats(session.id).pendingBytes).toBe(0);
   }, 90_000);
+});
+
+describe("HistoryStore: forget and remove", () => {
+  it("drops the queue and never creates the directory afterwards", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir, { flushDelayMs: 1 });
+    store.append("s1", numbered(0));
+
+    await store.forget("s1");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await store.flush();
+
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    expect(store.stats("s1")).toEqual({ pendingBytes: 0, droppedEntries: 0, droppedBytes: 0 });
+  });
+
+  it("removes the directory during a running flush and leaves nothing behind", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir, { flushDelayMs: 10_000 });
+    store.append("s1", numbered(0));
+    const flushing = store.flush("s1");
+    store.append("s1", numbered(1));
+
+    await store.remove("s1");
+    await flushing;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    expect(store.stats("s1").pendingBytes).toBe(0);
+    await store.flush();
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    await store.remove("s1");
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    await store.remove("s1");
+    await store.remove("never");
+  });
+
+  it("removes the files of a session that was written before", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir);
+    store.append("s1", numbered(0));
+    await store.flush();
+    expect(existsSync(historyDir(dir, "s1"))).toBe(true);
+
+    await store.remove("s1");
+
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    // Idempotent, also for a session that never had a history.
+    await store.remove("s1");
+    await store.remove("never");
+  });
+
+  it("starts a fresh log when output arrives after remove", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir);
+    store.append("s1", numbered(0));
+    await store.flush();
+    await store.remove("s1");
+
+    store.append("s1", numbered(1));
+    await store.flush();
+
+    expect((await collect(store.read("s1"))).map(numberOf)).toEqual([1]);
+  });
+
+  it("leaves no log behind for a session that was only read or was forgotten", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir);
+    expect(await collect(store.read("s1"))).toEqual([]);
+    store.append("s2", numbered(0));
+    await store.flush();
+    await store.forget("s2");
+    await store.flush("s2");
+
+    expect(existsSync(historyDir(dir, "s1"))).toBe(false);
+    expect(store.stats("s2").droppedEntries).toBe(0);
+  });
+});
+
+describe("HistoryStore: reader and writer", () => {
+  it("holds a segment change back until the read ends", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir, {}, 64 * KIB);
+    // a.log holds 0..30, b.log 31..59: the next segment change empties a.log.
+    for (let n = 0; n < 60; n++) store.append("s1", numbered(n));
+    await store.flush();
+
+    const seen: number[] = [];
+    let flushed = false;
+    let flushing: Promise<void> | undefined;
+    for await (const entry of store.read("s1")) {
+      seen.push(numberOf(entry));
+      if (seen.length === 1) {
+        for (let n = 60; n < 70; n++) store.append("s1", numbered(n));
+        flushing = store.flush().then(() => void (flushed = true));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(flushed).toBe(false);
+      }
+    }
+    expect(seen).toEqual(Array.from({ length: 60 }, (_, i) => i));
+
+    await flushing;
+    expect(flushed).toBe(true);
+    const after = (await collect(store.read("s1"))).map(numberOf);
+    expect(after.at(-1)).toBe(69);
+    expect(after[0]).toBeGreaterThan(0);
+  });
+
+  it("lets the writer go on when a reader stops early", async () => {
+    const dir = tempDir();
+    const store = makeStore(dir);
+    store.append("s1", numbered(0));
+    store.append("s1", numbered(1));
+    await store.flush();
+
+    for await (const entry of store.read("s1")) {
+      expect(numberOf(entry)).toBe(0);
+      break;
+    }
+    store.append("s1", numbered(2));
+    await store.flush();
+
+    expect((await collect(store.read("s1"))).map(numberOf)).toEqual([0, 1, 2]);
+  });
+});
+
+describe("HistoryStore: lowered limit", () => {
+  const written = async (dir: string, count: number, limit: number) => {
+    const store = makeStore(dir, {}, limit);
+    for (let n = 0; n < count; n++) store.append("s1", numbered(n));
+    await store.dispose();
+  };
+
+  it("ends an oversized active segment at the next write", async () => {
+    const dir = tempDir();
+    await written(dir, 400, MIB);
+
+    const small = makeStore(dir, {}, 64 * KIB);
+    small.append("s1", numbered(1000));
+    await small.flush();
+
+    expect(diskUsage(dir, "s1")).toBeLessThanOrEqual(64 * KIB);
+    expect((await collect(small.read("s1"))).map(numberOf)).toEqual([1000]);
+  });
+
+  it("empties an oversized inactive segment at the next write", async () => {
+    const dir = tempDir();
+    // Cap 128 KiB: a.log holds 0..128, b.log the one after it.
+    await written(dir, 130, 256 * KIB);
+
+    const small = makeStore(dir, {}, 64 * KIB);
+    small.append("s1", numbered(1000));
+    await small.flush();
+
+    expect(diskUsage(dir, "s1")).toBeLessThanOrEqual(64 * KIB);
+    const numbers = (await collect(small.read("s1"))).map(numberOf);
+    // a.log (0..128) is over the new cap and emptied; b.log (129) stays.
+    expect(numbers).toEqual([129, 1000]);
+  });
 });

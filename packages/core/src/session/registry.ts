@@ -431,6 +431,28 @@ export class SessionRegistry {
   }
 
   /**
+   * Makes every session of the workspace ungrouped (`workspaceId` unset), in memory and in the repository, and
+   * returns the changed sessions. Processes, views and states stay as they are. Memory changes only after the
+   * repository write went through, so a failing write changes nothing. `around` receives that write and must
+   * run it exactly once, e.g. inside the transaction that also deletes the workspace row; if `around` throws,
+   * nothing changes. Sends no event: the caller reports the sessions.
+   */
+  clearWorkspace(workspaceId: string, around?: (write: () => void) => void): SessionInfo[] {
+    this.assertNotRestoring();
+    const affected = [...this.sessions.values()].filter((entry) => entry.info.workspaceId === workspaceId);
+    const updatedAt = this.now().toISOString();
+    // Always, also without a session in memory: a stored row must not keep a deleted workspace.
+    const write = (): void => this.repository?.clearWorkspace(workspaceId, updatedAt);
+    if (around) around(write);
+    else write();
+    return affected.map((entry) => {
+      delete entry.info.workspaceId;
+      entry.info.updatedAt = updatedAt;
+      return snapshotInfo(entry.info);
+    });
+  }
+
+  /**
    * Attaches a view. A view that attaches to a session without other views becomes the writer (ADR 0005).
    * Allowed in every state except `Archived`. The view gets exactly the output numbered above `outputSeq`.
    */

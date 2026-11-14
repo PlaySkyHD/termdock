@@ -10,7 +10,10 @@ import {
   encodeFrame,
   FrameDecoder,
   LAYOUT_VERSION,
+  MAX_PATH_LENGTH,
   MAX_PAYLOAD_BYTES,
+  MAX_PROJECTS_PER_WORKSPACE,
+  MAX_WORKSPACES,
   PHASE_3_METHODS,
 } from "@termdock/protocol";
 import type { Frame, LayoutDocument, SessionInfo } from "@termdock/protocol";
@@ -18,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend } from "../backend/fake.js";
 import { SessionRegistry } from "../session/registry.js";
 import { InMemoryLayoutRepository } from "../storage/layout-repository.js";
+import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
 import { runCore } from "../bin/run-core.js";
 import { connect, IpcError } from "./client.js";
 import type { CoreClient } from "./client.js";
@@ -928,7 +932,8 @@ describe("phase 3 (issue #55)", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     const calls: [string, unknown][] = [
-      ...Object.entries(stubCalls),
+      // workspace.* and project.* are implemented (issue #56, tests in "workspaces and projects").
+      ...Object.entries(stubCalls).filter(([method]) => !/^(workspace|project)\./.test(method)),
       // Creating from a profile without launch belongs to issue #58.
       ["session.create", { name: "Claude", profileId: "pr1" }],
     ];
@@ -1054,5 +1059,285 @@ describe("layout", () => {
     raw.send({ kind: "request", id: "bad", method: "layout.save", params: { layout: duplicate } });
     await waitFor(() => raw.frames.length === 2, "two responses");
     expect(raw.frames[1]?.header).toMatchObject({ id: "bad", error: { code: "bad_request" } });
+  });
+});
+
+describe("workspaces and projects (issue #56)", () => {
+  const wslProject = (name = "api") => ({ name, path: `/home/dev/${name}`, backend: "wsl" as const });
+
+  async function twoClients() {
+    const core = await startCore();
+    const a = await newClient(core.pipePath);
+    const b = await newClient(core.pipePath);
+    await a.request("session.list", {});
+    await b.request("session.list", {});
+    return { ...core, a, b };
+  }
+
+  it("creates, renames and lists workspaces and projects", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "Web" })).result;
+    expect(workspace).toMatchObject({ name: "Web", projects: [] });
+    const renamed = (
+      await client.request("workspace.update", {
+        workspaceId: workspace.id,
+        name: "Web 2",
+        defaultCwd: "/srv",
+      })
+    ).result.workspace;
+    expect(renamed).toEqual({ id: workspace.id, name: "Web 2", projects: [], defaultCwd: "/srv" });
+    const { project } = (
+      await client.request("project.create", { workspaceId: workspace.id, ...wslProject(), distro: "Ubuntu" })
+    ).result;
+    expect(project).toMatchObject({ workspaceId: workspace.id, name: "api", distro: "Ubuntu" });
+    const updated = (await client.request("project.update", { projectId: project.id, name: "api2" })).result
+      .project;
+    expect(updated).toEqual({ ...project, name: "api2" });
+    const cleared = (
+      await client.request("workspace.update", { workspaceId: workspace.id, defaultCwd: null })
+    ).result.workspace;
+    expect("defaultCwd" in cleared).toBe(false);
+    expect((await client.request("workspace.list", {})).result.workspaces).toEqual([
+      { id: workspace.id, name: "Web 2", projects: [updated] },
+    ]);
+    await client.request("project.delete", { projectId: project.id });
+    expect((await client.request("workspace.list", {})).result.workspaces[0]?.projects).toEqual([]);
+  });
+
+  it("sends workspace.changed with the full list to every listing client, in front of the answer", async () => {
+    const { pipePath, a, b } = await twoClients();
+    const stranger = await newClient(pipePath);
+    const seenByA: string[] = [];
+    const seenByB: number[] = [];
+    const seenByStranger: number[] = [];
+    a.on("workspace.changed", () => seenByA.push("event"));
+    b.on("workspace.changed", ({ workspaces }) => seenByB.push(workspaces.length));
+    stranger.on("workspace.changed", ({ workspaces }) => seenByStranger.push(workspaces.length));
+
+    const { workspace } = (await a.request("workspace.create", { name: "one" })).result;
+    seenByA.push("answer");
+    await a.request("project.create", { workspaceId: workspace.id, ...wslProject() });
+    await a.request("workspace.create", { name: "two" });
+    await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
+
+    expect(seenByA).toEqual(["event", "answer", "event", "event"]);
+    expect(seenByB).toEqual([1, 1, 2]);
+    expect(seenByStranger).toEqual([]);
+  });
+
+  it("sends no workspace.changed for a refused request", async () => {
+    const { a, b } = await twoClients();
+    const { workspace } = (await a.request("workspace.create", { name: "one" })).result;
+    const seen: string[] = [];
+    b.on("workspace.changed", () => seen.push("changed"));
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+    seen.length = 0;
+
+    const refusals = [
+      a.request("workspace.update", { workspaceId: "nope", name: "x" }),
+      a.request("workspace.delete", { workspaceId: "nope" }),
+      a.request("project.create", { workspaceId: "nope", ...wslProject() }),
+      a.request("project.update", { projectId: "nope", name: "x" }),
+      a.request("project.delete", { projectId: "nope" }),
+    ];
+    for (const refusal of refusals) expect(await errorCode(refusal)).toBe("not_found");
+    expect(
+      await errorCode(
+        a.request("project.create", {
+          workspaceId: workspace.id,
+          name: "w",
+          path: "C:\\dev",
+          backend: "wsl",
+        }),
+      ),
+    ).toBe("bad_request");
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+    expect(seen).toEqual([]);
+  });
+
+  it("checks project paths per backend, also when only the backend changes", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "w" })).result;
+    const create = (params: { path: string; backend: "wsl" | "windows" }) =>
+      client.request("project.create", { workspaceId: workspace.id, name: "p", ...params });
+    expect(await errorCode(create({ path: "relative/dir", backend: "wsl" }))).toBe("bad_request");
+    expect(await errorCode(create({ path: "/home/dev", backend: "windows" }))).toBe("bad_request");
+    const linux = (await create({ path: "/home/dev/api", backend: "wsl" })).result.project;
+    const windows = (await create({ path: "C:\\dev\\api", backend: "windows" })).result.project;
+    await create({ path: "\\\\server\\share\\x", backend: "windows" });
+    expect(await errorCode(client.request("project.update", { projectId: windows.id, backend: "wsl" }))).toBe(
+      "bad_request",
+    );
+    // Without distro: null the guard refuses the switch, with it the old Linux path fails the syntax check.
+    expect(
+      await errorCode(
+        client.request("project.update", { projectId: linux.id, backend: "windows", distro: null }),
+      ),
+    ).toBe("bad_request");
+    const switched = (
+      await client.request("project.update", {
+        projectId: linux.id,
+        backend: "windows",
+        path: "D:\\dev\\api",
+        distro: null,
+      })
+    ).result.project;
+    expect(switched).toMatchObject({ backend: "windows", path: "D:\\dev\\api" });
+    expect(await errorCode(client.request("project.update", { projectId: linux.id, path: "/x" }))).toBe(
+      "bad_request",
+    );
+  });
+
+  it("keeps a distro that the merged project would not allow out of the store", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "w" })).result;
+    const { project } = (
+      await client.request("project.create", {
+        workspaceId: workspace.id,
+        name: "p",
+        path: "C:\\dev",
+        backend: "windows",
+      })
+    ).result;
+    // distro alone passes the request guard, the merged windows project must not be stored.
+    expect(
+      await errorCode(client.request("project.update", { projectId: project.id, distro: "Ubuntu" })),
+    ).toBe("bad_request");
+    expect((await client.request("workspace.list", {})).result.workspaces[0]?.projects).toEqual([project]);
+  });
+
+  it("enforces the limits of workspaces and projects", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const first = (await client.request("workspace.create", { name: "w0" })).result.workspace;
+    for (let i = 1; i < MAX_WORKSPACES; i++) await client.request("workspace.create", { name: `w${i}` });
+    expect(await errorCode(client.request("workspace.create", { name: "too many" }))).toBe("invalid_state");
+    for (let i = 0; i < MAX_PROJECTS_PER_WORKSPACE; i++) {
+      await client.request("project.create", { workspaceId: first.id, ...wslProject(`p${i}`) });
+    }
+    expect(
+      await errorCode(client.request("project.create", { workspaceId: first.id, ...wslProject() })),
+    ).toBe("invalid_state");
+    const { workspaces } = (await client.request("workspace.list", {})).result;
+    expect(workspaces).toHaveLength(MAX_WORKSPACES);
+    expect(workspaces[0]?.projects).toHaveLength(MAX_PROJECTS_PER_WORKSPACE);
+  });
+
+  it("refuses a change that pushes the workspace over its byte limit and stores nothing", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "w" })).result;
+    // 512 characters of a character that JSON escapes to 6 bytes: 3 KiB per project.
+    const heavy = `/${"\u0001".repeat(MAX_PATH_LENGTH - 1)}`;
+    let created = 0;
+    for (; created < MAX_PROJECTS_PER_WORKSPACE; created++) {
+      const request = client.request("project.create", {
+        workspaceId: workspace.id,
+        name: "p",
+        path: heavy,
+        backend: "wsl",
+      });
+      if (
+        (await request.then(
+          () => "ok",
+          (error: unknown) => (error as IpcError).code,
+        )) !== "ok"
+      )
+        break;
+    }
+    expect(created).toBeLessThan(MAX_PROJECTS_PER_WORKSPACE);
+    expect((await client.request("workspace.list", {})).result.workspaces[0]?.projects).toHaveLength(created);
+  });
+
+  it("refuses a session for an unknown or deleted workspace with not_found", async () => {
+    const { pipePath, registry } = await startCore();
+    const client = await newClient(pipePath);
+    const { workspace } = (await client.request("workspace.create", { name: "w" })).result;
+    await client.request("session.create", { name: "ok", launch, workspaceId: workspace.id });
+    await client.request("workspace.delete", { workspaceId: workspace.id });
+
+    for (const workspaceId of [workspace.id, "never-existed"]) {
+      expect(await errorCode(client.request("session.create", { name: "x", launch, workspaceId }))).toBe(
+        "not_found",
+      );
+    }
+    expect(registry.list().map((session) => session.name)).toEqual(["ok"]);
+  });
+
+  it("keeps sessions grouped when deleting the workspace fails, and survives a failing list", async () => {
+    const workspaces = new InMemoryWorkspaceRepository();
+    const errors: unknown[] = [];
+    const { pipePath } = await startCore({ workspaces, onInternalError: (error) => errors.push(error) });
+    const a = await newClient(pipePath);
+    await a.request("session.list", {});
+    const { workspace } = (await a.request("workspace.create", { name: "w" })).result;
+    await a.request("session.create", { name: "in", launch, workspaceId: workspace.id });
+    const updated: string[] = [];
+    a.on("session.updated", ({ session }) => updated.push(session.name));
+
+    workspaces.delete = () => {
+      throw new Error("disk full");
+    };
+    expect(await errorCode(a.request("workspace.delete", { workspaceId: workspace.id }))).toBe("internal");
+    // Memory changes only after the commit: no event, the session keeps its workspace.
+    expect(await errorCode(a.request("session.kill", { sessionId: "nope" }))).toBe("not_found");
+    expect(updated).toEqual([]);
+    expect(
+      (await a.request("session.list", {})).result.sessions.map((session) => session.workspaceId),
+    ).toEqual([workspace.id]);
+
+    // A read that fails after the write is committed does not fail the request.
+    const list = workspaces.list.bind(workspaces);
+    let reads = 0;
+    workspaces.list = () => {
+      // service.createWorkspace reads once for the limit; the second read is the one of the notification.
+      if (++reads === 2) throw new Error("busy");
+      return list();
+    };
+    const created = (await a.request("workspace.create", { name: "again" })).result.workspace;
+    workspaces.list = list;
+    expect(created.name).toBe("again");
+    // One for the failed delete (answered with internal), one for the failed read of the notification.
+    expect(errors.map((error) => (error as Error).message)).toEqual(["disk full", "busy"]);
+    expect((await a.request("workspace.list", {})).result.workspaces.map((w) => w.name)).toEqual([
+      "w",
+      "again",
+    ]);
+  });
+
+  it("deletes a workspace with its projects, ungroups its running sessions and tells the other client", async () => {
+    const { a, b, backend, registry } = await twoClients();
+    const { workspace } = (await a.request("workspace.create", { name: "doomed" })).result;
+    const other = (await a.request("workspace.create", { name: "stays" })).result.workspace;
+    await a.request("project.create", { workspaceId: workspace.id, ...wslProject() });
+    const inside = (await a.request("session.create", { name: "in", launch, workspaceId: workspace.id }))
+      .result.session;
+    const outside = (await a.request("session.create", { name: "out", launch, workspaceId: other.id })).result
+      .session;
+    const loose = (await a.request("session.create", { name: "loose", launch })).result.session;
+    const events: string[] = [];
+    b.on("session.updated", ({ session }) => {
+      events.push(`updated:${session.name}:${session.workspaceId ?? "none"}:${session.state}`);
+    });
+    b.on("workspace.changed", ({ workspaces }) =>
+      events.push(`changed:${workspaces.map((w) => w.name).join(",")}`),
+    );
+
+    await a.request("workspace.delete", { workspaceId: workspace.id });
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+
+    expect(events).toEqual([`updated:in:none:${inside.state}`, "changed:stays"]);
+    const sessions = (await b.request("session.list", {})).result.sessions;
+    expect(sessions.find((s) => s.id === inside.id)).toMatchObject({ state: inside.state });
+    expect("workspaceId" in sessions.find((s) => s.id === inside.id)!).toBe(false);
+    expect(sessions.find((s) => s.id === outside.id)?.workspaceId).toBe(other.id);
+    expect("workspaceId" in sessions.find((s) => s.id === loose.id)!).toBe(false);
+    expect(backend.pty(inside.id).ended).toBe(false);
+    expect(registry.get(inside.id).workspaceId).toBeUndefined();
+    expect((await a.request("workspace.list", {})).result.workspaces.map((w) => w.id)).toEqual([other.id]);
+    expect(await errorCode(a.request("workspace.delete", { workspaceId: workspace.id }))).toBe("not_found");
   });
 });

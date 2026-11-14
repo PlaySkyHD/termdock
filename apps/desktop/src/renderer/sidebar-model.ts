@@ -62,9 +62,14 @@ export function sessionPayload(session: SessionInfo): DragPayload {
 /** Which moves a session may make. An archived session is final and goes nowhere; it is not even draggable. */
 export function canDrop(session: SessionInfo, drop: SessionDrop, workspaces: readonly Workspace[]): boolean {
   if (session.state === "Archived") return false;
-  if (drop.kind === "archive") return true;
+  if (drop.kind === "archive") return canArchive(session);
   if (drop.workspaceId === null) return session.workspaceId !== undefined;
   return session.workspaceId !== drop.workspaceId && workspaces.some((each) => each.id === drop.workspaceId);
+}
+
+/** The lifecycle has no way from `Starting` to `Archived` (ADR 0005); the core would refuse with `invalid_state`. */
+export function canArchive(session: SessionInfo): boolean {
+  return session.state !== "Archived" && session.state !== "Starting";
 }
 
 export function isDraggable(session: SessionInfo): boolean {
@@ -127,7 +132,15 @@ export function sessionMenu(
       ...(first ? { separator: true } : {}),
     });
   if (session.state !== "Archived")
-    entries.push({ key: "archive", label: "Archivieren …", action: { kind: "archive" }, separator: true });
+    entries.push({
+      key: "archive",
+      label: "Archivieren …",
+      action: { kind: "archive" },
+      separator: true,
+      ...(canArchive(session)
+        ? {}
+        : { disabled: true, hint: "Eine startende Session lässt sich nicht archivieren" }),
+    });
   const deletable = canDelete(session);
   entries.push({
     key: "delete",
@@ -158,6 +171,40 @@ export function projectMenu(): MenuEntry<ProjectAction>[] {
     { key: "rename", label: "Umbenennen …", action: { kind: "rename" } },
     { key: "delete", label: "Löschen …", action: { kind: "delete" }, danger: true, separator: true },
   ];
+}
+
+// --- Where the focus goes after an action ----------------------------------------------------------
+
+/**
+ * The element that gets the keyboard focus once a menu action or a dialog is through; without it the focus falls
+ * to `<body>` and the keyboard user starts again from the top. `waitFor`: a move shows up in the window only with
+ * the event of the core, so the plan waits until the session is in its new group.
+ */
+export interface FocusPlan {
+  selector: string;
+  waitFor?: { sessionId: string; workspaceId: string | null };
+}
+
+/** The focus of last resort: the "+" of the sidebar header, which is always there. */
+export const SIDEBAR_FOCUS: FocusPlan = { selector: '.sidebar [data-action="new-session"]' };
+export const NEW_WORKSPACE_FOCUS: FocusPlan = { selector: '.sidebar [data-action="new-workspace"]' };
+
+export const sessionFocus = (sessionId: string, waitFor?: FocusPlan["waitFor"]): FocusPlan => ({
+  selector: `[data-session-id=${JSON.stringify(sessionId)}]`,
+  ...(waitFor ? { waitFor } : {}),
+});
+export const workspaceFocus = (workspaceId: string): FocusPlan => ({
+  selector: `[data-workspace-id=${JSON.stringify(workspaceId)}] [data-action="workspace-menu"]`,
+});
+export const projectFocus = (projectId: string): FocusPlan => ({
+  selector: `[data-project-id=${JSON.stringify(projectId)}]`,
+});
+
+/** The plan can be carried out now: nothing to wait for, the session is gone, or it is in the awaited group. */
+export function focusReady(plan: FocusPlan, sessions: readonly SessionInfo[]): boolean {
+  if (!plan.waitFor) return true;
+  const session = sessions.find((each) => each.id === plan.waitFor?.sessionId);
+  return session === undefined || (session.workspaceId ?? null) === plan.waitFor.workspaceId;
 }
 
 // --- Confirmations --------------------------------------------------------------------------------

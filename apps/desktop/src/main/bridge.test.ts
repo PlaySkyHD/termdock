@@ -726,6 +726,24 @@ describe("DesktopBridge workspaces and session management (#63)", () => {
     expect(core.requests.length).toBe(before);
   });
 
+  it("forgets the views of an archived session, and only of that one", async () => {
+    const { core, bridge, a } = setup();
+    await attach(core, bridge, a, "s1", "v1");
+    await attach(core, bridge, a, "s2", "v2");
+
+    core.emit("session.stateChanged", { sessionId: "s2", state: "Exited", lastExitCode: 0 });
+    expect(bridge.viewsOf(a.id)).toEqual(["v1", "v2"]);
+
+    core.emit("session.stateChanged", { sessionId: "s1", state: "Archived" });
+
+    expect(bridge.viewsOf(a.id)).toEqual(["v2"]);
+    expect(a.events.at(-1)).toEqual({ kind: "stateChanged", sessionId: "s1", state: "Archived" });
+    expect(await bridge.call(a.id, { method: "input", viewId: "v1", data: "x" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+  });
+
   it("numbers the output of a removed session from 1 again (a 1.0 core without seq)", async () => {
     const { core, bridge, a } = setup();
     await attach(core, bridge, a, "s1", "v1");

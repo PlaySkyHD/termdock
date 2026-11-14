@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { Project, SessionId, SessionInfo, Workspace } from "@termdock/protocol";
 import { ContextMenu } from "./ContextMenu.js";
-import { ConfirmDialog, failureText, NameDialog } from "./Dialogs.js";
+import { closeIfCurrent, failureText } from "./dialog-state.js";
+import { ConfirmDialog, NameDialog } from "./Dialogs.js";
 import type { NameField } from "./Dialogs.js";
 import { DragProvider, useDrag } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
@@ -18,17 +19,23 @@ import {
   confirmDeleteProject,
   confirmDeleteSession,
   confirmDeleteWorkspace,
+  focusReady,
   isDraggable,
+  NEW_WORKSPACE_FOCUS,
   parseTarget,
+  projectFocus,
   projectMenu,
   SESSION_KIND,
+  SIDEBAR_FOCUS,
+  sessionFocus,
   sessionMenu,
   sessionPayload,
   UNGROUPED_TARGET,
+  workspaceFocus,
   workspaceMenu,
   workspaceTarget,
 } from "./sidebar-model.js";
-import type { Confirmation, MenuEntry, SessionAction } from "./sidebar-model.js";
+import type { Confirmation, FocusPlan, MenuEntry, SessionAction } from "./sidebar-model.js";
 import { StateIcon } from "./StateIcon.js";
 
 /** `tab`: open or focus the tab; `newTab`: always a new tab; `split`: next to the active pane. */
@@ -69,12 +76,14 @@ export interface SidebarProps {
 }
 
 type Dialog =
-  | { kind: "confirm"; confirmation: Confirmation; run: () => Promise<void> }
+  | { kind: "confirm"; confirmation: Confirmation; cancelled: FocusPlan; run: () => Promise<void> }
   | {
       kind: "name";
       title: string;
       fields: readonly NameField[];
       submit: string;
+      /** Where the focus goes when the dialog is cancelled. */
+      cancelled: FocusPlan;
       run: (values: string[]) => Promise<void>;
     };
 
@@ -95,21 +104,48 @@ export function Sidebar(props: SidebarProps) {
   const sections = buildSections(sessions, workspaces);
   const sessionById = (id: string): SessionInfo | undefined => sessions.find((session) => session.id === id);
 
-  const closeDialog = (): void => setDialog(undefined);
+  // The keyboard focus after a menu action or a dialog (#63): without a plan it falls to <body>.
+  const [pendingFocus, setPendingFocus] = useState<FocusPlan>();
+  useEffect(() => {
+    if (!pendingFocus || !focusReady(pendingFocus, sessions)) return;
+    const target =
+      document.querySelector<HTMLElement>(pendingFocus.selector) ??
+      document.querySelector<HTMLElement>(SIDEBAR_FOCUS.selector);
+    target?.focus();
+    setPendingFocus(undefined);
+  });
+
+  const closeDialog = (plan: FocusPlan): void => {
+    setDialog(undefined);
+    setPendingFocus(plan);
+  };
   /**
    * Closes `own` once its action has worked, but not a dialog the user opened meanwhile (a slow archive can be
-   * cancelled with Escape and another dialog opened before it answers).
+   * cancelled with Escape and another dialog opened before it answers); the focus then goes to `plan`.
    */
-  const closeIfCurrent = (own: Dialog): void =>
-    setDialog((current) => (current === own ? undefined : current));
-  /** Runs `action`, closes the dialog when it worked; its failure stays in the dialog. */
-  const confirm = (confirmation: Confirmation, action: () => Promise<void>): void => {
+  const finish = (own: Dialog, plan: FocusPlan): void => {
+    setDialog((current) => closeIfCurrent(current, own));
+    setPendingFocus((current) => (dialogRef.current === own ? plan : current));
+  };
+  const dialogRef = useRef<Dialog | undefined>(undefined);
+  dialogRef.current = dialog;
+  /**
+   * Runs `action`, closes the dialog when it worked (focus to `done`); its failure stays in the dialog. Cancel
+   * gives the focus to `cancelled`, the element that opened the dialog.
+   */
+  const confirm = (
+    confirmation: Confirmation,
+    action: () => Promise<void>,
+    cancelled: FocusPlan,
+    done: FocusPlan = cancelled,
+  ): void => {
     const own: Dialog = {
       kind: "confirm",
       confirmation,
+      cancelled,
       run: async () => {
         await action();
-        closeIfCurrent(own);
+        finish(own, done);
       },
     };
     setDialog(own);
@@ -119,15 +155,18 @@ export function Sidebar(props: SidebarProps) {
     fields: readonly NameField[],
     submit: string,
     action: (values: string[]) => Promise<void>,
+    cancelled: FocusPlan,
+    done: FocusPlan = cancelled,
   ): void => {
     const own: Dialog = {
       kind: "name",
       title,
       fields,
       submit,
+      cancelled,
       run: async (values) => {
         await action(values);
-        closeIfCurrent(own);
+        finish(own, done);
       },
     };
     setDialog(own);
@@ -135,11 +174,31 @@ export function Sidebar(props: SidebarProps) {
   /** A failure without a dialog (drag and drop, menu) goes to the status bar. */
   const quietly = (action: Promise<void>): void =>
     void action.catch((error: unknown) => onNotice(failureText(error)));
+  /** A move shows up with the event of the core: the focus waits for the session to arrive in its new group. */
+  const move = (session: SessionInfo, workspaceId: string | null): void => {
+    setPendingFocus(sessionFocus(session.id, { sessionId: session.id, workspaceId }));
+    quietly(
+      actions.moveSession(session.id, workspaceId).catch((error: unknown) => {
+        setPendingFocus(sessionFocus(session.id));
+        throw error;
+      }),
+    );
+  };
 
   const archive = (session: SessionInfo): void =>
-    confirm(confirmArchive(session), () => actions.archiveSession(session.id));
+    confirm(
+      confirmArchive(session),
+      () => actions.archiveSession(session.id),
+      sessionFocus(session.id),
+      SIDEBAR_FOCUS,
+    );
   const remove = (session: SessionInfo): void =>
-    confirm(confirmDeleteSession(session), () => actions.deleteSession(session.id));
+    confirm(
+      confirmDeleteSession(session),
+      () => actions.deleteSession(session.id),
+      sessionFocus(session.id),
+      SIDEBAR_FOCUS,
+    );
 
   const runSession = (session: SessionInfo, action: SessionAction): void => {
     switch (action.kind) {
@@ -152,10 +211,11 @@ export function Sidebar(props: SidebarProps) {
           [{ key: "name", label: "Name", value: session.name }],
           "Umbenennen",
           ([name]) => actions.renameSession(session.id, name!),
+          sessionFocus(session.id),
         );
         return;
       case "move":
-        quietly(actions.moveSession(session.id, action.workspaceId));
+        move(session, action.workspaceId);
         return;
       case "archive":
         archive(session);
@@ -174,6 +234,7 @@ export function Sidebar(props: SidebarProps) {
           [{ key: "name", label: "Name", value: workspace.name }],
           "Umbenennen",
           ([name]) => actions.renameWorkspace(workspace.id, name!),
+          workspaceFocus(workspace.id),
         );
         return;
       case "addProject":
@@ -185,12 +246,18 @@ export function Sidebar(props: SidebarProps) {
           ],
           "Anlegen",
           ([name, path]) => actions.createProject(workspace.id, name!, path!),
+          workspaceFocus(workspace.id),
         );
         return;
       case "delete": {
         const count =
           sections.workspaces.find((each) => each.workspace.id === workspace.id)?.sessions.length ?? 0;
-        confirm(confirmDeleteWorkspace(workspace, count), () => actions.deleteWorkspace(workspace.id));
+        confirm(
+          confirmDeleteWorkspace(workspace, count),
+          () => actions.deleteWorkspace(workspace.id),
+          workspaceFocus(workspace.id),
+          SIDEBAR_FOCUS,
+        );
         return;
       }
     }
@@ -203,8 +270,15 @@ export function Sidebar(props: SidebarProps) {
         [{ key: "name", label: "Name", value: project.name }],
         "Umbenennen",
         ([name]) => actions.renameProject(project.id, name!),
+        projectFocus(project.id),
       );
-    else confirm(confirmDeleteProject(project), () => actions.deleteProject(project.id));
+    else
+      confirm(
+        confirmDeleteProject(project),
+        () => actions.deleteProject(project.id),
+        projectFocus(project.id),
+        SIDEBAR_FOCUS,
+      );
   };
 
   /** Opens a menu at the pointer, or beside the element when the keyboard asked for it. */
@@ -250,7 +324,7 @@ export function Sidebar(props: SidebarProps) {
     const target = parseTarget(targetId);
     if (!session || !target || !canDrop(session, target, workspaces)) return;
     if (target.kind === "archive") archive(session);
-    else quietly(actions.moveSession(session.id, target.workspaceId));
+    else move(session, target.workspaceId);
   };
 
   const row = (session: SessionInfo, options: { archived?: boolean } = {}): ReactNode => (
@@ -294,7 +368,7 @@ export function Sidebar(props: SidebarProps) {
               key={workspace.id}
               targetId={workspaceTarget(workspace.id)}
               label={workspace.name}
-              data={{ "data-workspace-name": workspace.name }}
+              data={{ "data-workspace-name": workspace.name, "data-workspace-id": workspace.id }}
             >
               <div className="sidebar__group-header">
                 <h2
@@ -326,6 +400,7 @@ export function Sidebar(props: SidebarProps) {
                       className="project-item"
                       type="button"
                       data-project-name={project.name}
+                      data-project-id={project.id}
                       aria-haspopup="menu"
                       title={`${project.name} · ${project.path}\nKlick oder Rechtsklick: Aktionen`}
                       onClick={(event) =>
@@ -386,8 +461,12 @@ export function Sidebar(props: SidebarProps) {
             type="button"
             data-action="new-workspace"
             onClick={() =>
-              ask("Neuer Workspace", [{ key: "name", label: "Name", value: "" }], "Anlegen", ([name]) =>
-                actions.createWorkspace(name!),
+              ask(
+                "Neuer Workspace",
+                [{ key: "name", label: "Name", value: "" }],
+                "Anlegen",
+                ([name]) => actions.createWorkspace(name!),
+                NEW_WORKSPACE_FOCUS,
               )
             }
           >
@@ -408,7 +487,11 @@ export function Sidebar(props: SidebarProps) {
         />
       )}
       {dialog?.kind === "confirm" && (
-        <ConfirmDialog confirmation={dialog.confirmation} onConfirm={dialog.run} onCancel={closeDialog} />
+        <ConfirmDialog
+          confirmation={dialog.confirmation}
+          onConfirm={dialog.run}
+          onCancel={() => closeDialog(dialog.cancelled)}
+        />
       )}
       {dialog?.kind === "name" && (
         <NameDialog
@@ -416,7 +499,7 @@ export function Sidebar(props: SidebarProps) {
           fields={dialog.fields}
           submitLabel={dialog.submit}
           onSubmit={dialog.run}
-          onCancel={closeDialog}
+          onCancel={() => closeDialog(dialog.cancelled)}
         />
       )}
     </DragProvider>
@@ -476,6 +559,7 @@ function SessionRow({
         }`}
         type="button"
         data-session-name={session.name}
+        data-session-id={session.id}
         data-state={session.state}
         aria-haspopup="menu"
         title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace oder das Archiv, Rechtsklick oder Menütaste für Aktionen`}

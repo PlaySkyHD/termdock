@@ -104,11 +104,20 @@ export class UiStore {
    * the window first. An unknown session is added.
    */
   sessionUpdated(session: SessionInfo): void {
-    const known = this.state.sessions.find((each) => each.id === session.id);
-    if (!known) {
+    if (!this.state.sessions.some((each) => each.id === session.id)) {
       this.sessionCreated(session);
       return;
     }
+    this.mergeSessionUpdate(session);
+  }
+
+  /**
+   * Like `sessionUpdated`, for the answer of `updateSession`: only a session the store knows. A late answer must not
+   * bring back a session that `session.removed` has taken out meanwhile; adding is for events.
+   */
+  mergeSessionUpdate(session: SessionInfo): void {
+    const known = this.state.sessions.find((each) => each.id === session.id);
+    if (!known) return;
     const { workspaceId: _old, ...rest } = known;
     const next: SessionInfo = {
       ...rest,

@@ -283,6 +283,11 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     async () => (await session("Notes")).workspaceId === web.id,
     "Notes moved to Web by keyboard",
   );
+  // The focus follows the moved row (it is a new element in the new group), not <body>.
+  await waitFor(
+    `document.activeElement?.dataset?.sessionName === 'Notes'`,
+    "the focus on the moved row after the menu action",
+  );
   log("sidebar: keyboard move through the context menu works");
 
   // --- Delete: confirmation, then the placeholder in an open tab ---------------------------------------
@@ -301,6 +306,11 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
   expect(
     (await sessions()).some((each) => each.name === archivedName),
     "Escape deleted the session",
+  );
+  // Cancelling returns the focus to the row that started the dialog, not to <body>.
+  await waitFor(
+    `document.activeElement?.dataset?.sessionName === ${JSON.stringify(archivedName)}`,
+    "the focus on the row after cancelling the dialog",
   );
   await click(`[data-archive-delete=${JSON.stringify(archivedName)}]`);
   await click('[data-dialog="confirm"] [data-confirm="ok"]');

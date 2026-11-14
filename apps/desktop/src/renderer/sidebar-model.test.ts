@@ -8,8 +8,13 @@ import {
   confirmArchive,
   confirmDeleteWorkspace,
   isDraggable,
+  focusReady,
   parseTarget,
+  projectFocus,
   projectMenu,
+  SIDEBAR_FOCUS,
+  sessionFocus,
+  workspaceFocus,
   sessionMenu,
   sessionPayload,
   UNGROUPED_TARGET,
@@ -120,10 +125,24 @@ describe("drop targets", () => {
     expect(canDrop(session("a"), { kind: "move", workspaceId: "gone" }, workspaces)).toBe(false);
   });
 
-  it("lets every live session go to the archive, whatever its state", () => {
-    const states: SessionState[] = ["Starting", "Running", "Detached", "Exited", "Interrupted"];
+  it("lets every session that can be archived go to the archive, not a starting one", () => {
+    const states: SessionState[] = ["Running", "Detached", "Exited", "Interrupted"];
     for (const state of states)
       expect(canDrop(session("a", { state }), { kind: "archive" }, workspaces)).toBe(true);
+    expect(canDrop(session("a", { state: "Starting" }), { kind: "archive" }, workspaces)).toBe(false);
+  });
+
+  it("disables Archivieren in the menu of a starting session, with a reason, and keeps its moves", () => {
+    const entries = sessionMenu(session("a", { state: "Starting" }), workspaces);
+    const archive = entries.find((e) => e.key === "archive");
+
+    expect(archive).toMatchObject({ disabled: true });
+    expect(archive?.hint).toBeTruthy();
+    expect(entries.some((e) => e.key === "move:w1")).toBe(true);
+    const running = sessionMenu(session("a", { state: "Running" }), workspaces).find(
+      (e) => e.key === "archive",
+    );
+    expect(running?.disabled).toBeUndefined();
   });
 
   it("lets an archived session go nowhere and keeps it from being dragged", () => {
@@ -210,6 +229,37 @@ describe("sessionMenu", () => {
       "rename",
       "delete",
     ]);
+  });
+});
+
+describe("focus plans", () => {
+  it("names the row, the workspace button and the project row by id", () => {
+    expect(sessionFocus("s1").selector).toBe('[data-session-id="s1"]');
+    expect(workspaceFocus("w1").selector).toBe('[data-workspace-id="w1"] [data-action="workspace-menu"]');
+    expect(projectFocus("p1").selector).toBe('[data-project-id="p1"]');
+  });
+
+  it("quotes an id, so it cannot leave the attribute selector", () => {
+    expect(sessionFocus('x"] , body [a="').selector).toBe('[data-session-id="x\\"] , body [a=\\""]');
+  });
+
+  it("is ready at once without a wait", () => {
+    expect(focusReady(sessionFocus("s1"), [])).toBe(true);
+    expect(focusReady(SIDEBAR_FOCUS, [])).toBe(true);
+  });
+
+  it("waits for a moved session to arrive in its new group, ungrouped included", () => {
+    const toWeb = sessionFocus("a", { sessionId: "a", workspaceId: "w1" });
+    expect(focusReady(toWeb, [session("a")])).toBe(false);
+    expect(focusReady(toWeb, [session("a", { workspaceId: "w1" })])).toBe(true);
+
+    const ungroup = sessionFocus("a", { sessionId: "a", workspaceId: null });
+    expect(focusReady(ungroup, [session("a", { workspaceId: "w1" })])).toBe(false);
+    expect(focusReady(ungroup, [session("a")])).toBe(true);
+  });
+
+  it("does not wait for a session that is gone", () => {
+    expect(focusReady(sessionFocus("a", { sessionId: "a", workspaceId: "w1" }), [])).toBe(true);
   });
 });
 

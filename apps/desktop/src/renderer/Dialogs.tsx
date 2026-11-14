@@ -4,12 +4,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { trapFocus } from "./focus-trap.js";
+import { failureText } from "./dialog-state.js";
 import type { Confirmation } from "./sidebar-model.js";
-
-/** Message of a failed call for display; the preload puts the code in front as `[code]`. */
-export function failureText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/^\[[a-z_]+\]\s*/, "");
-}
 
 /** Escape cancels wherever the focus is. */
 function useEscape(onCancel: () => void): void {

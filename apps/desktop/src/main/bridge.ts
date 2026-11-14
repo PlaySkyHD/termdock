@@ -72,21 +72,23 @@ export class DesktopBridge {
           ...(writerViewId === undefined ? {} : { writerViewId }),
         }),
       ),
-      core.on("session.stateChanged", ({ sessionId, state, lastExitCode }) =>
+      core.on("session.stateChanged", ({ sessionId, state, lastExitCode }) => {
+        // Archiving makes the core forget all views of the session; the records here must go with them.
+        if (state === "Archived") this.forgetViews(sessionId);
         this.toAll({
           kind: "stateChanged",
           sessionId,
           state,
           ...(lastExitCode === undefined ? {} : { lastExitCode }),
-        }),
-      ),
+        });
+      }),
       core.on("session.created", ({ session }) => this.toAll({ kind: "sessionCreated", session })),
       core.on("session.updated", ({ session }) => this.toAll({ kind: "sessionUpdated", session })),
       core.on("session.removed", ({ sessionId }) => {
         // The session is gone for good; neither its output counter nor a view record may outlive it (the core has
         // dropped the views already, and the window's detach of a dead view then ends with `not_found` here).
         this.outputSeq.delete(sessionId);
-        for (const [viewId, view] of this.views) if (view.sessionId === sessionId) this.views.delete(viewId);
+        this.forgetViews(sessionId);
         this.toAll({ kind: "sessionRemoved", sessionId });
       }),
       core.on("workspace.changed", ({ workspaces }) => this.toAll({ kind: "workspaceChanged", workspaces })),
@@ -272,6 +274,11 @@ export class DesktopBridge {
     } catch {
       // The view is gone for the window either way; a closed core has dropped it already.
     }
+  }
+
+  /** The core has dropped the views of the session (archive, delete): the window's later calls end in `not_found`. */
+  private forgetViews(sessionId: SessionId): void {
+    for (const [viewId, view] of this.views) if (view.sessionId === sessionId) this.views.delete(viewId);
   }
 
   private ownView(windowId: number, viewId: ViewId): void {

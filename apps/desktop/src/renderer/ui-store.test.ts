@@ -608,6 +608,18 @@ describe("UiStore workspaces and session edits (#63)", () => {
     expect(store.getState().sessions.map((s) => s.id)).toEqual(["s9"]);
   });
 
+  it("merges the answer of updateSession into known sessions only, so a late answer is no ghost", () => {
+    const store = newStore();
+    store.setSessions([session("s1")]);
+
+    store.mergeSessionUpdate({ ...session("s1"), name: "Neu" });
+    expect(store.getState().sessions[0]?.name).toBe("Neu");
+
+    store.sessionRemoved("s1");
+    store.mergeSessionUpdate({ ...session("s1"), name: "Geist" });
+    expect(store.getState().sessions).toEqual([]);
+  });
+
   it("removes a deleted session and keeps its tab, whose pane then falls back to the placeholder", () => {
     const store = newStore();
     store.setSessions([session("s1"), session("s2")]);

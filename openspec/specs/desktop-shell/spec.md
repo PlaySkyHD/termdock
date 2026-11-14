@@ -962,6 +962,17 @@ Rechtsklick, Menütaste und Umschalt+F10 auf einer Session, einem Workspace oder
 - **WHEN** der Benutzer ihr Menü öffnet
 - **THEN** ist „Löschen“ abgeblendet und nicht wählbar
 
+#### Scenario: Startende Session
+
+- **GIVEN** eine Session im Zustand `Starting`
+- **WHEN** der Benutzer ihr Menü öffnet oder sie auf das Archiv zieht
+- **THEN** ist „Archivieren“ abgeblendet beziehungsweise das Archiv kein gültiges Ziel, weil der Core es mit `invalid_state` ablehnt
+
+#### Scenario: Fokus nach der Aktion
+
+- **WHEN** eine Menüaktion oder ein Dialog der Sidebar endet (Verschieben, Umbenennen, Abbrechen, Bestätigen)
+- **THEN** hat die auslösende oder verschobene Zeile den Fokus, und wo es sie nicht mehr gibt, der Knopf „Neue WSL-Session“ der Sidebar, nie `<body>`
+
 #### Scenario: Menü schließen
 
 - **WHEN** der Benutzer bei offenem Menü Esc drückt
@@ -986,7 +997,7 @@ Die Sidebar SHALL das Archiv eingeklappt zeigen, mit der Zahl archivierter Sessi
 
 - **GIVEN** der Core lehnt `session.delete` mit `invalid_state` ab
 - **WHEN** der Benutzer bestätigt
-- **THEN** bleibt die Session im Archiv, und die Statusleiste zeigt die Meldung
+- **THEN** bleibt die Session im Archiv, und der Bestätigungsdialog zeigt die Meldung des Core und bleibt offen
 
 ### Requirement: Gelöschte Session im offenen Tab
 
@@ -997,6 +1008,12 @@ Meldet der Main `sessionRemoved`, SHALL der Renderer die Session aus dem Store e
 - **GIVEN** Fenster A zeigt in einem Tab eine archivierte Session
 - **WHEN** ein anderer Client sie löscht
 - **THEN** zeigt der Tab in A den Platzhalter „Session nicht gefunden“, und die Sidebar listet sie nicht mehr
+
+#### Scenario: Späte Antwort nach dem Löschen
+
+- **GIVEN** `updateSession` für `s1` ist unterwegs und `sessionRemoved` für `s1` trifft vorher ein
+- **WHEN** die Antwort eintrifft
+- **THEN** erscheint `s1` nicht wieder; nur Events fügen unbekannte Sessions hinzu
 
 ### Requirement: Screenshot-Szenen der Sidebar
 

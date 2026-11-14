@@ -119,9 +119,9 @@ export function App({ api }: { api: TermdockApi }) {
   const sidebarActions = useMemo<SidebarActions>(
     () => ({
       moveSession: async (sessionId, workspaceId) =>
-        store.sessionUpdated(await api.updateSession(sessionId, { workspaceId })),
+        store.mergeSessionUpdate(await api.updateSession(sessionId, { workspaceId })),
       renameSession: async (sessionId, name) =>
-        store.sessionUpdated(await api.updateSession(sessionId, { name })),
+        store.mergeSessionUpdate(await api.updateSession(sessionId, { name })),
       archiveSession: (sessionId) => api.archiveSession(sessionId),
       deleteSession: async (sessionId) => {
         await api.deleteSession(sessionId);

@@ -6,6 +6,7 @@ import { validateLayoutDocument } from "@termdock/protocol";
 import type { LayoutDocument, LayoutWindow, WindowBounds } from "@termdock/protocol";
 import { toLayoutDocument, windowsFromDocument, withPart } from "../shared/layout-mapping.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
+import { messageOf } from "../shared/message-of.js";
 import type { CorePort } from "./core-connection.js";
 
 /** What the coordinator needs of the core connection. */
@@ -17,12 +18,17 @@ export const SAVE_DELAY_MS = 400;
 export const SAVE_MAX_WAIT_MS = 2_000;
 /** Tries for one document when the revision is stale: reload the revision, save the same state again. */
 const MAX_ATTEMPTS = 3;
+/** Waits between the tries to read the stored layout at start. */
+const LOAD_RETRY_DELAYS_MS: readonly number[] = [300, 1_000];
 
 export interface LayoutCoordinatorOptions {
   core: LayoutPort;
   log(text: string): void;
   delayMs?: number;
   maxWaitMs?: number;
+  /** Waits between the tries of `load`; the default is a few seconds in total. */
+  loadRetryDelaysMs?: readonly number[];
+  sleep?(ms: number): Promise<void>;
 }
 
 export interface WindowGeometry {
@@ -45,6 +51,10 @@ export class LayoutCoordinator {
   private readonly maxWaitMs: number;
   /** Revision of the stored layout as far as known; undefined until `layout.get` has answered. */
   private revision: number | undefined;
+  /** `layout.get` has answered, so what is stored is known and may be replaced. */
+  private loaded = false;
+  private readonly loadRetryDelaysMs: readonly number[];
+  private readonly sleep: (ms: number) => Promise<void>;
   private dirty = false;
   private timer: NodeJS.Timeout | undefined;
   private firstChange = 0;
@@ -55,19 +65,35 @@ export class LayoutCoordinator {
     this.log = options.log;
     this.delayMs = options.delayMs ?? SAVE_DELAY_MS;
     this.maxWaitMs = options.maxWaitMs ?? SAVE_MAX_WAIT_MS;
+    this.loadRetryDelaysMs = options.loadRetryDelaysMs ?? LOAD_RETRY_DELAYS_MS;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  /** Reads the stored layout; returns its windows (none without a layout or when the core does not answer). */
+  /**
+   * Reads the stored layout and returns its windows (none without a layout). A failing `layout.get` is retried
+   * with the waits of `loadRetryDelaysMs`. When it keeps failing the app starts with a window in its start state,
+   * but nothing is saved until a `layout.get` has answered, and then only if it finds no stored layout: a layout
+   * that was never loaded must not be overwritten.
+   */
   async load(): Promise<LayoutWindow[]> {
-    try {
-      const { result } = await this.core.request("layout.get", {});
-      this.revision = result.revision;
-      return windowsFromDocument(result.layout);
-    } catch (error) {
-      // The revision is fetched before the first save instead; the app starts with a window in its start state.
-      this.log(`layout.get failed: ${messageOf(error)}`);
-      return [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { result } = await this.core.request("layout.get", {});
+        this.revision = result.revision;
+        this.loaded = true;
+        return windowsFromDocument(result.layout);
+      } catch (error) {
+        this.log(`layout.get failed: ${messageOf(error)}`);
+        const wait = this.loadRetryDelaysMs[attempt];
+        if (wait === undefined) return [];
+        await this.sleep(wait);
+      }
     }
+  }
+
+  /** Number of windows in the document, closed ones that stay in it included. */
+  size(): number {
+    return this.windows.size;
   }
 
   /** Registers a window. A window that is not `restored` is new in the layout and gets saved. */
@@ -122,7 +148,8 @@ export class LayoutCoordinator {
    */
   closeWindow(key: number, options: { keep: boolean }): void {
     const entry = this.windows.get(key);
-    if (!entry) return;
+    // A window that already stays in the layout (quit, session end) has nothing more to change.
+    if (!entry || (entry.closed && options.keep)) return;
     if (options.keep) entry.closed = true;
     else this.windows.delete(key);
     this.changed();
@@ -182,7 +209,7 @@ export class LayoutCoordinator {
 
   private async write(layout: LayoutDocument): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      if (this.revision === undefined) await this.refreshRevision();
+      if (!this.loaded) await this.checkNothingUnloaded();
       try {
         const { result } = await this.core.request("layout.save", {
           layout,
@@ -203,8 +230,16 @@ export class LayoutCoordinator {
     const { result } = await this.core.request("layout.get", {});
     this.revision = result.revision;
   }
-}
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  /**
+   * The start could not read the stored layout. Saving may only begin when there is nothing stored to lose (a
+   * stored layout that is unusable counts as nothing: `layout.get` returns none for it); otherwise it throws, and
+   * the state waits for a restart that loads the stored layout.
+   */
+  private async checkNothingUnloaded(): Promise<void> {
+    const { result } = await this.core.request("layout.get", {});
+    if (result.layout !== undefined) throw new Error("a stored layout was never loaded; not overwriting it");
+    this.revision = result.revision;
+    this.loaded = true;
+  }
 }

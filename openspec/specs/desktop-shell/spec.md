@@ -517,7 +517,13 @@ Der Main SHALL das Layout aller Fenster zu einem `LayoutDocument` bündeln (Tabs
 
 - **GIVEN** zwei Fenster sind offen
 - **WHEN** der Benutzer die App beendet
-- **THEN** ist das Layout mit beiden Fenstern gespeichert, bevor die Verbindung zum Core endet
+- **THEN** ist das Layout mit beiden Fenstern gespeichert, bevor die Verbindung zum Core endet; das gilt auch für „Beenden“ im Menü (`app.quit()` ohne `window-all-closed`) und für das Ende der Windows-Sitzung
+
+#### Scenario: Beenden mit „Beenden“ im Menü
+
+- **GIVEN** zwei Fenster sind offen und die letzte Änderung ist noch nicht gespeichert
+- **WHEN** der Benutzer „Beenden“ wählt
+- **THEN** hält der Main das Beenden einmal an, speichert das Layout mit beiden Fenstern, schließt die Verbindung und beendet die App dann
 
 #### Scenario: Revisionskonflikt
 
@@ -547,6 +553,12 @@ Beim Start SHALL der Main `layout.get` aufrufen und für jedes gespeicherte Fens
 - **WHEN** die App startet
 - **THEN** öffnet ein Fenster mit Sidebar und Leerzustand
 
+#### Scenario: layout.get scheitert
+
+- **GIVEN** `layout.get` scheitert beim Start auch nach Wiederholungen, und im Core ist ein Layout gespeichert
+- **WHEN** der Benutzer in dem leeren Fenster arbeitet
+- **THEN** überschreibt der Main das gespeicherte Layout nicht; er speichert erst, wenn `layout.get` antwortet und kein Layout liefert
+
 #### Scenario: Neuladen der Seite
 
 - **GIVEN** ein Fenster mit Tabs, dessen Seite neu lädt
@@ -573,6 +585,12 @@ Ein Pane, dessen Session `Exited`, `Interrupted`, `Starting` oder `Archived` ist
 - **GIVEN** das Layout nennt eine Session, die der Core nicht kennt
 - **WHEN** die Session-Liste geladen ist
 - **THEN** zeigt das Pane den Platzhalter „Session nicht gefunden“, davor „Sessions werden geladen“
+
+#### Scenario: Session-Liste scheitert
+
+- **GIVEN** die erste Session-Liste scheitert
+- **WHEN** auch die Wiederholungen scheitern
+- **THEN** gilt die Liste als geladen (leer), und Panes zeigen den Platzhalter mit „Pane schließen“ statt „Sessions werden geladen“
 
 ### Requirement: Screenshot-Szenen für die Wiederherstellung
 

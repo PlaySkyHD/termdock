@@ -18,12 +18,16 @@ class FakeLayoutCore implements LayoutPort {
   /** Errors thrown by the next calls of `layout.save`, oldest first. */
   saveErrors: Error[] = [];
   getError: Error | undefined;
+  /** Errors thrown by the next calls of `layout.get`, oldest first. */
+  getErrors: Error[] = [];
   /** Runs inside `layout.save` before it answers (a slow save). */
   duringSave: (() => Promise<void>) | undefined;
 
   request = (async (method: string, params: unknown) => {
     if (method === "layout.get") {
       this.gets += 1;
+      const queued = this.getErrors.shift();
+      if (queued) throw queued;
       if (this.getError) throw this.getError;
       return { result: { ...(this.stored ? { layout: this.stored } : {}), revision: this.revision } };
     }
@@ -69,6 +73,8 @@ function setup(): { core: FakeLayoutCore; coordinator: LayoutCoordinator; log: s
     log: (text) => log.push(text),
     delayMs: 400,
     maxWaitMs: 2_000,
+    loadRetryDelaysMs: [10, 20],
+    sleep: async () => {},
   });
   return { core, coordinator, log };
 }
@@ -100,20 +106,65 @@ describe("LayoutCoordinator load", () => {
     expect(await coordinator.load()).toEqual([]);
   });
 
-  it("starts without windows when the core does not answer, and fetches the revision before it saves", async () => {
+  it("retries a failing layout.get and restores the windows once it answers", async () => {
     const { core, coordinator, log } = setup();
-    core.getError = new IpcError("timeout", "layout.get timed out");
+    core.stored = { version: 1, windows: [windowWith("w1", tab("t1", pane("p1")))] };
+    core.revision = 3;
+    core.getErrors = [new IpcError("timeout", "layout.get timed out"), new IpcError("closed", "gone")];
+
+    const windows = await coordinator.load();
+
+    expect(windows).toEqual(core.stored.windows);
+    expect(core.gets).toBe(3);
+    expect(log.join("\n")).toContain("layout.get timed out");
+  });
+
+  it("never overwrites a stored layout that was never loaded", async () => {
+    const { core, coordinator, log } = setup();
+    core.stored = { version: 1, windows: [windowWith("old", tab("to", pane("po")))] };
     core.revision = 6;
+    core.getError = new IpcError("timeout", "layout.get timed out");
 
     expect(await coordinator.load()).toEqual([]);
-    expect(log.join("\n")).toContain("layout.get timed out");
+    expect(core.gets).toBe(3); // the first try and two retries
 
+    // The core answers again, but the windows of the stored layout were not restored.
+    core.getError = undefined;
+    coordinator.addWindow(1, windowWith("w1"));
+    await coordinator.flush();
+    coordinator.report(1, { tabs: [tab("t1", pane("p1"))], activeTabId: "t1" });
+    await coordinator.flush();
+
+    expect(core.saves).toEqual([]);
+    expect(core.stored.windows.map((window) => window.id)).toEqual(["old"]);
+    expect(log.join("\n")).toContain("never loaded");
+  });
+
+  it("saves after a failed load when nothing is stored", async () => {
+    const { core, coordinator } = setup();
+    core.getError = new IpcError("timeout", "layout.get timed out");
+    core.revision = 6; // a stored layout that is unusable: the core returns a revision but no layout
+
+    expect(await coordinator.load()).toEqual([]);
     core.getError = undefined;
     coordinator.addWindow(1, windowWith("w1"));
     await coordinator.flush();
 
-    // It did not overwrite blindly: the save names the revision it fetched.
     expect(core.saves.map((save) => save.baseRevision)).toEqual([6]);
+  });
+
+  it("keeps its state while the core stays away after a failed load", async () => {
+    const { core, coordinator } = setup();
+    core.getError = new IpcError("timeout", "layout.get timed out");
+    await coordinator.load();
+
+    coordinator.addWindow(1, windowWith("w1"));
+    await coordinator.flush();
+    expect(core.saves).toEqual([]);
+
+    core.getError = undefined;
+    await coordinator.flush();
+    expect(core.saves).toHaveLength(1);
   });
 });
 
@@ -355,7 +406,7 @@ describe("LayoutCoordinator closing windows", () => {
     expect(core.saves.at(-1)!.layout.windows[1]!.bounds).toEqual({ x: 5, y: 5, width: 700, height: 500 });
   });
 
-  it("counts only open windows", () => {
+  it("counts open windows apart from all windows of the document", () => {
     const { coordinator } = setup();
     coordinator.addWindow(1, windowWith("wa"), { restored: true });
     coordinator.addWindow(2, windowWith("wb"), { restored: true });
@@ -363,6 +414,20 @@ describe("LayoutCoordinator closing windows", () => {
 
     coordinator.closeWindow(1, { keep: true });
     expect(coordinator.openWindows()).toBe(1);
+    expect(coordinator.size()).toBe(2);
+  });
+
+  it("does not save again for a window that already stays in the layout", async () => {
+    const { core, coordinator } = setup();
+    coordinator.addWindow(1, windowWith("wa"), { restored: true });
+    coordinator.closeWindow(1, { keep: true });
+    await coordinator.flush();
+    const saves = core.saves.length;
+
+    coordinator.closeWindow(1, { keep: true });
+    await coordinator.flush();
+
+    expect(core.saves).toHaveLength(saves);
   });
 
   it("ignores reports of a window that is closed", async () => {

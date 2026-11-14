@@ -36,8 +36,11 @@ export function App({ api }: { api: TermdockApi }) {
     const sync = startLayoutSync(store, api, (message) => console.error(`termdock layout: ${message}`));
     let current = true;
     void sync.ready.then(() => current && setRestored(true));
+    // A report that still waits for its delay goes out when the page goes away (window closed, reload).
+    window.addEventListener("pagehide", sync.flush);
     return () => {
       current = false;
+      window.removeEventListener("pagehide", sync.flush);
       sync.dispose();
     };
   }, [store, api]);

@@ -18,13 +18,27 @@ export interface StoreConnection {
   dispose(): void;
 }
 
+/** Waits before the retries of a failed first list. */
+const RETRY_DELAYS_MS: readonly number[] = [1_000, 3_000, 8_000];
+
+export interface ConnectOptions {
+  retryDelaysMs?: readonly number[];
+  sleep?(ms: number): Promise<void>;
+}
+
 /**
  * Subscribes first, then lists. Events that arrive before the list is answered are kept and applied on top of
  * it: a session created meanwhile is added unless the list has it, a state change is applied to listed sessions.
  * The core sends `stateChanged` to this client only after the first `session.list` (ADR 0006), so the list
  * also switches that stream on.
  */
-export function connectStore(store: UiStore, api: Api, onError: (message: string) => void): StoreConnection {
+export function connectStore(
+  store: UiStore,
+  api: Api,
+  onError: (message: string) => void,
+  options: ConnectOptions = {},
+): StoreConnection {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let listed = false;
   let disposed = false;
   const created: SessionInfo[] = [];
@@ -52,6 +66,32 @@ export function connectStore(store: UiStore, api: Api, onError: (message: string
     }
   });
 
+  /**
+   * The first list failed. Tries again with growing waits; a list that arrives is merged into what the events have
+   * put into the store. When every try fails the sessions count as loaded anyway (and empty): panes of unknown
+   * sessions then show the placeholder with "Pane schließen" instead of waiting for ever (#29).
+   */
+  const retryList = async (): Promise<void> => {
+    for (const wait of options.retryDelaysMs ?? RETRY_DELAYS_MS) {
+      await sleep(wait);
+      if (disposed) return;
+      try {
+        const sessions = await api.listSessions();
+        if (disposed) return;
+        for (const session of sessions) {
+          if (store.getState().sessions.some((known) => known.id === session.id))
+            store.sessionStateChanged(session.id, session.state, session.lastExitCode);
+          else store.sessionCreated(session);
+        }
+        store.setSessions(store.getState().sessions, true);
+        return;
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (!disposed) store.setSessions(store.getState().sessions, true);
+  };
+
   const ready = (async () => {
     let sessions: SessionInfo[] = [];
     let loaded = true;
@@ -72,6 +112,7 @@ export function connectStore(store: UiStore, api: Api, onError: (message: string
     listed = true;
     created.length = 0;
     changes.length = 0;
+    if (!loaded) void retryList();
     try {
       const status = await api.coreStatus();
       if (!disposed) store.setCoreStatus(status);

@@ -146,11 +146,29 @@ async function main(): Promise<void> {
   // scenario can ask to forget them.
   let quitting = false;
   let forgetOnClose = false;
-  app.on("before-quit", () => (quitting = true));
+
+  /** Every open window stays in the layout with its current geometry (quit, end of the Windows session). */
+  const retainAll = (): void => {
+    quitting = true;
+    for (const win of BrowserWindow.getAllWindows()) {
+      const id = win.webContents.id;
+      coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
+      coordinator.closeWindow(id, { keep: true });
+    }
+  };
+
+  /** The last save, then the end of the connection; once, however often it is asked for. */
+  let finishing: Promise<void> | undefined;
+  const finishLayoutAndClient = (): Promise<void> =>
+    (finishing ??= (async () => {
+      await Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]);
+      await client.close().catch(() => {});
+    })());
 
   const createWindow = (width = 1000, height = 640, restored?: LayoutWindow): BrowserWindow | undefined => {
-    // The layout document holds at most this many windows; a further one could never be saved.
-    if (coordinator.openWindows() >= MAX_LAYOUT_WINDOWS) {
+    // The layout document holds at most this many windows, windows that stay in it included; a further one could
+    // never be saved.
+    if (coordinator.size() >= MAX_LAYOUT_WINDOWS) {
       log(`at most ${MAX_LAYOUT_WINDOWS} windows`);
       return undefined;
     }
@@ -202,6 +220,12 @@ async function main(): Promise<void> {
     win.on("move", geometry);
     win.on("maximize", geometry);
     win.on("unmaximize", geometry);
+    // Windows logoff or shutdown: the windows get no `before-quit`, the system ends the session. Treat it like a
+    // quit: all windows stay in the layout, and what is not saved yet is saved now.
+    win.on("session-end", () => {
+      retainAll();
+      void finishLayoutAndClient();
+    });
     win.on("close", () => {
       geometry();
       coordinator.closeWindow(id, { keep: !forgetOnClose && (quitting || coordinator.openWindows() <= 1) });
@@ -274,13 +298,21 @@ async function main(): Promise<void> {
 
   // Closing the UI keeps the sessions (ADR 0001): only the connection ends, the core keeps running. The layout is
   // saved first, but never waits for long.
-  app.on(
-    "window-all-closed",
-    () =>
-      void Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)])
-        .then(() => client.close())
-        .finally(() => app.quit()),
-  );
+  let quitReady = false;
+  const quitAfterSave = (): void =>
+    void finishLayoutAndClient().finally(() => {
+      quitReady = true;
+      app.quit();
+    });
+  // `app.quit()` ("Beenden", Ctrl+Q) closes the windows without `window-all-closed`: stop it once, keep the
+  // windows in the layout, save and close the connection, then quit for real.
+  app.on("before-quit", (event) => {
+    retainAll();
+    if (quitReady) return;
+    event.preventDefault();
+    quitAfterSave();
+  });
+  app.on("window-all-closed", quitAfterSave);
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();

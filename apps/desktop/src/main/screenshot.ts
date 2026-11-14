@@ -169,12 +169,7 @@ export function wslSocketDeps(
         { env: { ...process.env, WSL_UTF8: "1" }, timeout: WSL_CALL_TIMEOUT_MS, windowsHide: true },
         (error, stdout, stderr) => {
           if (error && !(typeof error.code === "number" && okCodes.includes(error.code)))
-            reject(
-              new Error(
-                `${error.message}
-${stderr}`.trim(),
-              ),
-            );
+            reject(new Error(`${error.message}\n${stderr}`.trim()));
           else resolve(stdout);
         },
       );

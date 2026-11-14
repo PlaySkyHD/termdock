@@ -44,7 +44,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 ## 4. CI, PRs und Merge
 
 - CI läuft auf `windows-latest` (Typecheck, Lint, Format, Unit-Tests) und prüft OpenSpec.
-- `gh pr merge <n> --merge --delete-branch`, danach Worktree entfernen und `git pull --ff-only` im Haupt-Checkout.
+- **Merge:** erst den Worktree entfernen, dann mergen. Die genaue Befehlsfolge steht im Skill `orchestrate-issues`, Abschnitt 5.
 - **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar.
 - Nie `git restore`, `git stash` oder `git reset --hard`.
 
@@ -59,5 +59,5 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 
 - Jede Änderung als OpenSpec-Change (`npx openspec validate <change> --strict`), ein PR pro Thema, im selben PR archivieren (`npx openspec archive <change> -y`, danach `npx openspec validate --specs --strict`). Die CLI-Version steht in `tools/openspec/package.json`.
 - Architekturentscheidungen stehen in `docs/adr/`. Weicht eine Umsetzung ab, wird das ADR im selben PR angepasst.
-- Vor jedem Merge ein Code Review (`code-review <PR>`), Befunde beheben oder begründet verwerfen.
+- Vor jedem Merge ein Code Review (`code-review <PR>`), Befunde beheben oder begründet verwerfen. Den Worktree-Pfad immer im Argument nennen, sonst prüft der geforkte Review womöglich einen anderen Klon (Skill `orchestrate-issues`, Abschnitte 3 und 5).
 - Ursachen im Code belegen, bevor ein Fix gebaut wird.

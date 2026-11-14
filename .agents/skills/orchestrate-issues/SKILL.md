@@ -42,7 +42,7 @@ Every prompt contains:
 - the checks: `npm run typecheck`, `npm run lint`, `npm test -w <package>`; WSL integration tests with `TERMDOCK_WSL_TESTS=1` (see lessons section 2); never return unfiltered test output,
 - for a bug fix: show the new test fails without the fix and put the red line in the report,
 - for a visible UI change (`apps/desktop`, `poc/` UI): PNG screenshots of every changed state via the app's screenshot mode (`--screenshot <dir>`, `webContents.capturePage()`), before and after for changed behavior, saved outside the repo (`P:/Temp/td-shots/<branch>/`); list the paths in the report, do not commit them,
-- before the push: commit, then run the skill `code-review low` on `origin/main...HEAD` and fix findings (amend) or state why not,
+- before the push: commit, then run the skill `code-review` with the worktree path in the arguments (`low — local checkout: P:/GitHub/termdock-wt/<branch>, diff origin/main...HEAD`) and fix findings (amend) or state why not. The forked review runs in the session directory, which can be a different clone; a result without findings counts only if the review names files from the diff,
 - the commit: Conventional Commits, body ends with `Fixes #<n>` and the Co-Authored-By line,
 - `git push -u origin <branch>`,
 - the report: branch, SHA, what changed, check output, and **Umwege** (anything done differently than expected, missing or wrong skills and rules, failed commands; "keine" if none).
@@ -63,11 +63,11 @@ Start agents in the background. Do not touch their worktrees while they run.
 
 - One PR per issue with `gh pr create`, `Fixes #<n>` in the body. Register it with T3 if `link_pull_request` exists.
 - UI change: look at the screenshots yourself, then attach them right after `gh pr create`: `bash scripts/attach-screenshots.sh pr <n> --title "Vorher / Nachher" <files…>`. An issue about visible behavior gets screenshots the same way (`issue <n>`). No screenshots for a UI change → send the agent back before the PR.
-- Review right after `gh pr create`: `code-review <PR>` (`medium --max-findings 5`; after a rework `low`; Core lifecycle, input lock or reconcile: `high`). Use the `termdock-review` skill for what to check.
+- Review right after `gh pr create`: `code-review <PR>` (`medium --max-findings 5`; after a rework `low`; Core lifecycle, input lock or reconcile: `high`). Use the `termdock-review` skill for what to check. Always add `Local checkout of the PR branch: P:/GitHub/termdock-wt/<branch> (diff origin/main...HEAD)` to the arguments; without it the forked review may read a different clone (PR #39).
 - Read the review's coverage note, not only the findings. If it says the diff was cut off or files were skipped, rerun `code-review` with path targets for the missing files (PR #8: `registry.ts` skipped at 60 KB; PR #10: end of `server.ts` skipped). For PRs over about 1500 changed lines, review with path targets per package from the start.
 - Triage: only correctness bugs inside the issue's scope go back to the agent. Extensions and style become new issues or are rejected with a reason.
 - Watch checks with `bash scripts/pr-wait.sh --timeout 60 <prs…>` via Bash `run_in_background`.
-- Merge only when checks are green and review findings are fixed or rejected: `gh pr merge <n> --merge --delete-branch`. Then `git -C P:/GitHub/termdock worktree remove P:/GitHub/termdock-wt/<branch>` and `git -C P:/GitHub/termdock pull --ff-only`.
+- Merge only when checks are green and review findings are fixed or rejected. Remove the worktree first, each step on its own (no `&&` chain): `git -C P:/GitHub/termdock worktree remove --force P:/GitHub/termdock-wt/<branch> || true`, `rm -rf P:/GitHub/termdock-wt/<branch>`, `git -C P:/GitHub/termdock worktree prune`. Then `gh pr merge <n> --merge --delete-branch` and `git -C P:/GitHub/termdock pull --ff-only`. With the worktree still present, `--delete-branch` fails and leaves the remote branch (PR #30); `worktree remove` usually reports "Directory not empty" because of `node_modules` leftovers.
 - After each merge, check the remaining PRs; on a conflict, merge `origin/main` into the branch and push.
 
 ## 6. Retro once at the end

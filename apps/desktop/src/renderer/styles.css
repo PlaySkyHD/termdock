@@ -1001,3 +1001,117 @@ body.is-dragging * {
 .dialog__field {
   margin-bottom: 10px;
 }
+
+/* --- History search (#62) ------------------------------------------------------------------------ */
+
+.dialog-backdrop--top {
+  align-items: flex-start;
+  padding-top: 64px;
+}
+
+.dialog--search {
+  width: 720px;
+  max-height: calc(100% - 96px);
+  display: flex;
+  flex-direction: column;
+}
+
+.search__input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--td-border);
+  border-radius: 2px;
+  background: var(--td-input);
+  color: var(--td-foreground);
+  font: inherit;
+}
+
+.search__input:focus {
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.search__error {
+  color: var(--td-state-interrupted);
+}
+
+.search__results {
+  min-height: 0;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.search__group {
+  margin-bottom: 8px;
+}
+
+.search__group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.search__tag,
+.search__count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--td-input);
+  color: var(--td-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.search__hits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.search__hit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--td-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search__hit:hover,
+.search__hit:focus-visible {
+  background: var(--td-hover);
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.search__time {
+  flex: none;
+  color: var(--td-muted);
+  font-size: 11px;
+}
+
+.search__line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  font:
+    12px "Cascadia Mono",
+    Consolas,
+    monospace;
+}
+
+.search__line mark {
+  background: rgba(204, 167, 0, 0.35);
+  color: inherit;
+}

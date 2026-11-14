@@ -907,75 +907,54 @@ describe("client library", () => {
 });
 
 describe("phase 3 (issue #55)", () => {
-  /** Valid params per phase-3 method; a stub answers each of them with internal. */
-  const stubCalls: Record<Exclude<(typeof PHASE_3_METHODS)[number], `settings.${string}`>, unknown> = {
-    "workspace.list": {},
-    "workspace.create": { name: "TermDock" },
-    "workspace.update": { workspaceId: "w1", name: "Neu" },
-    "workspace.delete": { workspaceId: "w1" },
-    "project.create": { workspaceId: "w1", name: "api", path: "/home/dev/api", backend: "wsl" },
-    "project.update": { projectId: "p1", name: "web" },
-    "project.delete": { projectId: "p1" },
-    "profile.list": {},
-    "profile.create": { name: "Claude", launch: { ...launch, command: ["claude"] } },
-    "profile.update": { profileId: "pr1", autostart: true },
-    "profile.delete": { profileId: "pr1" },
-    "session.update": { sessionId: "s1", workspaceId: null },
-    "session.archive": { sessionId: "s1" },
-    "session.delete": { sessionId: "s1" },
-    "history.search": { query: "error" },
-  };
-  /** Phase-3 methods whose logic is built; their own tests replace the stub check. */
-  const implemented = new Set<string>([
-    // Issue #56: tests in "workspaces and projects".
-    "workspace.list",
-    "workspace.create",
-    "workspace.update",
-    "workspace.delete",
-    "project.create",
-    "project.update",
-    "project.delete",
-    // Issue #57: ipc/session-management.test.ts.
-    "session.update",
-    "session.archive",
-    "session.delete",
-  ]);
-
-  it("answers every phase-3 method with internal 'noch nicht umgesetzt' and keeps serving", async () => {
-    const errors: unknown[] = [];
-    const { pipePath } = await startCore({ onInternalError: (error) => errors.push(error) });
-    const raw = await rawConnect(pipePath);
-    raw.send(hello);
-    const calls: [string, unknown][] = [
-      // profile.* and session.create from a profile are implemented too (issue #58, "launch profiles").
-      ...Object.entries(stubCalls).filter(
-        ([method]) => !implemented.has(method) && !/^profile\./.test(method),
-      ),
-    ];
-    for (const [method, params] of calls) raw.send({ kind: "request", id: method, method, params });
-    raw.send({ kind: "request", id: "list", method: "session.list", params: {} });
-    await waitFor(() => raw.frames.length === calls.length + 2, "all responses");
-
-    for (const [index, [method]] of calls.entries()) {
-      const header = raw.frames[index + 1]?.header as {
-        id: string;
-        error?: { code: string; message: string };
-      };
-      expect(header.id).toBe(method);
-      expect(header.error?.code, method).toBe("internal");
-      expect(header.error?.message).toContain(method);
-      expect(header.error?.message).toContain("noch nicht umgesetzt");
-    }
-    expect(raw.frames.at(-1)?.header).toMatchObject({ id: "list", result: { sessions: [] } });
-    expect(raw.closed()).toBe(false);
-    // A stub is a known answer, not a crash.
-    expect(errors).toEqual([]);
+  // The stubs are gone: every phase-3 method has logic and its own tests (workspaces, profiles, session
+  // management, settings; history.search in "history.search (issue #62)").
+  it("lists the phase-3 methods of the contract", () => {
+    expect(PHASE_3_METHODS).toContain("history.search");
   });
 
-  it("has a stub for every phase-3 method", () => {
-    // `settings.*` is implemented (issue #60) and tested in "settings (issue #60)".
-    const stubbed = PHASE_3_METHODS.filter((method) => !method.startsWith("settings."));
-    expect(Object.keys(stubCalls).sort()).toEqual([...stubbed].sort());
+  it("answers history.search through the search of the core, passing the parameters on", async () => {
+    const searchHistory = vi.fn(async () => ({
+      hits: [{ sessionId: "s1", timestamp: 5, line: "an error", offset: 3 }],
+      truncated: false,
+    }));
+    const { pipePath } = await startCore({ searchHistory });
+    const client = await newClient(pipePath);
+
+    const answer = await client.request("history.search", { query: "error", sessionIds: ["s1"], limit: 3 });
+
+    expect(answer.result).toEqual({
+      hits: [{ sessionId: "s1", timestamp: 5, line: "an error", offset: 3 }],
+      truncated: false,
+    });
+    expect(searchHistory).toHaveBeenCalledWith({ query: "error", sessionIds: ["s1"], limit: 3 });
+  });
+
+  it("answers history.search without a history with no hits, and refuses bad parameters", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+
+    expect((await client.request("history.search", { query: "x" })).result).toEqual({
+      hits: [],
+      truncated: false,
+    });
+    expect(await errorCode(client.request("history.search", { query: "" }))).toBe("bad_request");
+    expect(await errorCode(client.request("history.search", { query: "x", limit: 201 }))).toBe("bad_request");
+  });
+
+  it("answers a failing search with internal and keeps serving", async () => {
+    const errors: unknown[] = [];
+    const { pipePath } = await startCore({
+      searchHistory: async () => {
+        throw new Error("disk gone");
+      },
+      onInternalError: (error) => errors.push(error),
+    });
+    const client = await newClient(pipePath);
+
+    expect(await errorCode(client.request("history.search", { query: "x" }))).toBe("internal");
+    expect((await client.request("session.list", {})).result.sessions).toEqual([]);
+    expect(errors).toHaveLength(1);
   });
 
   it("sends the phase-3 events once to each client that listed sessions, never to others", async () => {

@@ -2,6 +2,7 @@
 // and routes core events to the windows that show the session. Free of Electron so it runs in tests.
 import { IpcError } from "@termdock/core";
 import type { Disposable } from "@termdock/core";
+import { MAX_HISTORY_HITS, MAX_HISTORY_QUERY_LENGTH } from "@termdock/protocol";
 import type { LayoutWindow, SessionCreateParams, SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeCall, BridgeErrorBody, BridgeEvent, BridgeResult } from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
@@ -232,6 +233,14 @@ export class DesktopBridge {
       case "quitShown":
         this.quit?.ack(windowId, call.requestId);
         return null;
+      case "searchHistory":
+        // All sessions: no `sessionIds`. The core bounds query, hits and running time.
+        return (
+          await core.request("history.search", {
+            query: call.query,
+            ...(call.limit === undefined ? {} : { limit: call.limit }),
+          })
+        ).result;
     }
   }
 
@@ -391,6 +400,16 @@ function parseCall(raw: unknown): BridgeCall {
     }
     case "quitShown":
       return { method: "quitShown", requestId: text(raw["requestId"], "requestId") };
+    case "searchHistory": {
+      const query = text(raw["query"], "query");
+      if (query.length > MAX_HISTORY_QUERY_LENGTH)
+        throw new BadRequest(`query must not be longer than ${MAX_HISTORY_QUERY_LENGTH} characters`);
+      const limit = raw["limit"];
+      if (limit === undefined) return { method: "searchHistory", query };
+      if (!isCount(limit, MAX_HISTORY_HITS))
+        throw new BadRequest(`limit must be a whole number from 1 to ${MAX_HISTORY_HITS}`);
+      return { method: "searchHistory", query, limit };
+    }
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }

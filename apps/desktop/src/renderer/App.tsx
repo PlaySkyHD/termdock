@@ -12,6 +12,7 @@ import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
 import { QuitDialog } from "./QuitDialog.js";
+import { SearchDialog } from "./SearchDialog.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { OpenMode, SidebarActions } from "./Sidebar.js";
@@ -166,6 +167,8 @@ export function App({ api }: { api: TermdockApi }) {
   // Key bindings (#28): the terminal hands bound keys to `run` (attachCustomKeyEventHandler), the window catches
   // them while the focus is elsewhere (sidebar, empty window). The latest closures are read through the ref.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // The history search (#62, Ctrl+Shift+F) is a dialog like the overview; only one of them is open.
+  const [searchOpen, setSearchOpen] = useState(false);
   // The main process asks this window to show the quit dialog (#60); it answers once.
   const [quit, setQuit] = useState<{ requestId: string; activeSessions: number }>();
   useEffect(
@@ -199,6 +202,11 @@ export function App({ api }: { api: TermdockApi }) {
       setShortcutsOpen(!shortcutsOpen);
       // Closing by key gives the terminal the focus back, like Escape and the button do.
       if (shortcutsOpen) refocus();
+    },
+    searchOpen,
+    toggleSearch: () => {
+      setSearchOpen(!searchOpen);
+      if (searchOpen) refocus();
     },
     notify: setNotice,
     refocus,
@@ -269,6 +277,7 @@ export function App({ api }: { api: TermdockApi }) {
           onClose={(tabId) => store.closeTab(tabId)}
           onSplit={(direction) => void splitActivePane(commandRef.current, direction)}
           onShowShortcuts={() => setShortcutsOpen(true)}
+          onSearch={() => setSearchOpen(true)}
           onClosePane={() => {
             if (tab) store.closePane(tab.id, tab.activePaneId);
             setNotice(undefined);
@@ -334,6 +343,22 @@ export function App({ api }: { api: TermdockApi }) {
             setQuit(undefined);
             // A refused answer (the main process asked nobody) changes nothing: the dialog is closed either way.
             api.answerQuit(requestId, answer).catch((error: unknown) => console.error(error));
+            refocus();
+          }}
+        />
+      )}
+      {searchOpen && (
+        <SearchDialog
+          api={api}
+          sessions={state.sessions}
+          onOpen={(sessionId) => {
+            // Like a click in the sidebar: opens the tab or focuses the one that shows the session. A session
+            // that no longer lives (archived, ended) opens as a placeholder.
+            setSearchOpen(false);
+            open(sessionId, "tab");
+          }}
+          onClose={() => {
+            setSearchOpen(false);
             refocus();
           }}
         />

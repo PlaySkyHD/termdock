@@ -21,6 +21,7 @@ import { SessionRegistry } from "../session/registry.js";
 import type { RestoreResult } from "../session/registry.js";
 import { openStorage, resolveDataDir } from "../storage/database.js";
 import { recordHistory } from "../storage/history-recorder.js";
+import { searchHistory, storeSource } from "../storage/history-search.js";
 import { HistoryStore } from "../storage/history-store.js";
 import type { HistorySettings } from "../storage/history-store.js";
 import type { Storage } from "../storage/database.js";
@@ -228,6 +229,17 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       settings,
       workspaces,
       profiles,
+      // Only sessions the registry knows: a history left behind without a session is not searched.
+      searchHistory: async ({ query, sessionIds, limit }) => {
+        if (!history) throw new Error("The history store is not open yet");
+        const known = new Set(registry.list().map((session) => session.id));
+        return searchHistory(storeSource(history), {
+          query,
+          ...(sessionIds === undefined ? {} : { sessionIds }),
+          ...(limit === undefined ? {} : { limit }),
+          isKnownSession: (id) => known.has(id),
+        });
+      },
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),

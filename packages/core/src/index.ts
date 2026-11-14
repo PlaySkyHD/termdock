@@ -41,6 +41,8 @@ export type {
   HistoryStoreOptions,
 } from "./storage/history-store.js";
 export { recordHistory } from "./storage/history-recorder.js";
+export { AnsiStripper, DEFAULT_SEARCH_MAX_MS, searchHistory, storeSource } from "./storage/history-search.js";
+export type { HistorySearchOptions, HistorySearchSource } from "./storage/history-search.js";
 export { InMemoryLayoutRepository, SqliteLayoutRepository } from "./storage/layout-repository.js";
 export type { LayoutRepository, StoredLayout } from "./storage/layout-repository.js";
 export {

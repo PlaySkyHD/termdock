@@ -24,6 +24,7 @@ export const COMMAND_IDS = [
   "copy",
   "paste",
   "showShortcuts",
+  "searchHistory",
 ] as const;
 
 export type CommandId = (typeof COMMAND_IDS)[number];
@@ -56,6 +57,7 @@ export const DEFAULT_KEYMAP: Keymap = {
   copy: "Ctrl+Shift+C",
   paste: "Ctrl+Shift+V",
   showShortcuts: "Ctrl+Shift+H",
+  searchHistory: "Ctrl+Shift+F",
 };
 
 /** Names of the commands in the overview of the shortcuts. */
@@ -84,6 +86,7 @@ export const COMMAND_LABELS: Readonly<Record<CommandId, string>> = {
   copy: "Auswahl kopieren",
   paste: "Einfügen",
   showShortcuts: "Tastenkürzel anzeigen",
+  searchHistory: "Im Verlauf suchen",
 };
 
 /**

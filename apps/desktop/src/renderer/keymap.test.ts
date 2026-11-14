@@ -43,6 +43,7 @@ describe("resolveKey", () => {
     ["Ctrl+Shift+C", press("KeyC", ctrlShift), "copy"],
     ["Ctrl+Shift+V", press("KeyV", ctrlShift), "paste"],
     ["Ctrl+Shift+H", press("KeyH", ctrlShift), "showShortcuts"],
+    ["Ctrl+Shift+F", press("KeyF", ctrlShift), "searchHistory"],
   ])("maps %s to %s", (_name, event, command) => {
     expect(resolveKey(event)).toBe(command);
   });

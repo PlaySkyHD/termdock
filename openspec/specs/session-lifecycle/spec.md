@@ -345,3 +345,19 @@ Stammt der Snapshot einer neuen View vom Backend, SHALL der Core das Backend nac
 - **GIVEN** ein Backend, dessen Neuzeichnen fehlschlägt
 - **WHEN** eine View angehängt wird
 - **THEN** gelingt das Anhängen mit dem Snapshot des Backends
+
+### Requirement: Neuzeichnen je Session gebündelt und wiederholt
+
+Je Session SHALL höchstens ein Neuzeichnen laufen. Anforderungen, während eines läuft, SHALL der Core zu genau einem weiteren Neuzeichnen danach zusammenfassen. Scheitert ein Neuzeichnen, SHALL der Core es einmal wiederholen und ein erneutes Scheitern im Fehlerprotokoll des Core melden.
+
+#### Scenario: Mehrere Views kurz nacheinander
+
+- **GIVEN** ein Backend mit eigenem Snapshot, dessen Neuzeichnen noch läuft
+- **WHEN** drei weitere Views derselben Session angehängt werden
+- **THEN** zeichnet das Backend danach genau einmal neu, insgesamt zweimal
+
+#### Scenario: Wiederholung
+
+- **GIVEN** ein Backend, dessen erstes Neuzeichnen fehlschlägt
+- **WHEN** eine View angehängt wird
+- **THEN** zeichnet der Core ein zweites Mal neu und meldet keinen Fehler; scheitert auch das, meldet er den Fehler einmal

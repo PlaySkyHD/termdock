@@ -376,6 +376,54 @@ describe("SessionRegistry: output", () => {
     expect(registry.get(id).writerViewId).toBe("view-a");
   });
 
+  it("retries a failed redraw once without reporting it (PR #39)", async () => {
+    const errors: unknown[] = [];
+    const { registry, backend } = setup({ onRedrawError: (error) => errors.push(error) });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    backend.failNextRedraw = new Error("refresh-client failed");
+
+    await registry.attachView(id, "view-a");
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
+    expect(errors).toEqual([]);
+  });
+
+  it("reports a redraw that fails again on the retry (PR #39)", async () => {
+    const errors: Array<{ error: unknown; sessionId: string }> = [];
+    const { registry, backend } = setup({
+      onRedrawError: (error, session) => errors.push({ error, sessionId: session.id }),
+    });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    const failure = new Error("refresh-client failed");
+    backend.failNextRedraw = failure;
+    backend.onRedraw = () => (backend.failNextRedraw ??= failure);
+
+    await registry.attachView(id, "view-a");
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
+    expect(errors).toEqual([{ error: failure, sessionId: id }]);
+  });
+
+  it("merges redraws requested while one runs into a single follow-up (PR #39)", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setSnapshot(id, "screen");
+    let release = () => {};
+    backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+    // Like a layout restore (#29): several panes of one session attach right after each other.
+    for (const view of ["view-a", "view-b", "view-c", "view-d"]) await registry.attachView(id, view);
+    expect(backend.redraws).toEqual([id]);
+    release();
+    await settle();
+
+    expect(backend.redraws).toEqual([id, id]);
+  });
+
   it("drops the backend snapshot when the PTY ends while it is taken", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });

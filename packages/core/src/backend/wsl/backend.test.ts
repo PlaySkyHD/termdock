@@ -252,7 +252,24 @@ describe("WslBackend", () => {
     expect(calls.slice(1).map((args) => args.at(-1))).toEqual(["/dev/pts/3", "/dev/pts/5"]);
   });
 
-  it("throws when listing or redrawing the clients fails (issue #34)", async () => {
+  it("still redraws the other clients when one of them is gone (PR #39)", async () => {
+    const { backend, calls } = setup({
+      distro: "Ubuntu",
+      respond: (args) => {
+        if (args.includes("list-clients")) return ok("/dev/pts/3\n/dev/pts/5\n");
+        if (args.includes("/dev/pts/3"))
+          return { code: 1, stdout: "", stderr: "can't find client: /dev/pts/3\n" };
+        return undefined;
+      },
+    });
+    await backend.redraw("s1", spec);
+    expect(calls.filter((args) => subcommand(args) === "refresh-client").map((args) => args.at(-1))).toEqual([
+      "/dev/pts/3",
+      "/dev/pts/5",
+    ]);
+  });
+
+  it("throws when listing the clients fails or no client could be redrawn (issue #34)", async () => {
     const down = setup({ distro: "Ubuntu", respond: () => distroMissing });
     await expect(down.backend.redraw("s1", spec)).rejects.toThrow(/WSL_E_DISTRO_NOT_FOUND/);
     const refused = setup({

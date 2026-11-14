@@ -36,6 +36,11 @@ export interface SessionRegistryOptions {
    */
   onPersistError?: (error: unknown, session: SessionInfo) => void;
   /**
+   * Called when the redraw after an attach fails twice; the new view keeps its snapshot and may show output
+   * twice or miss some until the screen is drawn again. Defaults to `console.error`.
+   */
+  onRedrawError?: (error: unknown, session: SessionInfo) => void;
+  /**
    * Waits before each attempt to re-attach after a PTY ended without exit code; the length is the number of
    * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
    */
@@ -128,6 +133,8 @@ interface SessionEntry {
   output: OutputBuffer;
   /** `seq` of the last output of the session (0 before any). */
   outputSeq: number;
+  /** Redraw in progress; `again` asks for one more after it (see `requestRedraw`). */
+  redraw: { again: boolean } | undefined;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
   busy: "start" | "kill" | "archive" | "reattach" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
@@ -166,6 +173,7 @@ export class SessionRegistry {
   private readonly now: () => Date;
   private readonly repository: SessionRepository | undefined;
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
+  private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
   private readonly reattachDelaysMs: readonly number[];
   private restored = false;
   private restoring = false;
@@ -185,6 +193,9 @@ export class SessionRegistry {
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
+    this.onRedrawError =
+      options.onRedrawError ??
+      ((error, session) => console.error(`TermDock: could not redraw session ${session.id}`, error));
   }
 
   onStateChange(listener: Listener<StateChangeEvent>): Disposable {
@@ -423,9 +434,45 @@ export class SessionRegistry {
     entry.views.add(viewId);
     if (writer) this.setWriter(entry, viewId);
     if (entry.pty && entry.info.state === "Detached") this.setState(entry, "Running");
-    // Not awaited: the view gets its snapshot at once. A failed redraw leaves the snapshot as it is.
-    if (fromBackend) void backend?.redraw?.(entry.info.id, entry.info.launch).catch(() => {});
+    // Not awaited: the view gets its snapshot at once.
+    if (fromBackend && backend) this.requestRedraw(entry, backend);
     return { session: snapshotInfo(entry.info), writer, snapshot, outputSeq };
+  }
+
+  /**
+   * Asks the backend to repaint the session's screen (issue #34). At most one redraw per session runs; requests
+   * while it runs are merged into one follow-up, which covers the latest view (several panes attaching at once,
+   * #29). A failed redraw is retried once, then reported through `onRedrawError`.
+   */
+  private requestRedraw(entry: SessionEntry, backend: Backend): void {
+    if (!backend.redraw) return;
+    if (entry.redraw) {
+      entry.redraw.again = true;
+      return;
+    }
+    const run = { again: false };
+    entry.redraw = run;
+    void this.runRedraws(entry, backend, run).finally(() => {
+      if (entry.redraw === run) entry.redraw = undefined;
+    });
+  }
+
+  private async runRedraws(entry: SessionEntry, backend: Backend, run: { again: boolean }): Promise<void> {
+    do {
+      run.again = false;
+      let failure: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await backend.redraw?.(entry.info.id, entry.info.launch);
+          failure = undefined;
+          break;
+        } catch (error) {
+          failure = error;
+        }
+        if (this.disposed) return;
+      }
+      if (failure !== undefined) this.onRedrawError(failure, snapshotInfo(entry.info));
+    } while (run.again && !this.disposed);
   }
 
   /** Detaches a view. The process keeps running; the writer gets no automatic successor (ADR 0005). */
@@ -847,6 +894,7 @@ function newEntry(info: SessionInfo): SessionEntry {
     views: new Set(),
     output: new OutputBuffer(OUTPUT_BUFFER_BYTES),
     outputSeq: 0,
+    redraw: undefined,
     busy: undefined,
     endedDuringOp: undefined,
     reattach: { attempts: 0, boundAt: Number.NEGATIVE_INFINITY },

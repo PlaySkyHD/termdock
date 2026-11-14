@@ -114,6 +114,8 @@ export class FakeBackend implements Backend {
   failNextRedraw: Error | undefined;
   /** Test hook: runs for every `redraw` call. */
   onRedraw: ((id: SessionId) => void) | undefined;
+  /** When set, every `redraw` waits for it before it settles. */
+  redrawGate: Promise<void> | undefined;
   /** Distro `resolveLaunch` fills into WSL specs without one; undefined leaves specs unchanged. */
   defaultDistro: string | undefined;
   /** Test hook: runs for every PTY that `start` or `attach` creates. */
@@ -213,6 +215,7 @@ export class FakeBackend implements Backend {
   async redraw(id: SessionId, _spec: LaunchSpec): Promise<void> {
     this.redraws.push(id);
     this.onRedraw?.(id);
+    await this.redrawGate;
     const error = this.failNextRedraw;
     if (error) {
       this.failNextRedraw = undefined;

@@ -20,6 +20,8 @@ export interface TabBarProps {
   onClosePane: () => void;
   /** Opens the overview of the key bindings. */
   onShowShortcuts: () => void;
+  /** Opens the history search (#62). */
+  onSearch: () => void;
 }
 
 export function TabBar({
@@ -35,6 +37,7 @@ export function TabBar({
   onSplit,
   onClosePane,
   onShowShortcuts,
+  onSearch,
 }: TabBarProps) {
   const full = panes >= maxPanes;
   const splitTitle = (text: string): string => (full ? `Höchstens ${maxPanes} Panes je Tab` : text);
@@ -91,6 +94,19 @@ export function TabBar({
         })}
       </div>
       <div className="tab-bar__actions">
+        <button
+          className="icon-button"
+          type="button"
+          data-action="search-history"
+          title="Im Verlauf suchen (Ctrl+Shift+F)"
+          aria-label="Im Verlauf suchen"
+          onClick={onSearch}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="4" fill="none" stroke="currentColor" />
+            <path d="M9.5 9.5L14 14" stroke="currentColor" />
+          </svg>
+        </button>
         <button
           className="icon-button"
           type="button"

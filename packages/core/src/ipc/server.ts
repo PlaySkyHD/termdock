@@ -16,6 +16,8 @@ import type {
   EventMap,
   EventName,
   Frame,
+  HistorySearchParams,
+  HistorySearchResult,
   ListerEventName,
   ParsedRequest,
   SessionAttachResult,
@@ -81,6 +83,8 @@ export interface CoreServerOptions {
   helloTimeoutMs?: number;
   /** Connections without completed `hello` allowed at the same time; further ones are destroyed. Defaults to 32. */
   maxPendingHandshakes?: number;
+  /** Backs `history.search`; without it (tests, no history) every search finds nothing. */
+  searchHistory?: (params: HistorySearchParams) => Promise<HistorySearchResult>;
   /**
    * Requests other than `hello` wait for this before they reach the registry; the core resolves it after the
    * reconcile, so no client sees the state before it. A rejection is answered like any error of the request.
@@ -130,6 +134,7 @@ export class CoreServer {
   private readonly settings: SettingsRepository;
   private readonly workspaces: WorkspaceService;
   private readonly profiles: ProfileService;
+  private readonly historySearch: (params: HistorySearchParams) => Promise<HistorySearchResult>;
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -155,6 +160,7 @@ export class CoreServer {
     this.settings = options.settings ?? new InMemorySettingsRepository();
     this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
     this.profiles = new ProfileService(options.profiles ?? new InMemoryProfileRepository(), this.workspaces);
+    this.historySearch = options.searchHistory ?? (async () => ({ hits: [], truncated: false }));
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -555,9 +561,9 @@ export class CoreServer {
         // The event follows the answer; every lister gets it, the caller too.
         return { result: { settings }, after: () => this.notifyListers("settings.changed", { settings }) };
       }
-      // History search: issue #62.
+      // History search: issue #62. Reads only; no state changes, no events.
       case "history.search":
-        throw notImplemented(request.method);
+        return { result: await this.historySearch(request.params) };
     }
   }
 
@@ -715,11 +721,6 @@ export class CoreServer {
     for (const conn of [...this.connections]) this.endConnection(conn);
     await stopped;
   }
-}
-
-/** Answer of a phase-3 method whose logic is not built yet: `internal`, the connection stays (spec core-ipc). */
-function notImplemented(what: string): CoreError {
-  return new CoreError("internal", `${what}: noch nicht umgesetzt`);
 }
 
 function eventFrame<E extends EventName>(event: E, data: EventMap[E], payload?: Uint8Array): Uint8Array {

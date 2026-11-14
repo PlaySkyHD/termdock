@@ -45,6 +45,9 @@ export interface CommandDeps extends SplitDeps {
   /** The overview of the shortcuts is open. */
   shortcutsOpen: boolean;
   toggleShortcuts(): void;
+  /** The history search dialog is open (#62). */
+  searchOpen: boolean;
+  toggleSearch(): void;
 }
 
 /** Stores with a split whose session is still being created; a second split waits for it (no session over the limit). */
@@ -157,13 +160,18 @@ function tabTarget(command: CommandId, deps: CommandDeps): LayoutTab | undefined
   return target === tab ? undefined : target;
 }
 
+/** The command that closes the dialog that is open; every other command waits while it is. */
+function modalCommand(deps: CommandDeps): CommandId | undefined {
+  return deps.shortcutsOpen ? "showShortcuts" : deps.searchOpen ? "searchHistory" : undefined;
+}
+
 /**
  * Whether the command has something to do. A key whose command does not apply (Alt+Left in a single pane, Ctrl+Tab
- * with one tab) goes to the terminal, where the shell or tmux may use it. While the overview is open every bound
- * key applies, so that nothing under the dialog reacts and the key does not reach the terminal either.
+ * with one tab) goes to the terminal, where the shell or tmux may use it. While the overview or the search is open
+ * every bound key applies, so that nothing under the dialog reacts and the key does not reach the terminal either.
  */
 export function canRun(command: CommandId, deps: CommandDeps): boolean {
-  if (deps.shortcutsOpen) return true;
+  if (modalCommand(deps) !== undefined) return true;
   const tab = activeTab(deps.store.getState());
   switch (command) {
     case "closeTab":
@@ -188,7 +196,8 @@ export function canRun(command: CommandId, deps: CommandDeps): boolean {
 }
 
 export async function runCommand(command: CommandId, deps: CommandDeps): Promise<void> {
-  if (deps.shortcutsOpen && command !== "showShortcuts") return;
+  const modal = modalCommand(deps);
+  if (modal !== undefined && command !== modal) return;
   const { store } = deps;
   const tab = activeTab(store.getState());
   const goTo = (target: LayoutTab | undefined): void => {
@@ -245,6 +254,9 @@ export async function runCommand(command: CommandId, deps: CommandDeps): Promise
     }
     case "showShortcuts":
       deps.toggleShortcuts();
+      return;
+    case "searchHistory":
+      deps.toggleSearch();
       return;
     case "newWindow":
       return; // the application menu opens it (main.ts)

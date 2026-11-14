@@ -154,6 +154,47 @@ describe("runCore", () => {
     expect(existsSync(historyDir(dataDir, silent.id))).toBe(false);
   });
 
+  it("searches the history of all sessions, not those without logging or deleted ones (issue #62)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    await start({ pipePath, dataDir, backends: [backend] });
+    const c = await client(pipePath);
+    const a = (await c.request("session.create", { name: "a", launch })).result.session;
+    const b = (await c.request("session.create", { name: "b", launch })).result.session;
+    const silent = (await c.request("session.create", { name: "c", launch, loggingEnabled: false })).result
+      .session;
+    const gone = (await c.request("session.create", { name: "d", launch })).result.session;
+    backend.pty(a.id).emitData("\x1b[31mBuild FAILED\x1b[0m in a\r\n");
+    backend.pty(b.id).emitData("tests failed in b\r\n");
+    backend.pty(silent.id).emitData("failed but not logged\r\n");
+    backend.pty(gone.id).emitData("failed in deleted\r\n");
+    await c.request("session.archive", { sessionId: a.id });
+
+    const all = (await c.request("history.search", { query: "FAILED" })).result;
+    expect(all.truncated).toBe(false);
+    expect(all.hits.map((hit) => [hit.sessionId, hit.line]).sort()).toEqual(
+      [
+        [a.id, "Build FAILED in a"],
+        [b.id, "tests failed in b"],
+        [gone.id, "failed in deleted"],
+      ].sort(),
+    );
+
+    await c.request("session.kill", { sessionId: gone.id });
+    await c.request("session.delete", { sessionId: gone.id });
+    const afterDelete = (await c.request("history.search", { query: "failed" })).result;
+    expect(afterDelete.hits.map((hit) => hit.sessionId).sort()).toEqual([a.id, b.id].sort());
+
+    const one = (await c.request("history.search", { query: "failed", sessionIds: [b.id] })).result;
+    expect(one.hits.map((hit) => hit.sessionId)).toEqual([b.id]);
+    const limited = (await c.request("history.search", { query: "failed", limit: 1 })).result;
+    expect(limited.hits).toHaveLength(1);
+    expect(limited.truncated).toBe(true);
+    // Escape sequences are neither searchable nor in the answer.
+    expect((await c.request("history.search", { query: "[31m" })).result.hits).toEqual([]);
+  });
+
   it("keeps workspaces and the ungrouped sessions of a deleted workspace across a restart (issue #56)", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

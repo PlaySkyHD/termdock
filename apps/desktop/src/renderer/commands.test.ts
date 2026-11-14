@@ -74,6 +74,8 @@ function setup(sessions: Array<string | SessionInfo> = []) {
     showForm: () => calls.push("showForm"),
     shortcutsOpen: false,
     toggleShortcuts: () => calls.push("toggleShortcuts"),
+    searchOpen: false,
+    toggleSearch: () => calls.push("toggleSearch"),
     notify: (text) => notices.push(text),
     refocus: () => calls.push("refocus"),
   };
@@ -350,8 +352,54 @@ describe("canRun", () => {
   it("always applies to the commands that act on the window or the clipboard", () => {
     const { deps } = setup();
 
-    for (const command of ["newSession", "toggleSidebar", "copy", "paste", "showShortcuts"] as const)
+    for (const command of [
+      "newSession",
+      "toggleSidebar",
+      "copy",
+      "paste",
+      "showShortcuts",
+      "searchHistory",
+    ] as const)
       expect(canRun(command, deps), command).toBe(true);
+  });
+});
+
+describe("history search dialog (#62)", () => {
+  it("opens and closes with its command, also without any tab", async () => {
+    const { deps, calls } = setup();
+
+    await runCommand("searchHistory", deps);
+    await runCommand("searchHistory", { ...deps, searchOpen: true });
+
+    expect(calls).toEqual(["toggleSearch", "toggleSearch"]);
+  });
+
+  it("takes every bound key while open but acts only on the search itself", async () => {
+    const { deps, store, calls, controller, clipboard } = setup(["a", "b"]);
+    const open = { ...deps, searchOpen: true };
+    const before = store.getState();
+    clipboard.text = "x";
+    controller.selection = "y";
+
+    for (const command of ["nextTab", "closeTab", "splitRow", "toggleSidebar", "copy", "paste"] as const) {
+      expect(canRun(command, open), command).toBe(true);
+      await runCommand(command, open);
+    }
+    await runCommand("showShortcuts", open);
+    await runCommand("newSession", open);
+
+    expect(store.getState()).toBe(before);
+    expect(calls).toEqual([]);
+    expect(controller.pasted).toEqual([]);
+    expect(clipboard.text).toBe("x");
+  });
+
+  it("does not open over the overview of the shortcuts", async () => {
+    const { deps, calls } = setup();
+
+    await runCommand("searchHistory", { ...deps, shortcutsOpen: true });
+
+    expect(calls).toEqual([]);
   });
 });
 

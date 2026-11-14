@@ -105,6 +105,7 @@ class FakeApi implements ViewApi {
   reportLayout = vi.fn(async () => {});
   answerQuit = vi.fn(async () => {});
   quitShown = vi.fn(async () => {});
+  searchHistory = vi.fn(async () => ({ hits: [], truncated: false }));
   attach(sessionId: string, size: TerminalSize): Promise<AttachedView> {
     this.attachCalls.push([sessionId, size]);
     return new Promise((resolve, reject) => {

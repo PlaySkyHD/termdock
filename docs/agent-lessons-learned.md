@@ -18,6 +18,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 ## 2. WSL und tmux
 
 - **WSL muss aktuell sein.** WSL 2.1.5 brach jeden Distro-Start mit `Wsl/Service/E_UNEXPECTED` ab; `wsl --update` (auf 3.0.5) behob es.
+- **Nie `wsl --shutdown` oder `--terminate`** (auch nicht `wsl -t`): Das beendet den produktiven tmux-Server (Socket `termdock`) samt aller Sessions des Nutzers. Bei WSL-Fehlern (z. B. `E_FAIL`) stoppen und berichten.
 - **Distro:** `Ubuntu` (26.04), Standardbenutzer `nic`, tmux 3.6. Aufruf aus Windows: `wsl.exe -d Ubuntu -- <befehl>`.
 - **Nicht aus einem Windows-Verzeichnis starten, das WSL nicht übersetzen kann.** Ein `wsl`-Aufruf aus einem unbekannten Arbeitsverzeichnis meldet `Failed to translate`. Im Code immer `--cd <linux-pfad>` oder `--cd ~` übergeben.
 - **`wsl -l -v` gibt UTF-16 aus.** In Node `wsl.exe` mit `env: { WSL_UTF8: '1' }` aufrufen, sonst stehen Nullbytes zwischen den Zeichen.
@@ -46,7 +47,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - CI läuft auf `windows-latest` (Typecheck, Lint, Format, Unit-Tests) und prüft OpenSpec.
 - **Merge:** erst den Worktree entfernen, dann mergen. Die genaue Befehlsfolge steht im Skill `orchestrate-issues`, Abschnitt 5.
 - **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar.
-- Nie `git restore`, `git stash` oder `git reset --hard`.
+- Verbotene Befehle (u. a. `git restore`, `git stash`, `git reset --hard`): siehe Abschnitt 5.
 
 ## 5. Agent-Konfiguration
 
@@ -54,6 +55,13 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **Neuer Skill:** in `.agents/skills/` anlegen, dann in Git Bash `MSYS=winsymlinks:nativestrict ln -s ../../.agents/skills/<name> .claude/skills/<name>`.
 - **Retro nach jedem PR.** Nach `gh pr create` läuft der Skill `retro` (ein Hook erinnert daran). Findings werden Issues mit Label `agent-retro`, Fixes kommen in eigene PRs.
 - **Host hat kein `jq` und kein `python3`.** Hooks sind Node-Skripte, Python läuft über `py -I`.
+- **Verbotene Befehle erzwingt der PreToolUse-Hook `.claude/hooks/guard-commands.mjs`** (Bash und PowerShell, Exit 2 mit Begründung und erlaubter Alternative). Er blockiert:
+  - `git restore`, `git stash`, `git reset --hard` (auch mit `-C <pfad>` oder `-c k=v` davor);
+  - tmux `kill-server` auf dem Socket `termdock` oder ohne `-L` (`-L termdock-test…` ist erlaubt, siehe Abschnitt 2);
+  - `wsl --shutdown`, `wsl --terminate`, `wsl -t` (siehe Abschnitt 2);
+  - schreibende Shell-Befehle auf Dateien im Repo-Checkout oder einem Worktree (`P:/GitHub/termdock…` und relative Pfade): `sed -i`, `perl -i`, `node -e`/`-p` mit `writeFileSync` und Co., Umleitungen `>`/`>>`, `tee`, Heredocs in Dateien, `Set-Content`/`Out-File`/`Add-Content`.
+  - Erlaubt bleiben Umleitungen nach `/dev/null`, `$null` und `P:/Temp/`, `git commit -F <datei>`, Formatter, Generatoren und `gh … --body-file`. Dateien ändern Agents mit Read, Edit und Write.
+  - Der Hook prüft nur das Kommandowort jedes Teilbefehls und übersieht lieber etwas, als fälschlich zu blockieren. Bekannte Lücken stehen im Kopf des Skripts. Er wirkt erst, wenn er im Haupt-Checkout liegt; Tests: `npm run test:hooks`.
 
 ## 6. Arbeitsweise
 

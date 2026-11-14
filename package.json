@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "npm test --workspaces --if-present",
+    "test": "npm run test:hooks && npm test --workspaces --if-present",
+    "test:hooks": "node --test scripts/guard-commands.test.mjs",
     "openspec": "openspec"
   },
   "devDependencies": {

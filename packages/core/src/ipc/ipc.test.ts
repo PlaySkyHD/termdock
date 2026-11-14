@@ -125,7 +125,15 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.1" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.2" } });
+  });
+
+  it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
+    const { pipePath } = await startCore();
+    const raw = await rawConnect(pipePath);
+    raw.send({ ...hello, params: helloParams("1.1") });
+    await waitFor(() => raw.frames.length === 1, "hello response");
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.2" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -401,6 +409,72 @@ describe("two clients on one session", () => {
     // Events are written before this answer, so nothing is still on its way.
     await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
     expect(strangerEvents).toEqual([]);
+  });
+
+  it("tells the clients that listed sessions about a created session, once (issue #46)", async () => {
+    const { pipePath } = await startCore();
+    const a = await newClient(pipePath);
+    const b = await newClient(pipePath);
+    const stranger = await newClient(pipePath);
+    await a.request("session.list", {});
+    await b.request("session.list", {});
+    const seenByA: SessionInfo[] = [];
+    const seenByB: SessionInfo[] = [];
+    const seenByStranger: SessionInfo[] = [];
+    a.on("session.created", ({ session }) => seenByA.push(session));
+    b.on("session.created", ({ session }) => seenByB.push(session));
+    stranger.on("session.created", ({ session }) => seenByStranger.push(session));
+
+    const created = await createSession(a, "from a");
+    // Events are written before this answer, so nothing is still on its way.
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+    await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
+
+    expect(seenByB).toHaveLength(1);
+    expect(seenByB[0]).toMatchObject({ id: created.id, name: "from a", state: "Starting" });
+    expect(seenByA.map((session) => session.id)).toEqual([created.id]);
+    // Like session.stateChanged, it only goes to clients that list sessions.
+    expect(seenByStranger).toEqual([]);
+  });
+
+  it("announces a session whose start fails, followed by its state change to Interrupted", async () => {
+    const { pipePath, backend } = await startCore();
+    const a = await newClient(pipePath);
+    const b = await newClient(pipePath);
+    await b.request("session.list", {});
+    const seen: string[] = [];
+    b.on("session.created", ({ session }) => seen.push(`created:${session.state}`));
+    b.on("session.stateChanged", ({ state }) => seen.push(`state:${state}`));
+    backend.failNextStart = new Error("distro not reachable");
+
+    expect(await errorCode(a.request("session.create", { name: "x", launch }))).toBe("backend_unavailable");
+    await waitFor(() => seen.length === 2, "created and state change");
+
+    expect(seen).toEqual(["created:Starting", "state:Interrupted"]);
+  });
+
+  it("sends session.created in front of the answer of session.create", async () => {
+    const { pipePath } = await startCore();
+    const a = await newClient(pipePath);
+    await a.request("session.list", {});
+    const order: string[] = [];
+    a.on("session.created", () => order.push("event"));
+    await a.request("session.create", { name: "x", launch });
+    order.push("answer");
+    expect(order).toEqual(["event", "answer"]);
+  });
+
+  it("announces no session when create is refused", async () => {
+    const { pipePath } = await startCore();
+    const a = await newClient(pipePath);
+    const b = await newClient(pipePath);
+    await b.request("session.list", {});
+    const seen: string[] = [];
+    b.on("session.created", ({ session }) => seen.push(session.id));
+    const refused = a.request("session.create", { name: "x", launch, size: { cols: 0, rows: 0 } });
+    expect(await errorCode(refused)).toBe("bad_request");
+    await errorCode(b.request("session.kill", { sessionId: "nope" }));
+    expect(seen).toEqual([]);
   });
 });
 
@@ -737,6 +811,39 @@ describe("client library", () => {
     cleanups.push(() => client.close());
     expect(await errorCode(client.request("session.list", {}))).toBe("closed");
     expect(client.isClosed).toBe(true);
+  });
+
+  it("ignores an event name it does not know and stays connected (issue #46)", async () => {
+    const pipePath = uniquePipe();
+    const sockets: Socket[] = [];
+    const server: Server = createServer((socket) => {
+      const frames = new FrameDecoder();
+      sockets.push(socket);
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        for (const frame of frames.push(chunk)) {
+          const { id, method } = frame.header as { id: string; method: string };
+          if (method === "session.list") {
+            socket.write(encodeFrame({ kind: "event", event: "session.fromTheFuture", data: {} }));
+            socket.write(encodeFrame({ kind: "response", id, result: { sessions: [] } }));
+          } else {
+            socket.write(encodeFrame({ kind: "response", id, result: { protocolVersion: "1.3" } }));
+          }
+        }
+      });
+    });
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    cleanups.push(() => void sockets.forEach((socket) => socket.destroy()));
+    await new Promise<void>((resolve) => server.listen(pipePath, () => resolve()));
+    const client = await connect(pipePath, { requestTimeoutMs: 2000 });
+    cleanups.push(() => client.close());
+    const reported: unknown[] = [];
+    client.on("session.created", (data) => reported.push(data));
+
+    expect((await client.request("session.list", {})).result.sessions).toEqual([]);
+
+    expect(client.isClosed).toBe(false);
+    expect(reported).toEqual([]);
   });
 
   it("rejects requests after close and close() is idempotent", async () => {

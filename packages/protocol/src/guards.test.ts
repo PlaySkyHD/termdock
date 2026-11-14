@@ -257,8 +257,8 @@ describe("parseResponse", () => {
     expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
   });
 
-  it("speaks protocol 1.1 (issue #34)", () => {
-    expect(PROTOCOL_VERSION).toBe("1.1");
+  it("speaks protocol 1.2 (issue #46)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.2");
   });
 
   it("allows an empty snapshot and no writer", () => {
@@ -374,6 +374,27 @@ describe("parseEvent", () => {
       const parsed = parseEvent(frame({ kind: "event", event, data }));
       expect(parsed.ok, event).toBe(true);
     }
+  });
+
+  it("accepts session.created with a session and rejects other data (issue #46)", () => {
+    const created = (data: unknown) => parseEvent(frame({ kind: "event", event: "session.created", data }));
+    const parsed = created({ session: sessionInfo });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.data).toEqual({ session: sessionInfo });
+    expect(failure(created({})).message).toContain("data.session");
+    expect(failure(created({ session: { ...sessionInfo, state: "Weg" } })).message).toContain(
+      "data.session.state",
+    );
+    expect(
+      failure(
+        parseEvent(
+          frame(
+            { kind: "event", event: "session.created", data: { session: sessionInfo } },
+            new Uint8Array([1]),
+          ),
+        ),
+      ).code,
+    ).toBe("bad_request");
   });
 
   it("rejects unknown events, bad state values and events with an id", () => {

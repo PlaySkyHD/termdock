@@ -70,7 +70,7 @@ describe("paneMenu", () => {
     expect(paneMenu(window, "a").find((entry) => entry.key === "move:right")?.action).toEqual({
       kind: "move",
       source: { kind: "pane", paneId: "a" },
-      target: { kind: "pane", paneId: "b", zone: "right" },
+      target: { kind: "swap", paneId: "b" },
     });
   });
 

@@ -1134,7 +1134,7 @@ Der Benutzer SHALL Tabs in der Tab-Leiste umsortieren und einen Tab, ein Pane (�
 
 ### Requirement: Anordnen per Tastatur und Kontextmenü
 
-Jede Anordnung SHALL ohne Maus gehen: Das Menü eines Tabs (Rechtsklick, Menütaste, Umschalt+F10) verschiebt ihn nach links oder rechts und fügt einen anderen Tab in eine Zone des aktiven Panes ein; der Griff eines Panes öffnet ein Menü zum Herauslösen und Verschieben in eine Richtung; das Menü einer Session öffnet sie in einer Zone des aktiven Panes. `Ctrl+Shift+PageUp`/`PageDown` verschieben den aktiven Tab. Gesperrte Züge sind abgeblendet. Danach hat das aktive Terminal den Fokus.
+Jede Anordnung SHALL ohne Maus gehen: Das Menü eines Tabs (Rechtsklick, Menütaste, Umschalt+F10) verschiebt ihn nach links oder rechts und fügt einen anderen Tab in eine Zone des aktiven Panes ein; der Griff eines Panes öffnet ein Menü zum Herauslösen und Tauschen mit dem Nachbarn; das Menü einer Session öffnet sie in einer Zone des aktiven Panes. `Ctrl+Shift+PageUp`/`PageDown` verschieben den aktiven Tab. Gesperrte Züge sind abgeblendet. Danach hat das aktive Terminal den Fokus.
 
 #### Scenario: Tab per Tastatur verschieben
 

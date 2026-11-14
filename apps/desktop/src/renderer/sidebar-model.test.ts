@@ -208,6 +208,13 @@ describe("sessionMenu", () => {
     expect(entries[3]?.separator).toBe(true);
   });
 
+  it("offers no zones for an archived session, which cannot be dragged onto a pane either", () => {
+    const place = { key: "place:center", label: "Im aktiven Pane öffnen", action: "center" as const };
+    expect(keys(sessionMenu(session("a", { state: "Archived" }), workspaces, [place]))).not.toContain(
+      "place:center",
+    );
+  });
+
   it("offers only the workspaces for an ungrouped session", () => {
     expect(keys(sessionMenu(session("a"), workspaces))).toEqual([
       "open",

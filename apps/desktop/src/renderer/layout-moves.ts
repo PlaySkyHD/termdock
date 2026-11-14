@@ -16,7 +16,10 @@ export type MoveSource =
 
 /** Where it goes: a zone of a pane, or the tab bar before a tab (at the end without one). */
 export type MoveTarget =
-  { kind: "pane"; paneId: string; zone: PaneZone } | { kind: "tabBar"; beforeTabId?: string };
+  | { kind: "pane"; paneId: string; zone: PaneZone }
+  | { kind: "tabBar"; beforeTabId?: string }
+  /** Change places with another pane of the same tab (the menu's step in a direction). */
+  | { kind: "swap"; paneId: string };
 
 /**
  * The window after the move, or undefined when the move is not allowed or changes nothing. The tab that gets the
@@ -29,9 +32,34 @@ export function applyMove(
   target: MoveTarget,
   newId: () => string,
 ): LayoutWindow | undefined {
+  if (target.kind === "swap") return swap(window, source, target.paneId);
   return target.kind === "tabBar"
     ? toTabBar(window, source, target.beforeTabId, newId)
     : toPane(window, source, target, newId);
+}
+
+/** Two panes of one tab change places; the moved one becomes active. Only for a pane as the source. */
+function swap(window: LayoutWindow, source: MoveSource, otherId: string): LayoutWindow | undefined {
+  if (source.kind !== "pane" || source.paneId === otherId) return undefined;
+  const tab = tabOfPane(window, source.paneId);
+  const moved = tab && findPane(tab.root, source.paneId);
+  const other = tab && findPane(tab.root, otherId);
+  if (!tab || !moved || !other) return undefined;
+  // Both places at once: replacing one after the other would leave two nodes with the same id in between.
+  const exchange = (node: PaneNode): PaneNode =>
+    node.kind === "pane"
+      ? node.id === moved.id
+        ? other
+        : node.id === otherId
+          ? moved
+          : node
+      : { ...node, children: node.children.map(exchange) };
+  const root = exchange(tab.root);
+  return {
+    ...window,
+    tabs: window.tabs.map((each) => (each.id === tab.id ? { ...tab, root, activePaneId: moved.id } : each)),
+    activeTabId: tab.id,
+  };
 }
 
 /** Whether `applyMove` would do something; changes nothing. */
@@ -50,16 +78,9 @@ export function tabStepTarget(window: LayoutWindow, tabId: string, step: -1 | 1)
   return after ? { kind: "tabBar", beforeTabId: after.id } : { kind: "tabBar" };
 }
 
-const EDGE_OF: Readonly<Record<FocusDirection, PaneZone>> = {
-  left: "left",
-  right: "right",
-  up: "top",
-  down: "bottom",
-};
-
 /**
- * The target that moves the pane one step in `direction`: the far edge of its neighbour there, so the two change
- * places (A | B, B to the left: B | A). Undefined at the edge of the tab.
+ * The target that moves the pane one step in `direction`: it changes places with its neighbour there (the one
+ * `Alt+arrow` would focus), and the tree keeps its shape. Undefined at the edge of the tab.
  */
 export function paneStepTarget(
   tab: LayoutTab,
@@ -67,7 +88,7 @@ export function paneStepTarget(
   direction: FocusDirection,
 ): MoveTarget | undefined {
   const neighbor = neighborPane(tab.root, paneId, direction);
-  return neighbor === undefined ? undefined : { kind: "pane", paneId: neighbor, zone: EDGE_OF[direction] };
+  return neighbor === undefined ? undefined : { kind: "swap", paneId: neighbor };
 }
 
 /** The tab that holds the pane. */

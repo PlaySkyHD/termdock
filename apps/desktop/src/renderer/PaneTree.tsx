@@ -107,9 +107,7 @@ export function PaneTree({
               commands={commands}
               onContextPaste={() => onPanePaste(paneId)}
             />
-            {tabActive && split && (
-              <PaneGrip paneId={paneId} label={session?.name ?? "Pane"} onMenu={onPaneMenu} />
-            )}
+            {tabActive && <PaneGrip paneId={paneId} label={session?.name ?? "Pane"} onMenu={onPaneMenu} />}
             {tabActive && <ZoneOverlay paneId={paneId} />}
           </div>
         );

@@ -156,13 +156,26 @@ describe("applyMove: a pane", () => {
   it("swaps two panes by a step in a direction, none at the edge", () => {
     const window = win([tab("A", row("r", pane("a"), pane("b")))]);
     const target = paneStepTarget(window.tabs[0]!, "b", "left");
-    expect(target).toEqual({ kind: "pane", paneId: "a", zone: "left" });
+    expect(target).toEqual({ kind: "swap", paneId: "a" });
     const after = move(window, { kind: "pane", paneId: "b" }, target!);
-    expect(after?.tabs[0]?.root).toMatchObject({ kind: "split", direction: "row" });
-    const root = after!.tabs[0]!.root;
-    expect(root.kind === "split" && root.children.map((child) => child.id)).toEqual(["b", "a"]);
+    expect(after?.tabs[0]).toEqual(tab("A", row("r", pane("b"), pane("a")), "b"));
     expect(paneStepTarget(window.tabs[0]!, "a", "left")).toBeUndefined();
     expect(paneStepTarget(window.tabs[0]!, "a", "up")).toBeUndefined();
+  });
+
+  it("keeps the shape of a nested tree when two panes change places", () => {
+    // (A over B) | C, C one step to the left: (C over B) | A, shares as before.
+    const window = win([tab("T", row("r", column("k", pane("a"), pane("b")), pane("c")), "c")]);
+    const after = move(window, { kind: "pane", paneId: "c" }, paneStepTarget(window.tabs[0]!, "c", "left")!);
+    expect(after?.tabs[0]).toEqual(tab("T", row("r", column("k", pane("c"), pane("b")), pane("a")), "c"));
+    expect(valid(after)).toBe(true);
+  });
+
+  it("swaps only panes of one tab and only a pane", () => {
+    const window = win([tab("A", pane("a")), tab("B", pane("b"))]);
+    expect(canMove(window, { kind: "pane", paneId: "a" }, { kind: "swap", paneId: "b" })).toBe(false);
+    expect(canMove(window, { kind: "pane", paneId: "a" }, { kind: "swap", paneId: "a" })).toBe(false);
+    expect(canMove(window, { kind: "tab", tabId: "A" }, { kind: "swap", paneId: "a" })).toBe(false);
   });
 
   it("replaces another pane of its tab in the center", () => {

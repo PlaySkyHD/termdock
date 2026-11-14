@@ -4,7 +4,7 @@ import type { LayoutWindow, SessionId } from "@termdock/protocol";
 import { canMove, paneStepTarget, tabOfPane, tabStepTarget } from "./layout-moves.js";
 import type { MoveSource, MoveTarget } from "./layout-moves.js";
 import type { FocusDirection } from "./pane-focus.js";
-import { findPane, MAX_PANES, PANE_ZONES } from "./pane-tree.js";
+import { findPane, MAX_PANES, MAX_TABS, PANE_ZONES } from "./pane-tree.js";
 import type { PaneZone } from "./pane-tree.js";
 import type { MenuEntry } from "./sidebar-model.js";
 
@@ -33,10 +33,10 @@ export const SESSION_PLACE_LABELS: Readonly<Record<PaneZone, string>> = {
 };
 
 const DIRECTIONS: ReadonlyArray<[FocusDirection, string]> = [
-  ["left", "Nach links verschieben"],
-  ["right", "Nach rechts verschieben"],
-  ["up", "Nach oben verschieben"],
-  ["down", "Nach unten verschieben"],
+  ["left", "Mit dem Pane links tauschen"],
+  ["right", "Mit dem Pane rechts tauschen"],
+  ["up", "Mit dem Pane oben tauschen"],
+  ["down", "Mit dem Pane unten tauschen"],
 ];
 
 /** The zone target in the active pane of the active tab, or undefined without an active tab. */
@@ -120,7 +120,7 @@ export function paneMenu(window: LayoutWindow, paneId: string): MenuEntry<Layout
       "In eigenen Tab verschieben",
       source,
       alone ? undefined : { kind: "tabBar" },
-      alone ? "Das Pane ist schon ein eigener Tab" : "Höchstens 64 Tabs je Fenster",
+      alone ? "Das Pane ist schon ein eigener Tab" : `Höchstens ${MAX_TABS} Tabs je Fenster`,
     ),
   ];
   DIRECTIONS.forEach(([direction, label], index) =>

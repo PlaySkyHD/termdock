@@ -106,12 +106,16 @@ export type SessionAction =
   | { kind: "archive" }
   | { kind: "delete" };
 
-/** `places`: the entries that open the session in a zone of the active pane (`sessionPlaceEntries`, #67). */
+/**
+ * `offered`: the entries that open the session in a zone of the active pane (`sessionPlaceEntries`, #67). Like
+ * dragging onto a pane, they are only for a session that may be dragged (not an archived one).
+ */
 export function sessionMenu(
   session: SessionInfo,
   workspaces: readonly Workspace[],
-  places: readonly MenuEntry<PaneZone>[] = [],
+  offered: readonly MenuEntry<PaneZone>[] = [],
 ): MenuEntry<SessionAction>[] {
+  const places = isDraggable(session) ? offered : [];
   const entries: MenuEntry<SessionAction>[] = [
     { key: "open", label: "Öffnen", action: { kind: "open" } },
     ...places.map((place) => ({ ...place, action: { kind: "place" as const, zone: place.action } })),

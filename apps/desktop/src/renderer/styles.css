@@ -88,7 +88,7 @@ input {
   visibility: hidden;
 }
 
-/* The handle of a pane in a split (#67): drag to move the pane, click or menu key for its menu. */
+/* The handle of a pane (#67): drag to move the pane, click or menu key for its menu. */
 .pane-grip {
   position: absolute;
   top: 4px;

@@ -91,8 +91,9 @@ export function DragProvider({ children }: { children: ReactNode }) {
       host: window,
       hit: (x, y) => {
         const current = created.getState();
-        const payload =
-          current.phase === "pressed" || current.phase === "dragging" ? current.payload : undefined;
+        // While dragging, the valid targets are known since the start; only the first move asks the rules.
+        if (current.phase === "dragging") return targetAt(x, y, (id) => current.valid.includes(id));
+        const payload = current.phase === "pressed" ? current.payload : undefined;
         return targetAt(x, y, (id) => payload !== undefined && handlerFor(payload, id) !== undefined);
       },
       targets: allTargets,

@@ -40,6 +40,8 @@ const api: TermdockApi = {
   answerQuit: async (requestId, { choice, remember }) =>
     void (await call({ method: "answerQuit", requestId, choice, remember })),
   quitShown: async (requestId) => void (await call({ method: "quitShown", requestId })),
+  searchHistory: (query, limit) =>
+    call({ method: "searchHistory", query, ...(limit === undefined ? {} : { limit }) }),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

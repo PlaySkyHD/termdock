@@ -591,3 +591,49 @@ describe("DesktopBridge quit answers (#60)", () => {
     expect(answers).toEqual([]);
   });
 });
+
+describe("DesktopBridge history search (#62)", () => {
+  it("searches all sessions: no session ids go to the core, and its answer comes back", async () => {
+    const { core, bridge, a } = setup();
+    const answer = {
+      hits: [{ sessionId: "s1", timestamp: 1, line: "an error", offset: 3 }],
+      truncated: false,
+    };
+    core.answers.set("history.search", { result: answer });
+
+    const result = await bridge.call(a.id, { method: "searchHistory", query: "error", limit: 50 });
+
+    expect(result).toEqual({ ok: true, value: answer });
+    expect(core.requests).toEqual([
+      { method: "history.search", params: { query: "error", limit: 50 }, payload: undefined },
+    ]);
+    await bridge.call(a.id, { method: "searchHistory", query: "x" });
+    expect(core.requests[1]?.params).toEqual({ query: "x" });
+  });
+
+  it.each([
+    [{ method: "searchHistory" }],
+    [{ method: "searchHistory", query: "" }],
+    [{ method: "searchHistory", query: 5 }],
+    [{ method: "searchHistory", query: "q".repeat(257) }],
+    [{ method: "searchHistory", query: "x", limit: 0 }],
+    [{ method: "searchHistory", query: "x", limit: 201 }],
+    [{ method: "searchHistory", query: "x", limit: 1.5 }],
+    [{ method: "searchHistory", query: "x", limit: "5" }],
+  ])("refuses %j without contacting the core", async (call) => {
+    const { core, bridge, a } = setup();
+
+    expect(await bridge.call(a.id, call)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(core.requests).toEqual([]);
+  });
+
+  it("passes an error of the core on with its code", async () => {
+    const { core, bridge, a } = setup();
+    core.answers.set("history.search", new IpcError("internal", "disk gone"));
+
+    expect(await bridge.call(a.id, { method: "searchHistory", query: "x" })).toEqual({
+      ok: false,
+      error: { code: "internal", message: "disk gone" },
+    });
+  });
+});

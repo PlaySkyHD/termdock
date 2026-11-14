@@ -2,7 +2,7 @@
 // Entry: uint64 BE timestamp ms | uint32 BE length | raw bytes. Writing never blocks the PTY: `append` only queues
 // into a bounded buffer; a background flush writes it. When the writer cannot keep up, the oldest queued entries
 // are dropped and counted.
-import { mkdir, open, rm, stat, truncate, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, open, readdir, rm, stat, truncate, writeFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_HISTORY_LIMIT_BYTES,
@@ -26,10 +26,12 @@ const READ_CHUNK_BYTES = 64 * 1024;
 
 export type HistorySettings = Pick<Settings, "historyLimitBytes" | "historyEnabledByDefault">;
 
+const SAFE_SESSION_ID = /^[A-Za-z0-9_-]+$/;
+
 /** `<dataDir>/history/<sessionId>`: the directory deleting a session removes (ADR 0004). */
 export function historyDir(dataDir: string, sessionId: SessionId): string {
   // Ids come from the registry (UUIDs); refuse anything that could leave the history directory.
-  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("Invalid session id for the history path");
+  if (!SAFE_SESSION_ID.test(sessionId)) throw new Error("Invalid session id for the history path");
   return join(dataDir, "history", sessionId);
 }
 
@@ -200,6 +202,21 @@ export class HistoryStore {
         if (this.isPristine(log) && this.logs.get(sessionId) === log) this.logs.delete(sessionId);
       }
     }
+  }
+
+  /** Sessions that have a history directory (also archived ones, also with an empty history), for the search. */
+  async listSessions(): Promise<SessionId[]> {
+    let entries;
+    try {
+      entries = await readdir(join(this.options.dataDir, "history"), { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return entries
+      .filter((entry) => entry.isDirectory() && SAFE_SESSION_ID.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
   }
 
   /**

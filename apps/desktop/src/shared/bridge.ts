@@ -3,6 +3,7 @@
 import type {
   CoreStatusResult,
   ErrorCode,
+  HistorySearchResult,
   LayoutWindow,
   SessionCreateParams,
   SessionId,
@@ -36,7 +37,9 @@ export type BridgeCall =
   /** The answer of this window to the quit dialog (`quitRequested`, #60). */
   | { method: "answerQuit"; requestId: string; choice: QuitChoice; remember: boolean }
   /** This window now shows the quit dialog; without it the main process cancels the question after 5 s. */
-  | { method: "quitShown"; requestId: string };
+  | { method: "quitShown"; requestId: string }
+  /** Searches the stored history of all sessions (`history.search`, #62); the dialog never names sessions. */
+  | { method: "searchHistory"; query: string; limit?: number };
 
 export type BridgeMethod = BridgeCall["method"];
 
@@ -63,6 +66,7 @@ export interface BridgeResults {
   reportLayout: null;
   answerQuit: null;
   quitShown: null;
+  searchHistory: HistorySearchResult;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -105,6 +109,8 @@ export interface TermdockApi {
   reportLayout(window: LayoutWindowPart): Promise<void>;
   answerQuit(requestId: string, answer: QuitAnswer): Promise<void>;
   quitShown(requestId: string): Promise<void>;
+  /** Plain-text, case-insensitive search of the stored history of all sessions, newest hits first. */
+  searchHistory(query: string, limit?: number): Promise<HistorySearchResult>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

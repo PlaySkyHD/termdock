@@ -221,7 +221,7 @@ export class CoreServer {
       }),
       this.registry.onCreated(({ session }) => this.notifyListers("session.created", { session })),
       this.registry.onStateChange(({ sessionId, session }) => {
-        const viewIds = [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
+        const viewIds = this.sessionViewIds(sessionId);
         const listers = this.listers();
         const data: EventMap["session.stateChanged"] = { sessionId, state: session.state };
         if (session.lastExitCode !== undefined) data.lastExitCode = session.lastExitCode;
@@ -538,8 +538,14 @@ export class CoreServer {
       case "session.delete": {
         const { sessionId } = request.params;
         await registry.delete(sessionId);
+        // Like session.stateChanged: also the owners of a view learn it, even if they never listed sessions.
+        // Routed before the views are forgotten: `route` finds their connections through them.
+        this.route(
+          this.sessionViewIds(sessionId),
+          this.listers(),
+          eventFrame("session.removed", { sessionId }),
+        );
         this.forgetSessionViews(sessionId);
-        this.notifyListers("session.removed", { sessionId });
         return EMPTY_RESULT;
       }
       case "settings.get":
@@ -605,7 +611,12 @@ export class CoreServer {
    * so no record outlives it. Their connections were told by `view.writerChanged` and the state or remove event.
    */
   private forgetSessionViews(sessionId: SessionId): void {
-    for (const [viewId, view] of [...this.views]) if (view.sessionId === sessionId) this.forgetView(viewId);
+    for (const viewId of this.sessionViewIds(sessionId)) this.forgetView(viewId);
+  }
+
+  /** Views of all connections on the session. */
+  private sessionViewIds(sessionId: SessionId): ViewId[] {
+    return [...this.views].filter(([, view]) => view.sessionId === sessionId).map(([id]) => id);
   }
 
   /** Detaches a view in the registry (a session that is gone or archived is fine) and forgets it. */

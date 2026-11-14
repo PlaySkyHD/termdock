@@ -2,13 +2,29 @@
 
 ### Requirement: Platzhalter für Methoden der Phase 3
 
-Bis ihre Fachlogik umgesetzt ist, SHALL der Core jede noch nicht umgesetzte Methode der Phase 3 (`profile.*`, `settings.*`, `history.search`) und `session.create` ohne `launch` mit dem Fehler `internal` beantworten, dessen Meldung die Methode und „noch nicht umgesetzt“ nennt. `workspace.*` und `project.*` (Capability `workspaces`) sowie `session.update`, `session.archive` und `session.delete` (#57) sind umgesetzt. Die Verbindung MUST offen bleiben und der Core MUST weiter Anfragen bedienen.
+Bis ihre Fachlogik steht, SHALL der Core `history.search` mit dem Fehler `internal` beantworten, dessen Meldung Methode und „noch nicht umgesetzt“ nennt. Umgesetzt sind `workspace.*`, `project.*`, `settings.*`, `profile.*` sowie `session.update`, `session.archive` und `session.delete`. Die Verbindung MUST offen bleiben und der Core MUST weiter Anfragen bedienen.
 
 #### Scenario: Stub antwortet mit Fehler
 
 - **GIVEN** ein verbundener Client
 - **WHEN** er nacheinander jede noch nicht umgesetzte Methode der Phase 3 mit gültigen Parametern aufruft
 - **THEN** antwortet der Core jeweils mit `internal` und „noch nicht umgesetzt“, und danach gelingt `session.list` auf derselben Verbindung
+
+### Requirement: Empfänger der Phase-3-Events
+
+Der Core SHALL `session.updated`, `session.removed`, `workspace.changed`, `profile.changed` und `settings.changed` wie `session.created` an jede Verbindung senden, die `session.list` genutzt hat, auch an die auslösende, je Event höchstens einmal je Verbindung. `session.removed` MUST zusätzlich jede Verbindung mit einer View der Session erhalten (wie `session.stateChanged`). Andere Verbindungen ohne `session.list` MUST sie nicht erhalten.
+
+#### Scenario: Event an Listen-Clients
+
+- **GIVEN** ein Client, der `session.list` genutzt hat, und einer, der es nicht hat
+- **WHEN** der Core `workspace.changed` sendet
+- **THEN** erhält nur der erste Client das Event, genau einmal
+
+#### Scenario: Entfernen an View-Besitzer
+
+- **GIVEN** ein Listen-Client mit einer View der Session, ein Client mit View ohne `session.list` und ein Client ohne beides
+- **WHEN** die Session gelöscht wird
+- **THEN** erhalten die ersten beiden `session.removed` genau einmal, der dritte nicht
 
 ## ADDED Requirements
 

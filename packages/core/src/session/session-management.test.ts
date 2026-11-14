@@ -218,17 +218,19 @@ describe("SessionRegistry.delete", () => {
     },
   );
 
-  it("deletes an Interrupted session when the check fails because the backend is not available", async () => {
-    const { registry, backend, removed } = setup();
+  it("keeps an Interrupted session when the check fails, also while the backend reports unavailable", async () => {
+    const { registry, backend, removed, repository } = setup();
     const id = await interrupted(registry, backend);
-    backend.failNextExists = new Error("WSL not installed");
+    // WSL may be unreachable only for a moment while its tmux session lives on: nothing may be deleted.
+    backend.failNextExists = new Error("WSL not reachable");
     backend.isAvailable = false;
 
-    await registry.delete(id);
+    await expect(registry.delete(id)).rejects.toMatchObject({ code: "backend_unavailable" });
 
     expect(backend.kills).toEqual([]);
-    expect(removed).toEqual([id]);
-    expect(registry.list()).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(repository.list()).toHaveLength(1);
+    expect(registry.get(id).state).toBe("Interrupted");
   });
 
   it("keeps the session when the existence check fails while the backend is available", async () => {
@@ -322,5 +324,28 @@ describe("SessionRegistry.delete", () => {
     await expect(registry.delete(id)).rejects.toMatchObject({ code: "internal", cause: failure });
 
     expect(registry.get(id).state).toBe("Exited");
+  });
+
+  it("finishes with a second delete after a failure past the history removal", async () => {
+    const repository = new InMemorySessionRepository();
+    const { registry, backend, removed } = setup({ repository });
+    const id = await exited(registry, backend);
+    await registry.attachView(id, "v1");
+    const failing = vi.spyOn(repository, "delete").mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+
+    await expect(registry.delete(id)).rejects.toMatchObject({ code: "internal" });
+    // The history is already gone; row, session and view stay.
+    expect(removed).toEqual([id]);
+    expect(repository.list()).toHaveLength(1);
+    expect(registry.get(id)).toMatchObject({ state: "Exited", writerViewId: "v1" });
+
+    await registry.delete(id);
+
+    expect(failing).toHaveBeenCalledTimes(2);
+    expect(removed).toEqual([id, id]);
+    expect(repository.list()).toEqual([]);
+    expect(registry.list()).toEqual([]);
   });
 });

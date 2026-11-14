@@ -170,15 +170,23 @@ describe("session management over IPC (issue #57)", () => {
     const dataDir = tempDataDir();
     const first = await startCore(dataDir);
     const lister = await newClient(first.pipePath);
+    // Has a view but never listed sessions; it must learn of the removal too.
     const viewer = await newClient(first.pipePath);
+    const stranger = await newClient(first.pipePath);
     await lister.request("session.list", {});
     const removed: string[] = [];
     lister.on("session.removed", ({ sessionId }) => removed.push(sessionId));
+    const viewerRemoved: string[] = [];
+    viewer.on("session.removed", ({ sessionId }) => viewerRemoved.push(sessionId));
+    const strangerRemoved: string[] = [];
+    stranger.on("session.removed", ({ sessionId }) => strangerRemoved.push(sessionId));
     const writers: Array<string | undefined> = [];
     viewer.on("view.writerChanged", ({ writerViewId }) => writers.push(writerViewId));
     const session = await createSession(lister);
     const kept = await createSession(lister);
     const { viewId } = (await viewer.request("session.attach", { sessionId: session.id })).result;
+    // A lister with its own view gets the event once, not twice.
+    await lister.request("session.attach", { sessionId: session.id });
     // Real history: the recorder writes the output through the HistoryStore (#59).
     first.backend.pty(session.id).emitData("output to forget\r\n");
     const history = historyDir(dataDir, session.id);
@@ -196,6 +204,10 @@ describe("session management over IPC (issue #57)", () => {
     // The viewer learned that nobody writes any more, and its view is gone.
     await expect.poll(() => writers).toEqual([undefined]);
     expect(await errorCode(viewer.request("session.claimWriter", { viewId }))).toBe("not_found");
+    // Events are written before answers: the viewer's not_found above came after its session.removed.
+    expect(viewerRemoved).toEqual([session.id]);
+    await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
+    expect(strangerRemoved).toEqual([]);
     expect(await errorCode(lister.request("session.delete", { sessionId: session.id }))).toBe("not_found");
 
     // The row is gone from the database too: a new core does not load the session.

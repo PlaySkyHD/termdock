@@ -343,13 +343,19 @@ Bis ihre Fachlogik steht, SHALL der Core `history.search` mit dem Fehler `intern
 
 ### Requirement: Empfänger der Phase-3-Events
 
-Der Core SHALL `session.updated`, `session.removed`, `workspace.changed`, `profile.changed` und `settings.changed` wie `session.created` an jede Verbindung senden, die `session.list` genutzt hat, auch an die auslösende, je Event höchstens einmal je Verbindung. Verbindungen ohne `session.list` MUST sie nicht erhalten.
+Der Core SHALL `session.updated`, `session.removed`, `workspace.changed`, `profile.changed` und `settings.changed` wie `session.created` an jede Verbindung senden, die `session.list` genutzt hat, auch an die auslösende, je Event höchstens einmal je Verbindung. `session.removed` MUST zusätzlich jede Verbindung mit einer View der Session erhalten (wie `session.stateChanged`). Andere Verbindungen ohne `session.list` MUST sie nicht erhalten.
 
 #### Scenario: Event an Listen-Clients
 
 - **GIVEN** ein Client, der `session.list` genutzt hat, und einer, der es nicht hat
 - **WHEN** der Core `workspace.changed` sendet
 - **THEN** erhält nur der erste Client das Event, genau einmal
+
+#### Scenario: Entfernen an View-Besitzer
+
+- **GIVEN** ein Listen-Client mit einer View der Session, ein Client mit View ohne `session.list` und ein Client ohne beides
+- **WHEN** die Session gelöscht wird
+- **THEN** erhalten die ersten beiden `session.removed` genau einmal, der dritte nicht
 
 ### Requirement: Sessions über die IPC verwalten
 

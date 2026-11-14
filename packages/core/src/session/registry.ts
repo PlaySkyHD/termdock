@@ -476,8 +476,9 @@ export class SessionRegistry {
    * Deletes a session in `Exited`, `Interrupted` or `Archived` (otherwise `invalid_state`): ends a backend
    * session an `Interrupted` one may have left behind, removes the history, then the stored row, and finally
    * detaches all views and forgets the session (issue #57). `Exited` and `Archived` have no backend session (the
-   * backend removes it with the exit code, `archive` ends it). If a step fails, the session stays as it was,
-   * with its views; the steps before are idempotent, so the delete can be repeated.
+   * backend removes it with the exit code, `archive` ends it). If a step fails, the session stays registered with
+   * its views and its row, but what the steps before did stays done: after a failure past `removeHistory` the
+   * history is already gone. Every step is idempotent, so a repeated delete finishes the rest.
    */
   async delete(sessionId: SessionId): Promise<void> {
     const entry = this.entry(sessionId);
@@ -517,20 +518,13 @@ export class SessionRegistry {
 
   /**
    * Ends the backend session of a session being deleted if it still exists, so no tmux session is left behind.
-   * A failed check counts as "gone" only when the backend is not available at all (no WSL, no tmux): nothing
-   * can be left running there, and the delete must not be blocked forever. Otherwise it is `backend_unavailable`.
+   * A failed check is `backend_unavailable` and nothing is deleted, as in `archive`: WSL may only be unreachable
+   * for a moment while tmux keeps running, and without the row nobody could find that tmux session again.
    */
   private async endLeftoverBackendSession(entry: SessionEntry): Promise<void> {
     const backend = this.backendFor(entry.info.launch);
     if (!backend) return;
-    let exists: boolean;
-    try {
-      exists = await this.backendExists(entry, backend);
-    } catch (error) {
-      if (await backend.available().catch(() => false)) throw error;
-      return;
-    }
-    if (exists) await this.killBackend(entry, backend);
+    if (await this.backendExists(entry, backend)) await this.killBackend(entry, backend);
   }
 
   /**

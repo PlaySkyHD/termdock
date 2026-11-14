@@ -48,7 +48,7 @@
 
 ### Requirement: Session löschen
 
-`delete` SHALL nur Sessions in `Exited`, `Interrupted` oder `Archived` löschen, sonst `invalid_state`. Bei `Interrupted` MUST eine lebende Backend-Session zuerst beendet werden; scheitert die Prüfung bei verfügbarem Backend, MUST es `backend_unavailable` ergeben. Dann MUST der Core Verlauf und Zeile entfernen, die Views trennen und die Session vergessen. Scheitert ein Schritt, MUST die Session mit Views bleiben. Währenddessen MUST Anhängen und jeder Lifecycle-Aufruf `invalid_state` ergeben.
+`delete` SHALL nur `Exited`, `Interrupted` oder `Archived` löschen, sonst `invalid_state`. Bei `Interrupted` MUST eine lebende Backend-Session erst enden; scheitert die Prüfung: `backend_unavailable`. Dann MUST er Verlauf und Zeile entfernen, Views trennen, die Session vergessen. Scheitert ein Schritt, MUST die Session mit Views und Zeile bleiben; Entferntes bleibt entfernt, ein neues `delete` MUST fertig löschen. Währenddessen MUST Anhängen und jeder Lifecycle-Aufruf `invalid_state` ergeben.
 
 #### Scenario: Laufende Session löschen
 
@@ -78,7 +78,13 @@
 
 - **GIVEN** eine `Interrupted`-Session und ein Backend, das nicht verfügbar ist und dessen Existenzprüfung fehlschlägt
 - **WHEN** sie gelöscht wird
-- **THEN** gelingt das Löschen ohne Beenden im Backend
+- **THEN** schlägt der Aufruf mit `backend_unavailable` fehl, nichts ist gelöscht und das Backend hat nichts beendet
+
+#### Scenario: Erneutes Löschen nach Fehler
+
+- **GIVEN** eine `Exited`-Session mit View, deren Zeile sich beim ersten Versuch nicht entfernen lässt
+- **WHEN** sie gelöscht wird und danach erneut
+- **THEN** schlägt der erste Aufruf mit `internal` fehl, der Verlauf ist schon entfernt und Session, View und Zeile bleiben; der zweite Aufruf entfernt die Zeile und die Session
 
 #### Scenario: Archivierte Session löschen
 

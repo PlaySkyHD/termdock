@@ -1,7 +1,7 @@
 // End-to-end test of the assembled core against real WSL and tmux (issue #13, acceptance 09).
 // Only with TERMDOCK_WSL_TESTS=1 (local, not in CI). The core runs in-process through runCore.
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import { runWsl } from "./backend/wsl/processes.js";
 import { runCore } from "./bin/run-core.js";
 import type { RunCoreResult } from "./bin/run-core.js";
 import { connect, IpcError } from "./ipc/client.js";
+import { historySegmentPath, readHistory } from "./storage/history-store.js";
 import type { CoreClient } from "./ipc/client.js";
 
 const SOCKET = "termdock-test";
@@ -389,4 +390,59 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect((await list(c))[0]).toMatchObject({ id: session.id, state: "Running", writerViewId: viewId });
     expect(states).not.toContain("Interrupted");
   }, 120_000);
+
+  it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const { session } = (
+      await c.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    distros.add(session.launch.distro!);
+    // Counts instead of collecting: the program prints about 67 MB.
+    let received = 0;
+    let tail = "";
+    c.on("session.output", (_data, payload) => {
+      received += payload.length;
+      tail = (tail + decoder.decode(payload)).slice(-200);
+    });
+    const { viewId } = (await c.request("session.attach", { sessionId: session.id })).result;
+
+    await c.request(
+      "session.input",
+      { viewId },
+      new TextEncoder().encode("head -c 50M /dev/urandom | base64; echo load-done-$((20+22))\r"),
+    );
+    await waitFor(() => tail.includes("load-done-42"), "end of the load", 110_000);
+    // tmux hands the attached client what it draws, not every byte the program prints, so far less arrives.
+    expect(received).toBeGreaterThan(0);
+    await c.request("session.input", { viewId }, new TextEncoder().encode("echo flows-$((1+1))\r"));
+    await waitFor(() => tail.includes("flows-2"), "output after the load");
+
+    // The core writes in the background; wait until the files stop changing.
+    const usage = () =>
+      ([0, 1] as const).reduce<number>((sum, index) => {
+        try {
+          return sum + statSync(historySegmentPath(dataDir, session.id, index)).size;
+        } catch {
+          return sum;
+        }
+      }, 0);
+    let before = -1;
+    await waitFor(async () => {
+      const now = usage();
+      const settled = now === before;
+      before = now;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return settled;
+    }, "history settled");
+    expect(usage()).toBeLessThanOrEqual(10 * 1024 * 1024);
+    // At least limit / 2 of recent output is the guarantee of the unit test with 50 MiB through the registry.
+    expect(usage()).toBeGreaterThan(0);
+    // The newest output (the entries around the last command) is in the history.
+    let newest = "";
+    for await (const entry of readHistory(dataDir, session.id))
+      newest = (newest + decoder.decode(entry.data)).slice(-2000);
+    expect(newest).toContain("flows-2");
+  }, 180_000);
 });

@@ -227,6 +227,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     storage = openStorage({
       ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
       onLayoutInvalid: log,
+      onProfileInvalid: log,
     });
     repository.target = storage.sessions;
     layouts.target = storage.layouts;

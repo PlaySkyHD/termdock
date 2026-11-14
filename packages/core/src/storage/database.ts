@@ -61,6 +61,8 @@ export interface OpenStorageOptions {
   dataDir?: string;
   /** Receives the reason when the stored layout cannot be used; defaults to stderr. */
   onLayoutInvalid?: (message: string) => void;
+  /** Receives the reason when a stored profile cannot be used (it is skipped); defaults to stderr. */
+  onProfileInvalid?: (message: string) => void;
 }
 
 export function openStorage(options: OpenStorageOptions = {}): Storage {
@@ -75,7 +77,7 @@ export function openStorage(options: OpenStorageOptions = {}): Storage {
     sessions = new SqliteSessionRepository(db);
     layouts = new SqliteLayoutRepository(db, options.onLayoutInvalid);
     workspaces = new SqliteWorkspaceRepository(db);
-    profiles = new SqliteProfileRepository(db);
+    profiles = new SqliteProfileRepository(db, options.onProfileInvalid);
   } catch (error) {
     db.close();
     throw error;

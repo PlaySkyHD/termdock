@@ -20,10 +20,15 @@ import type { WorkspaceService } from "./service.js";
 /** `launch.cwd` of a profile that names no directory of its own: the session takes `defaultCwd(...)`. */
 export const PROFILE_DEFAULT_CWD = "~";
 
+/** Names of `launch.env` variables that obviously hold a secret; a profile does not store them in plain text. */
+const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)$/i;
+
 /** What a new session takes from its profile. */
 export interface ProfileLaunch {
   launch: LaunchSpec;
   loggingEnabled: boolean;
+  /** Workspace of the profile, the default of a session that names none. */
+  workspaceId?: string;
 }
 
 export class ProfileService {
@@ -62,7 +67,11 @@ export class ProfileService {
     if (params.workspaceId === null) delete merged.workspaceId;
     else if (params.workspaceId !== undefined) merged.workspaceId = params.workspaceId;
     if (params.projectId === null) delete merged.projectId;
-    else if (params.projectId !== undefined) merged.projectId = params.projectId;
+    else if (params.projectId !== undefined) {
+      merged.projectId = params.projectId;
+      // A new project without a workspace in the same request takes the workspace of that project, as on create.
+      if (params.workspaceId === undefined) delete merged.workspaceId;
+    }
     return this.store(merged, params.workspaceId === null);
   }
 
@@ -100,7 +109,9 @@ export class ProfileService {
         launch = { ...launch, cwd: defaultCwd(input) };
       }
     }
-    return { launch, loggingEnabled: profile.loggingEnabled };
+    const result: ProfileLaunch = { launch, loggingEnabled: profile.loggingEnabled };
+    if (profile.workspaceId !== undefined) result.workspaceId = profile.workspaceId;
+    return result;
   }
 
   /**
@@ -129,6 +140,15 @@ export class ProfileService {
     }
     const checked = validateLaunchProfile(profile);
     if (!checked.ok) throw new CoreError("bad_request", checked.error.message);
+    for (const key of Object.keys(profile.launch.env ?? {})) {
+      if (SECRET_ENV_KEY.test(key)) {
+        // The key only, never the value (security.instructions.md).
+        throw new CoreError(
+          "bad_request",
+          `launch.env key "${key.slice(0, 64)}" looks like a secret; credentials come from the CLI login or a protected environment variable, not from a profile`,
+        );
+      }
+    }
     this.repository.save(profile);
     return profile;
   }

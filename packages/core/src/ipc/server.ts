@@ -393,17 +393,20 @@ export class CoreServer {
         if (workspaceId !== undefined) this.workspaces.assertWorkspace(workspaceId);
         let resolved = launch;
         let profileLogging: boolean | undefined;
+        let sessionWorkspaceId = workspaceId;
         if (profileId !== undefined) {
           // settings: wird mit dem Settings-Repository (#60) verdrahtet
           const fromProfile = this.profiles.launchFor(profileId, launch, DEFAULT_SETTINGS);
           resolved = fromProfile.launch;
           profileLogging = fromProfile.loggingEnabled;
+          // The workspace of the profile (existing: the profile list drops a deleted one) is the default.
+          sessionWorkspaceId ??= fromProfile.workspaceId;
         }
         // The parser guarantees a launch spec when there is no profile.
         if (resolved === undefined) throw new CoreError("bad_request", "params.launch is required");
         const input: CreateSessionInput = { name, launch: resolved };
         if (size !== undefined) input.size = size;
-        if (workspaceId !== undefined) input.workspaceId = workspaceId;
+        if (sessionWorkspaceId !== undefined) input.workspaceId = sessionWorkspaceId;
         if (profileId !== undefined) input.profileId = profileId;
         const logging = loggingEnabled ?? profileLogging;
         if (logging !== undefined) input.loggingEnabled = logging;

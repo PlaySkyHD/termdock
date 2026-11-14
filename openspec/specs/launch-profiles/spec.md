@@ -39,7 +39,7 @@ Der Core SHALL höchstens 64 Profile zulassen (sonst `invalid_state`) und das zu
 
 ### Requirement: Bindung an Workspace und Projekt
 
-Der Core SHALL beim Anlegen und Ändern eines Profils prüfen, dass `workspaceId` und `projectId` bestehen (sonst `not_found`) und dass das Projekt zum Workspace gehört (sonst `bad_request`). Fehlt `workspaceId` bei gesetztem `projectId`, MUST der Core den Workspace des Projekts eintragen; `workspaceId: null` bei bleibendem Projekt MUST `bad_request` ergeben. Eine abgelehnte Anfrage MUST nichts speichern.
+Der Core SHALL beim Anlegen und Ändern eines Profils prüfen, dass `workspaceId` und `projectId` bestehen (sonst `not_found`) und dass das Projekt zum Workspace gehört (sonst `bad_request`). Fehlt `workspaceId` bei gesetztem `projectId`, MUST der Core den Workspace des Projekts eintragen, auch bei `profile.update` mit neuem `projectId`; `workspaceId: null` bei bleibendem Projekt MUST `bad_request` ergeben. Eine abgelehnte Anfrage MUST nichts speichern.
 
 #### Scenario: Projekt eines anderen Workspace
 
@@ -53,6 +53,12 @@ Der Core SHALL beim Anlegen und Ändern eines Profils prüfen, dass `workspaceId
 - **WHEN** ein Client ein Profil nur mit `projectId: "p1"` anlegt
 - **THEN** trägt das gespeicherte Profil `workspaceId: "w1"`
 
+#### Scenario: Projekt wechseln
+
+- **GIVEN** ein Profil mit Projekt `p1` im Workspace `w1` und ein Projekt `p2` im Workspace `w2`
+- **WHEN** ein Client `profile.update { profileId, projectId: "p2" }` ohne `workspaceId` aufruft
+- **THEN** trägt das Profil danach `workspaceId: "w2"` und `projectId: "p2"`; mit `workspaceId: "w1"` in der Anfrage antwortet der Core mit `bad_request`
+
 #### Scenario: Unbekannte IDs
 
 - **GIVEN** ein Core ohne Workspace `nope`
@@ -61,7 +67,13 @@ Der Core SHALL beim Anlegen und Ändern eines Profils prüfen, dass `workspaceId
 
 ### Requirement: Session aus einem Profil anlegen
 
-Der Core SHALL bei `session.create` mit `profileId` ohne `launch` den `LaunchSpec` des Profils übernehmen; ein ausdrückliches `launch` MUST den Spec als Ganzes ersetzen. `loggingEnabled` der Anfrage MUST vor dem des Profils gelten. Die Session MUST die `profileId` tragen. Ein unbekanntes Profil MUST `not_found` ergeben und keine Session anlegen. Der Befehl bleibt ein Argument-Array; `env` enthält keine Geheimnisse, Zugangsdaten kommen aus bestehenden CLI-Logins.
+Der Core SHALL bei `session.create` mit `profileId` ohne `launch` den `LaunchSpec` des Profils übernehmen; ein ausdrückliches `launch` MUST den Spec als Ganzes ersetzen. `loggingEnabled` der Anfrage MUST vor dem des Profils gelten. Die Session MUST die `profileId` tragen und, wenn die Anfrage keine `workspaceId` nennt, die `workspaceId` des Profils. Ein unbekanntes Profil MUST `not_found` ergeben und keine Session anlegen. Der Befehl bleibt ein Argument-Array.
+
+#### Scenario: Workspace des Profils
+
+- **GIVEN** ein Profil im Workspace `w1` und ein Workspace `w2`
+- **WHEN** ein Client `session.create { name, profileId }` aufruft, danach mit `workspaceId: "w2"`, und nach dem Löschen von `w1` erneut ohne
+- **THEN** liegt die erste Session in `w1`, die zweite in `w2` und die dritte in keinem Workspace
 
 #### Scenario: Anlegen aus Profil
 
@@ -119,9 +131,25 @@ Der Core SHALL nach jeder gespeicherten Änderung an Profilen das Event `profile
 - **WHEN** das eine Projekt und danach der andere Workspace gelöscht werden
 - **THEN** erhält B nach jedem Löschen ein `profile.changed`: erst ohne das Projekt (Workspace bleibt), dann ohne Workspace und Projekt; die Profile bestehen weiter
 
+### Requirement: Keine Geheimnisse in Profilen
+
+Der Core SHALL beim Anlegen und Ändern eines Profils jeden Schlüssel von `launch.env` mit `bad_request` ablehnen, dessen Name auf `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `PRIVATE_KEY`, `CREDENTIAL` oder `CREDENTIALS` endet (Groß- und Kleinschreibung egal, Unterstrich in `API_KEY` und Co. optional). Die Meldung MUST den Schlüssel nennen, nie den Wert. Zugangsdaten kommen aus bestehenden CLI-Logins oder geschützten Umgebungsvariablen.
+
+#### Scenario: Geheimnis in der Umgebung
+
+- **GIVEN** ein Core ohne Profile
+- **WHEN** ein Client ein Profil mit `launch.env { GITHUB_TOKEN: "abc" }` anlegt, oder ein bestehendes Profil mit `launch.env { NPM_TOKEN: "abc" }` ändert
+- **THEN** antwortet der Core mit `bad_request`, die Meldung nennt den Schlüssel und nicht `abc`, und nichts wird gespeichert; `LANG` oder `TOKENS_PER_MIN` sind erlaubt
+
 ### Requirement: Profile bleiben über Neustarts
 
-Der Core SHALL Profile in der Tabelle `launch_profiles` speichern und beim Start über `profile.list` wieder liefern, mit `command` und `env` unverändert. Löschen eines Workspace oder Projekts MUST das Profil bestehen lassen und nur die Bindung entfernen.
+Der Core SHALL Profile in der Tabelle `launch_profiles` speichern und beim Start über `profile.list` wieder liefern, mit `command` und `env` unverändert. Löschen eines Workspace oder Projekts MUST das Profil bestehen lassen und nur die Bindung entfernen. Eine nicht lesbare oder ungültige Zeile MUST der Core überspringen und melden, ohne dass `profile.*` ausfällt.
+
+#### Scenario: Beschädigte Zeile
+
+- **GIVEN** eine gespeicherte Zeile mit ungültigem JSON in `command` neben einem gültigen Profil
+- **WHEN** ein Client `profile.list` aufruft
+- **THEN** liefert der Core nur das gültige Profil und meldet die Zeile mit ihrer ID im Log; `profile.delete` der beschädigten ID gelingt
 
 #### Scenario: Neustart
 

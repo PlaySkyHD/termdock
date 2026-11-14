@@ -1,5 +1,6 @@
 // Stored launch profiles (ADR 0004, table `launch_profiles`).
 import type { DatabaseSync, StatementSync } from "node:sqlite";
+import { validateLaunchProfile } from "@termdock/protocol";
 import type { BackendKind, LaunchProfile, LaunchSpec, WindowsShell } from "@termdock/protocol";
 
 export interface ProfileRepository {
@@ -34,7 +35,12 @@ export class SqliteProfileRepository implements ProfileRepository {
   private readonly upsert: StatementSync;
   private readonly remove: StatementSync;
 
-  constructor(db: DatabaseSync) {
+  /** `onInvalid` receives the reason when a stored row cannot be used; defaults to stderr. */
+  constructor(
+    db: DatabaseSync,
+    private readonly onInvalid: (message: string) => void = (message) =>
+      void process.stderr.write(`termdock-core: ${message}\n`),
+  ) {
     // rowid keeps the creation order; an upsert does not change it.
     this.selectAll = db.prepare("SELECT * FROM launch_profiles ORDER BY rowid");
     this.upsert = db.prepare(`
@@ -54,8 +60,21 @@ export class SqliteProfileRepository implements ProfileRepository {
     this.remove = db.prepare("DELETE FROM launch_profiles WHERE id = :id");
   }
 
+  /** A row that cannot be read or fails validation is skipped and reported: it must not block every `profile.*`. */
   list(): LaunchProfile[] {
-    return this.selectAll.all().map(profileFromRow);
+    const profiles: LaunchProfile[] = [];
+    for (const row of this.selectAll.all()) {
+      try {
+        const profile = profileFromRow(row);
+        const checked = validateLaunchProfile(profile);
+        if (!checked.ok) throw new Error(checked.error.message);
+        profiles.push(profile);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unknown";
+        this.onInvalid(`stored profile ${String(row.id).slice(0, 64)} is not usable: ${reason}`);
+      }
+    }
+    return profiles;
   }
 
   save(profile: LaunchProfile): void {

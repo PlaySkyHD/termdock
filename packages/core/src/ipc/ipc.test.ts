@@ -1518,6 +1518,79 @@ describe("launch profiles (issue #58)", () => {
     expect((await a.request("session.list", {})).result.sessions).toEqual([]);
   });
 
+  it("takes the workspace of a new project on update when the request names none", async () => {
+    const { a } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const two = await workspaceWithProject(a, "two", "/home/dev/other");
+    const { profile } = (
+      await a.request("profile.create", { name: "p", launch: claude, projectId: one.project.id })
+    ).result;
+    const moved = (await a.request("profile.update", { profileId: profile.id, projectId: two.project.id }))
+      .result.profile;
+    expect(moved).toMatchObject({ workspaceId: two.workspace.id, projectId: two.project.id });
+    // A workspace named in the request still has to match.
+    expect(
+      await errorCode(
+        a.request("profile.update", {
+          profileId: profile.id,
+          workspaceId: one.workspace.id,
+          projectId: two.project.id,
+        }),
+      ),
+    ).toBe("bad_request");
+  });
+
+  it("gives a session from a profile the workspace of the profile unless the request names another", async () => {
+    const { a } = await setup();
+    const one = await workspaceWithProject(a, "one");
+    const other = (await a.request("workspace.create", { name: "other" })).result.workspace;
+    const { profile } = (
+      await a.request("profile.create", { name: "p", launch: claude, workspaceId: one.workspace.id })
+    ).result;
+    const plain = (await a.request("profile.create", { name: "plain", launch: claude })).result.profile;
+
+    const inherited = (await a.request("session.create", { name: "s", profileId: profile.id })).result
+      .session;
+    const named = (
+      await a.request("session.create", { name: "s", profileId: profile.id, workspaceId: other.id })
+    ).result.session;
+    const none = (await a.request("session.create", { name: "s", profileId: plain.id })).result.session;
+    expect(inherited.workspaceId).toBe(one.workspace.id);
+    expect(named.workspaceId).toBe(other.id);
+    expect(none.workspaceId).toBeUndefined();
+
+    // A deleted workspace is not inherited.
+    await a.request("workspace.delete", { workspaceId: one.workspace.id });
+    const after = (await a.request("session.create", { name: "s", profileId: profile.id })).result.session;
+    expect(after.workspaceId).toBeUndefined();
+  });
+
+  it("refuses launch.env keys that look like secrets, naming the key but not the value", async () => {
+    const { a } = await setup();
+    const withEnv = (env: Record<string, string>) => ({ name: "p", launch: { ...claude, env } });
+    for (const key of ["GITHUB_TOKEN", "db_password", "OpenAiApiKey", "AWS_SECRET", "API_KEY"]) {
+      const failure = await a
+        .request("profile.create", withEnv({ [key]: "hunter2" }))
+        .catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(IpcError);
+      const { code, message } = failure as IpcError;
+      expect(code).toBe("bad_request");
+      expect(message).toContain(key);
+      expect(message).not.toContain("hunter2");
+    }
+    const { profile } = (await a.request("profile.create", withEnv({ LANG: "C", TOKENS_PER_MIN: "5" })))
+      .result;
+    expect(
+      await errorCode(
+        a.request("profile.update", {
+          profileId: profile.id,
+          launch: { ...claude, env: { NPM_TOKEN: "x" } },
+        }),
+      ),
+    ).toBe("bad_request");
+    expect((await a.request("profile.list", {})).result.profiles).toEqual([profile]);
+  });
+
   it("fills a profile cwd of ~ in the order project, workspace, setting, ~", async () => {
     const { a } = await setup();
     const home = { backend: "wsl", cwd: "~", command: ["bash"] } as const;

@@ -170,16 +170,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
     throw new Error(`The editor lost its input: ${JSON.stringify(values)}`);
   if ((await profiles()).length !== before + 2) throw new Error("The refused profile was stored");
   // The message must be in the visible part of the scrolling panel, not below it (PR #115).
-  await waitFor(
-    `(() => {
-      const error = ${exists(`${EDITOR} [data-settings="error"]`)}.getBoundingClientRect();
-      const panel = document.querySelector('.settings__panel').getBoundingClientRect();
-      return error.top >= panel.top && error.bottom <= panel.bottom;
-    })()`,
-    "the refusal to be visible in the panel",
-    5_000,
-  );
-  await capture("65-settings-profile-error.png");
+  await capture("65-settings-profile-error.png", { visible: `${EDITOR} [data-settings="error"]` });
   log("settings: the core refused the secret-like env name");
 
   // --- Escape: first back to the list, then the dialog closes; the menu entry opens it again ------------------

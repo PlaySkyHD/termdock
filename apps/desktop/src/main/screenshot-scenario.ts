@@ -4,8 +4,7 @@
 // (clicks through `webContents.executeJavaScript`, `data-` attributes of the sidebar) and the sessions through the
 // bridge, so what is captured is what the app shows. Needs Electron, WSL and the isolated core; no unit test.
 import { execFile } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { SessionInfo } from "@termdock/protocol";
@@ -15,12 +14,14 @@ import type { CorePort } from "./core-connection.js";
 import { SCENE_GROUPS } from "./screenshot.js";
 import type { QuietWatch, SceneGroup } from "./screenshot.js";
 import { cwdScenes } from "./screenshot-cwd.js";
+import { captureWindow } from "./screenshot-page.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
 import { sidebarScenes } from "./screenshot-sidebar.js";
 import { snapScenes } from "./screenshot-snap.js";
 import { tabScenes } from "./screenshot-tabs.js";
+import type { CaptureOptions } from "./screenshot-visible.js";
 
 const run = promisify(execFile);
 
@@ -136,12 +137,8 @@ export async function runScenario(
     await sleep(300);
   };
 
-  const capture = async (win: BrowserWindow, name: string): Promise<void> => {
-    await sleep(300); // one more frame
-    const file = path.join(dir, name);
-    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
-    console.log(file);
-  };
+  const capture = (win: BrowserWindow, name: string, options?: CaptureOptions): Promise<void> =>
+    captureWindow(win, dir, name, options);
 
   if (NEEDS_SESSIONS.some(want)) {
     const main = createWindow(1100, 680);
@@ -247,7 +244,7 @@ export async function runScenario(
  */
 async function quitScenes(
   { createWindow, core, decideQuit, log }: ScenarioDeps,
-  capture: (win: BrowserWindow, name: string) => Promise<void>,
+  capture: (win: BrowserWindow, name: string, options?: CaptureOptions) => Promise<void>,
 ): Promise<void> {
   const win = createWindow(1100, 680);
   win.webContents.setBackgroundThrottling(false);
@@ -278,7 +275,7 @@ async function quitScenes(
   const asked = decideQuit(win);
   await waitFor(DIALOG, "the quit dialog");
   await sleep(500);
-  await capture(win, "24-quit-dialog.png");
+  await capture(win, "24-quit-dialog.png", { visible: '[data-dialog="quit"]' });
 
   // "Nicht mehr fragen" with "Abbrechen": cancelled, nothing stored.
   await click('[data-quit="remember"]');
@@ -357,7 +354,7 @@ const PANES_EXPRESSION = `[...document.querySelectorAll('.pane[data-tab-active="
 
 async function splitScenes(
   { bridge, watch, createWindow, log, tmuxSocket }: ScenarioDeps,
-  capture: (win: BrowserWindow, name: string) => Promise<void>,
+  capture: (win: BrowserWindow, name: string, options?: CaptureOptions) => Promise<void>,
   /** Detached so far; it joins a split as a third session. */
   notes: SessionInfo,
 ): Promise<void> {
@@ -756,7 +753,7 @@ async function splitScenes(
  */
 async function keymapScenes(
   { bridge, createWindow, log }: ScenarioDeps,
-  capture: (win: BrowserWindow, name: string) => Promise<void>,
+  capture: (win: BrowserWindow, name: string, options?: CaptureOptions) => Promise<void>,
 ): Promise<void> {
   const win = createWindow(1280, 800);
   const windowId = win.webContents.id;

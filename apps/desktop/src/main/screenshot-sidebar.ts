@@ -185,7 +185,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
   mouse("mouseDown", target.x, target.y, "right");
   mouse("mouseUp", target.x, target.y, "right");
   await waitFor(`document.querySelector('[role="menu"]')`, "the context menu");
-  await capture("84-context-menu.png");
+  await capture("84-context-menu.png", { visible: '[role="menu"]' });
   await key("Escape");
   await waitFor(`!document.querySelector('[role="menu"]')`, "the menu to close on Escape");
   expect(
@@ -227,7 +227,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     (await evaluate<boolean>(`document.activeElement?.dataset?.confirm === 'cancel'`)) === true,
     "the default of the confirmation is not Abbrechen",
   );
-  await capture("85-delete-confirm.png");
+  await capture("85-delete-confirm.png", { visible: '[data-dialog="confirm"]' });
   // Escape cancels and changes nothing.
   await key("Escape");
   await waitFor(`!document.querySelector('[data-dialog="confirm"]')`, "the confirmation to close on Escape");

@@ -74,7 +74,7 @@ export async function cwdScenes(deps: ScenarioDeps): Promise<void> {
   await watch.quiet(800, 15_000);
   if (!(await rows()).some((row) => row.trim() === "cwd=/"))
     throw new Error(`The shell does not run in /: ${JSON.stringify(await rows())}`);
-  await capture("70-cwd-missing-warning.png");
+  await capture("70-cwd-missing-warning.png", { visible: HINT });
   log(`cwd: API started in / with the hint for ${missing} in ${distro}`);
 
   // --- Closing the hint hides it; the terminal keeps its input ------------------------------------------------

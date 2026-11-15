@@ -30,14 +30,16 @@ import {
   cleanStaleSockets,
   isolatedCore,
   QuietWatch,
+  SCENE_GROUPS,
   screenshotDir,
+  screenshotScenes,
   screenshotProfileDir,
   settleWithin,
   staleProfileDirs,
   stopIsolatedCore,
   wslSocketDeps,
 } from "./screenshot.js";
-import type { IsolatedCore } from "./screenshot.js";
+import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { fitBounds } from "./window-geometry.js";
@@ -53,12 +55,24 @@ const QUIT_SAVE_TIMEOUT_MS = 3_000;
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
 
 let shotDir: string | undefined;
-let badArguments = false;
+let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
+/** Exit code of a run that stops on its arguments before anything starts. */
+let badArguments: number | undefined;
 try {
   shotDir = screenshotDir(process.argv);
 } catch (error) {
   log(error instanceof Error ? error.message : String(error));
-  badArguments = true;
+  badArguments = 2;
+}
+if (shotDir !== undefined) {
+  try {
+    shotScenes = screenshotScenes(process.argv);
+  } catch (error) {
+    // Checked before the isolated core starts: a typo in the groups must not cost a run.
+    log(error instanceof Error ? error.message : String(error));
+    shotDir = undefined;
+    badArguments = 1;
+  }
 }
 
 // The screenshot run gets its own core and its own Electron profile before anything else happens, so it can
@@ -85,9 +99,9 @@ if (shotDir !== undefined) {
 }
 const pipePath = isolated?.pipePath ?? defaultPipeName();
 
-if (badArguments) {
+if (badArguments !== undefined) {
   // Without a directory the run would fall back to the productive core; stop before anything starts.
-  app.exit(2);
+  app.exit(badArguments);
 } else if (shotDir === undefined && !app.requestSingleInstanceLock()) {
   // Another app runs; it opens a window in its own main process (see "second-instance").
   app.exit(0);
@@ -342,7 +356,7 @@ async function main(): Promise<void> {
   if (shotDir !== undefined) {
     // The scenario closes and reopens windows itself; that must not end the app.
     app.on("window-all-closed", () => {});
-    await runScreenshot(shotDir, client, bridge, {
+    await runScreenshot(shotDir, shotScenes, client, bridge, {
       createWindow: (width, height) => {
         const win = createWindow(width, height);
         if (!win) throw new Error("Too many windows");
@@ -386,6 +400,7 @@ function isAlive(pid: number): boolean {
 /** Plays the scenes of `screenshot-scenario.ts`, then ends the isolated core and its sessions. */
 async function runScreenshot(
   dir: string,
+  groups: readonly SceneGroup[],
   client: CoreClient,
   bridge: DesktopBridge,
   control: ScenarioControl,
@@ -417,7 +432,7 @@ async function runScreenshot(
   try {
     const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
     if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
-    await runScenario({ dir, bridge, watch, log, tmuxSocket, core: client, ...control });
+    await runScenario({ dir, bridge, watch, log, tmuxSocket, core: client, ...control }, groups);
   } catch (error) {
     log(`screenshot failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     exitCode = 1;

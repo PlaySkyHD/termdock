@@ -12,7 +12,8 @@ import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
-import type { QuietWatch } from "./screenshot.js";
+import { SCENE_GROUPS } from "./screenshot.js";
+import type { QuietWatch, SceneGroup } from "./screenshot.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
@@ -68,11 +69,22 @@ const sessionSelector = (name: string): string => `[data-session-name=${JSON.str
 const stateSelector = (name: string, state: string): string =>
   `document.querySelector(${JSON.stringify(`${sessionSelector(name)}[data-state="${state}"]`)})`;
 
-export async function runScenario(deps: ScenarioDeps): Promise<void> {
+/** Groups that start from the five sessions of "Sessions in every state"; the others create what they need. */
+const NEEDS_SESSIONS: readonly SceneGroup[] = ["scenario", "sidebar", "restore", "quit"];
+
+/**
+ * Plays the scene `groups` (all by default) in the order of `SCENE_GROUPS`. Every group builds its own state, so
+ * each also runs alone (`--scenes <group>`): `sidebar`, `restore` and `quit` share the sessions Build, Logs, Notes,
+ * Done (Exited) and Lost (Interrupted) of the first section, `restore` adds Editor, Shell and Misc itself, and
+ * `tabs`, `snap`, `search` and `settings` create their own sessions.
+ */
+export async function runScenario(
+  deps: ScenarioDeps,
+  groups: readonly SceneGroup[] = SCENE_GROUPS,
+): Promise<void> {
   const { dir, bridge, watch, createWindow, log, tmuxSocket } = deps;
   mkdirSync(dir, { recursive: true });
-  const main = createWindow(1100, 680);
-  const mainId = main.webContents.id;
+  const want = (group: SceneGroup): boolean => groups.includes(group);
 
   const evaluate = <T>(win: BrowserWindow, expression: string): Promise<T> =>
     win.webContents.executeJavaScript(expression, true) as Promise<T>;
@@ -130,92 +142,98 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
     console.log(file);
   };
 
-  // --- Sessions in every state ---------------------------------------------------------------
-  await waitFor(main, `document.querySelector('[data-view="empty"]')`, "the empty window");
-  const created = new Map<string, SessionInfo>();
-  for (const name of ["Build", "Logs", "Notes", "Done", "Lost"]) {
-    // `/` instead of `~`, so no personal file name appears in a picture.
-    const result = await bridge.call(mainId, {
-      method: "createSession",
-      params: { name, launch: { backend: "wsl", cwd: "/" } },
-    });
-    if (!result.ok) throw new Error(`createSession ${name}: ${result.error.message}`);
-    created.set(name, result.value as SessionInfo);
-    log(`created ${name}`);
+  if (NEEDS_SESSIONS.some(want)) {
+    const main = createWindow(1100, 680);
+    const mainId = main.webContents.id;
+    // --- Sessions in every state ---------------------------------------------------------------
+    await waitFor(main, `document.querySelector('[data-view="empty"]')`, "the empty window");
+    const created = new Map<string, SessionInfo>();
+    for (const name of ["Build", "Logs", "Notes", "Done", "Lost"]) {
+      // `/` instead of `~`, so no personal file name appears in a picture.
+      const result = await bridge.call(mainId, {
+        method: "createSession",
+        params: { name, launch: { backend: "wsl", cwd: "/" } },
+      });
+      if (!result.ok) throw new Error(`createSession ${name}: ${result.error.message}`);
+      created.set(name, result.value as SessionInfo);
+      log(`created ${name}`);
+    }
+    const session = (name: string): SessionInfo => {
+      const found = created.get(name);
+      if (!found) throw new Error(`no session ${name}`);
+      return found;
+    };
+    // Every window learned about them from the core's `session.created`.
+    await waitFor(main, `document.querySelectorAll('[data-session-name]').length === 5`, "five sessions");
+
+    // Notes stays detached; the other four open as tabs.
+    await openSession(main, session("Build"));
+    await typeCommand(main, session("Build"), "ls --color /");
+    await openSession(main, session("Logs"));
+    await typeCommand(main, session("Logs"), "uname -sr");
+    await openSession(main, session("Done"));
+    await type(main, session("Done"), "exit\r");
+    await waitFor(main, stateSelector("Done", "Exited"), "Done to be Exited");
+    await openSession(main, session("Lost"));
+    // Kills the tmux session behind the view, as a crash of WSL or tmux would.
+    const { distro } = session("Lost").launch;
+    if (distro === undefined) throw new Error("The created session has no distro");
+    await wsl([
+      ...["-d", distro, "--cd", "~", "--exec", "tmux", "-L", tmuxSocket],
+      ...["kill-session", "-t", `=td-${session("Lost").id}`],
+    ]);
+    await waitFor(main, stateSelector("Lost", "Interrupted"), "Lost to be Interrupted");
+    await click(main, sessionSelector("Build")); // focuses the open tab
+    await waitFor(main, `document.querySelector('.tab--active[data-tab-title="Build"]')`, "the Build tab");
+
+    if (want("scenario")) {
+      await capture(main, "01-sidebar-sessions-tabs.png");
+
+      // --- Collapsed sidebar ---------------------------------------------------------------------
+      await click(main, '[data-action="toggle-sidebar"]');
+      await waitFor(main, `!document.querySelector('.sidebar')`, "the sidebar to collapse");
+      await sleep(800); // the writer fits the wider area
+      await capture(main, "02-sidebar-collapsed.png");
+
+      // --- A second window: own tabs, empty, with the form -----------------------------------------
+      const second = createWindow(900, 560);
+      await waitFor(
+        second,
+        `document.querySelectorAll('[data-session-name]').length === 5`,
+        "the sessions in window 2",
+      );
+      await click(second, '[data-action="new-session"]');
+      await waitFor(second, `document.querySelector('[data-form="new-session"]')`, "the form");
+      await capture(second, "03-new-window-empty-form.png");
+      await click(second, '[data-action="new-session"]'); // closes the form
+
+      // A session that is gone opens a notice instead of a view, and no view is attached for it.
+      await click(second, sessionSelector("Done"));
+      await click(second, sessionSelector("Lost"));
+      await waitFor(
+        second,
+        `document.querySelector('.pane[data-tab-active="true"] [data-view="notice"]')`,
+        "the notice",
+      );
+      if (viewOf(second, session("Lost").id) !== undefined) throw new Error("Lost must not be attached");
+      await capture(second, "04-interrupted-notice.png");
+
+      // The same session as in window 1: this window reads.
+      await openSession(second, session("Build"));
+      await waitFor(second, `document.querySelector('.status-bar--reader')`, "the reader role");
+      await capture(second, "05-reader.png");
+
+      await splitScenes(deps, capture, session("Notes"));
+      await keymapScenes(deps, capture);
+    }
   }
-  const session = (name: string): SessionInfo => {
-    const found = created.get(name);
-    if (!found) throw new Error(`no session ${name}`);
-    return found;
-  };
-  // Every window learned about them from the core's `session.created`.
-  await waitFor(main, `document.querySelectorAll('[data-session-name]').length === 5`, "five sessions");
-
-  // Notes stays detached; the other four open as tabs.
-  await openSession(main, session("Build"));
-  await typeCommand(main, session("Build"), "ls --color /");
-  await openSession(main, session("Logs"));
-  await typeCommand(main, session("Logs"), "uname -sr");
-  await openSession(main, session("Done"));
-  await type(main, session("Done"), "exit\r");
-  await waitFor(main, stateSelector("Done", "Exited"), "Done to be Exited");
-  await openSession(main, session("Lost"));
-  // Kills the tmux session behind the view, as a crash of WSL or tmux would.
-  const { distro } = session("Lost").launch;
-  if (distro === undefined) throw new Error("The created session has no distro");
-  await wsl([
-    ...["-d", distro, "--cd", "~", "--exec", "tmux", "-L", tmuxSocket],
-    ...["kill-session", "-t", `=td-${session("Lost").id}`],
-  ]);
-  await waitFor(main, stateSelector("Lost", "Interrupted"), "Lost to be Interrupted");
-  await click(main, sessionSelector("Build")); // focuses the open tab
-  await waitFor(main, `document.querySelector('.tab--active[data-tab-title="Build"]')`, "the Build tab");
-
-  await capture(main, "01-sidebar-sessions-tabs.png");
-
-  // --- Collapsed sidebar ---------------------------------------------------------------------
-  await click(main, '[data-action="toggle-sidebar"]');
-  await waitFor(main, `!document.querySelector('.sidebar')`, "the sidebar to collapse");
-  await sleep(800); // the writer fits the wider area
-  await capture(main, "02-sidebar-collapsed.png");
-
-  // --- A second window: own tabs, empty, with the form -----------------------------------------
-  const second = createWindow(900, 560);
-  await waitFor(
-    second,
-    `document.querySelectorAll('[data-session-name]').length === 5`,
-    "the sessions in window 2",
-  );
-  await click(second, '[data-action="new-session"]');
-  await waitFor(second, `document.querySelector('[data-form="new-session"]')`, "the form");
-  await capture(second, "03-new-window-empty-form.png");
-  await click(second, '[data-action="new-session"]'); // closes the form
-
-  // A session that is gone opens a notice instead of a view, and no view is attached for it.
-  await click(second, sessionSelector("Done"));
-  await click(second, sessionSelector("Lost"));
-  await waitFor(
-    second,
-    `document.querySelector('.pane[data-tab-active="true"] [data-view="notice"]')`,
-    "the notice",
-  );
-  if (viewOf(second, session("Lost").id) !== undefined) throw new Error("Lost must not be attached");
-  await capture(second, "04-interrupted-notice.png");
-
-  // The same session as in window 1: this window reads.
-  await openSession(second, session("Build"));
-  await waitFor(second, `document.querySelector('.status-bar--reader')`, "the reader role");
-  await capture(second, "05-reader.png");
-
-  await splitScenes(deps, capture, session("Notes"));
-  await keymapScenes(deps, capture);
-  await sidebarScenes(deps);
-  await tabScenes(deps);
-  await snapScenes(deps);
-  await restoreScenes(deps, wsl);
-  await quitScenes(deps, capture);
-  await searchScenes(deps);
-  await settingsScenes(deps);
+  if (want("sidebar")) await sidebarScenes(deps);
+  if (want("tabs")) await tabScenes(deps);
+  if (want("snap")) await snapScenes(deps);
+  if (want("restore")) await restoreScenes(deps, wsl);
+  if (want("quit")) await quitScenes(deps, capture);
+  if (want("search")) await searchScenes(deps);
+  if (want("settings")) await settingsScenes(deps);
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------

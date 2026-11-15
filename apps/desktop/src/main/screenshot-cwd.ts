@@ -69,7 +69,8 @@ export async function cwdScenes(deps: ScenarioDeps): Promise<void> {
   // The hint tells the truth: the shell runs in /.
   await type(view, "PS1='$ '; clear\r");
   await sleep(600);
-  await type(view, "printf 'cwd=%s\\n' \"$PWD\"\r");
+  // Two empty lines first: the hint lies over the top rows of the terminal.
+  await type(view, "printf '\\n\\ncwd=%s\\n' \"$PWD\"\r");
   await watch.quiet(800, 15_000);
   if (!(await rows()).some((row) => row.trim() === "cwd=/"))
     throw new Error(`The shell does not run in /: ${JSON.stringify(await rows())}`);

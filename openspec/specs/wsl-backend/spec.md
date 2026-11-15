@@ -229,6 +229,12 @@ Beim Start einer Session SHALL das WSL-Backend ein absolutes `cwd` (bis 512 Zeic
 - **WHEN** die Session gestartet wird
 - **THEN** startet sie wie bisher und die PTY trägt keine Warnung
 
+#### Scenario: Hängende Prüfung hält den Start höchstens 1 s auf
+
+- **GIVEN** der Statusaufruf ist fertig, der Prüfaufruf antwortet nicht (etwa eine hängende Freigabe unter `/mnt`)
+- **WHEN** die Session gestartet wird
+- **THEN** wartet der Start höchstens 1 s länger, startet ohne Warnung, und eine spätere Antwort ändert daran nichts
+
 #### Scenario: Keine Prüfung für das Home-Verzeichnis
 
 - **GIVEN** ein `cwd` `~` oder `~/src`

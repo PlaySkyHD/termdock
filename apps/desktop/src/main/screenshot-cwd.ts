@@ -69,11 +69,37 @@ export async function cwdScenes(deps: ScenarioDeps): Promise<void> {
   // The hint tells the truth: the shell runs in /.
   await type(view, "PS1='$ '; clear\r");
   await sleep(600);
-  // Two empty lines first: the hint lies over the top rows of the terminal.
-  await type(view, "printf '\\n\\ncwd=%s\\n' \"$PWD\"\r");
+  await type(view, "printf 'cwd=%s\\n' \"$PWD\"\r");
   await watch.quiet(800, 15_000);
   if (!(await rows()).some((row) => row.trim() === "cwd=/"))
     throw new Error(`The shell does not run in /: ${JSON.stringify(await rows())}`);
+  // The hint blocks nothing (review PR #126): it is one line at the bottom, row 0 belongs to the terminal, and the
+  // mouse goes through the hint's text to the terminal; only the close button takes it.
+  const layout = await evaluate<{
+    row0: boolean;
+    through: boolean;
+    button: boolean;
+    lines: number[];
+  }>(`(() => {
+    const pane = document.querySelector('.pane[data-tab-active="true"]');
+    const hint = pane.querySelector('[data-hint="session-warnings"]');
+    const row = pane.querySelector('.xterm-rows > div').getBoundingClientRect();
+    const at = (x, y) => document.elementFromPoint(x, y);
+    const row0 = at(row.left + 20, row.top + row.height / 2);
+    const text = hint.querySelector('.pane-warning__fixed').getBoundingClientRect();
+    const through = at(text.left + 4, text.top + text.height / 2);
+    const close = hint.querySelector('[data-action="dismiss-warnings"]').getBoundingClientRect();
+    const button = at(close.left + close.width / 2, close.top + close.height / 2);
+    return {
+      row0: Boolean(row0 && row0.closest('.terminal-pane') && !row0.closest('[data-hint]')),
+      through: Boolean(through && !through.closest('[data-hint]')),
+      button: Boolean(button && button.closest('[data-action="dismiss-warnings"]')),
+      // Height of each text line in px; one line of the 12 px font stays below 20.
+      lines: [...hint.querySelectorAll('.pane-warning__text')].map((line) => line.getBoundingClientRect().height),
+    };
+  })()`);
+  if (!layout.row0 || !layout.through || !layout.button || layout.lines.some((height) => height >= 20))
+    throw new Error(`The hint blocks the terminal or wraps: ${JSON.stringify(layout)}`);
   await capture("70-cwd-missing-warning.png", { visible: HINT });
   log(`cwd: API started in / with the hint for ${missing} in ${distro}`);
 

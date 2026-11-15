@@ -73,17 +73,27 @@ export function stateText(session: SessionInfo): string {
     : session.state;
 }
 
+/** One warning as the pane shows it: `before`, the (shortened) `path`, `after`; `text` is the whole sentence. */
+export interface WarningText {
+  text: string;
+  before: string;
+  path: string;
+  after: string;
+}
+
 /**
  * Texts of the warnings of a session's run that the window has not dismissed (#113), one per known code; codes of a
  * newer core are left out. `cwd_missing`: wsl.exe cannot change into the directory and starts the shell in `/`.
  */
-export function warningTexts(session: SessionInfo | undefined, dismissed: readonly string[]): string[] {
+export function warningTexts(session: SessionInfo | undefined, dismissed: readonly string[]): WarningText[] {
   if (!session?.warnings || dismissed.includes(session.id) || !isAttachable(session.state)) return [];
-  const texts: string[] = [];
+  const texts: WarningText[] = [];
   for (const warning of session.warnings) {
     if (warning.code !== "cwd_missing" || warning.path === undefined) continue;
     const distro = warning.distro ?? session.launch.distro ?? "der WSL-Distribution";
-    texts.push(`Verzeichnis ${warning.path} fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`);
+    const before = "Verzeichnis ";
+    const after = ` fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`;
+    texts.push({ text: `${before}${warning.path}${after}`, before, path: warning.path, after });
   }
   return texts;
 }

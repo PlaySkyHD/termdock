@@ -443,6 +443,30 @@ describe("WslBackend: missing working directory", () => {
     backend.dispose();
   });
 
+  it("waits at most cwdCheckGraceMs for the check after the status call, then starts without a warning (review PR #126)", async () => {
+    let finishCheck: (result: RunResult) => void = () => {};
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      cwdCheckGraceMs: 50,
+      // The check hangs (a stuck mount under /mnt); the status says there is no session yet.
+      run: (args) =>
+        isCwdCheck(args)
+          ? new Promise<RunResult>((resolve) => (finishCheck = resolve))
+          : Promise.resolve(missing),
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+    });
+    const started = Date.now();
+    const pty = await start(backend, "/mnt/share/api");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(pty.warnings).toBeUndefined();
+    // A late answer changes nothing.
+    finishCheck({ code: 1, stdout: "", stderr: "" });
+    await flush();
+    expect(pty.warnings).toBeUndefined();
+    backend.dispose();
+  });
+
   it("does not check on attach", async () => {
     const { backend, calls } = setup({ respond: (args) => (isCwdCheck(args) ? ok() : undefined) });
     const pty = await backend.attach(

@@ -131,13 +131,18 @@ describe("warningTexts", () => {
 
   it("names the missing directory, the distro and where the shell runs", () => {
     expect(warningTexts(session("a", { state: "Running", warnings: [missing] }), [])).toEqual([
-      "Verzeichnis /srv/api fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.",
+      {
+        text: "Verzeichnis /srv/api fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.",
+        before: "Verzeichnis ",
+        path: "/srv/api",
+        after: " fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.",
+      },
     ]);
     const withoutDistro = session("a", {
       launch: { backend: "wsl", distro: "Debian", cwd: "/srv/api" },
       warnings: [{ code: "cwd_missing", path: "/srv/api" }],
     });
-    expect(warningTexts(withoutDistro, [])).toEqual([
+    expect(warningTexts(withoutDistro, []).map((each) => each.text)).toEqual([
       "Verzeichnis /srv/api fehlt in Debian – die Session läuft im Wurzelverzeichnis /.",
     ]);
   });

@@ -1542,13 +1542,13 @@ Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szeneng
 
 ### Requirement: Hinweis bei fehlendem Arbeitsverzeichnis
 
-Hat eine laufende Session die Warnung `cwd_missing`, SHALL ihr Pane oben einen Hinweis zeigen: „Verzeichnis <path> fehlt in <distro> – die Session läuft im Wurzelverzeichnis /.“ Er MUST keine Eingabe blockieren und sich mit „Hinweis schließen“ schließen lassen; geschlossen bleibt er in diesem Fenster bis zum nächsten Start der Session. Unbekannte Codes zeigt das Pane nicht. Die Screenshot-Szene nimmt Hinweis und geschlossenen Hinweis auf.
+Hat eine laufende Session die Warnung `cwd_missing`, SHALL ihr Pane unten einen einzeiligen Hinweis zeigen: „Verzeichnis <path> fehlt in <distro> – die Session läuft im Wurzelverzeichnis /.“ (langer Pfad gekürzt, voller Text als Tooltip). Er MUST keine Eingabe blockieren (Maus geht außer am Schließknopf zum Terminal) und sich mit „Hinweis schließen“ schließen lassen; geschlossen bleibt er bis zum nächsten Start. Unbekannte Codes zeigt das Pane nicht.
 
 #### Scenario: Hinweis im Pane
 
 - **GIVEN** eine Session `API` mit `cwd` `/srv/api`, das in `Ubuntu` fehlt
 - **WHEN** ihr Pane angezeigt wird
-- **THEN** steht oben „Verzeichnis /srv/api fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.“, und `pwd` im Terminal zeigt `/`
+- **THEN** steht unten in einer Zeile „Verzeichnis /srv/api fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.“, `pwd` im Terminal zeigt `/`, Zeile 0 des Terminals ist frei, und ein Klick auf den Text des Hinweises trifft das Terminal
 
 #### Scenario: Schließen
 

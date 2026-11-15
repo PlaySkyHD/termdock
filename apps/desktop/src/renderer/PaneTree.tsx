@@ -21,6 +21,7 @@ import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
 import { paneCount } from "./pane-tree.js";
 import { isAttachable, warningTexts } from "./session-display.js";
+import type { WarningText } from "./session-display.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
 import { MIN_SHARE } from "./ui-store.js";
@@ -139,18 +140,22 @@ export function PaneTree({
 }
 
 /**
- * Warnings of the pane's session run (#113), at the top edge of the pane. Only the hint takes clicks; the terminal
- * keeps its input and focus. Closing it hides it in this window until the session's next start.
+ * Warnings of the pane's session run (#113), one line each at the bottom edge of the pane, where a new session has
+ * no prompt yet. Only the close button takes the mouse (`pointer-events`); the terminal keeps input, selection and
+ * focus. A long path is shortened with an ellipsis, the whole sentence is the tooltip. Closing it hides it in this
+ * window until the session's next start.
  */
-function WarningHint({ texts, onDismiss }: { texts: readonly string[]; onDismiss: () => void }) {
+function WarningHint({ texts, onDismiss }: { texts: readonly WarningText[]; onDismiss: () => void }) {
   if (texts.length === 0) return null;
   return (
     <div className="pane-warning" role="status" data-hint="session-warnings">
       <div className="pane-warning__texts">
-        {texts.map((text, index) => (
+        {texts.map((warning, index) => (
           // The list only changes as a whole (a new run); two warnings may give the same text.
-          <p key={index} className="pane-warning__text">
-            {text}
+          <p key={index} className="pane-warning__text" title={warning.text}>
+            <span className="pane-warning__fixed">{warning.before}</span>
+            <span className="pane-warning__path">{warning.path}</span>
+            <span className="pane-warning__fixed">{warning.after}</span>
           </p>
         ))}
       </div>

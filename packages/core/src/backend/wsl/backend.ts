@@ -49,6 +49,8 @@ export interface WslBackendOptions {
   keepaliveRestartDelayMs?: number;
   /** Longest wait for the check of the working directory at the start; a slower check gives no warning. */
   cwdCheckTimeoutMs?: number;
+  /** How long the start still waits for that check once its status call is done (issue #113); then no warning. */
+  cwdCheckGraceMs?: number;
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
@@ -66,6 +68,7 @@ export class WslBackend implements Backend {
   private readonly commandTimeoutMs: number;
   private readonly killTimeoutMs: number;
   private readonly cwdCheckTimeoutMs: number;
+  private readonly cwdCheckGraceMs: number;
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
@@ -77,6 +80,7 @@ export class WslBackend implements Backend {
     this.commandTimeoutMs = options.commandTimeoutMs ?? 15_000;
     this.killTimeoutMs = options.killTimeoutMs ?? 5_000;
     this.cwdCheckTimeoutMs = options.cwdCheckTimeoutMs ?? 5_000;
+    this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
     this.keepalive = new DistroKeepalive(
@@ -126,7 +130,9 @@ export class WslBackend implements Backend {
     if (before !== "missing" && before.dead) await this.exec(killSessionArgs(target, id));
     const alive = before !== "missing" && !before.dead;
     // Joining a session that still runs uses its directory, not `cwd`: no need to wait for the check.
-    const warnings = alive ? [] : await check;
+    // After the status call the check gets at most `cwdCheckGraceMs` more (a hung mount under /mnt must not hold
+    // the start for the whole check timeout); later it gives no warning.
+    const warnings = alive ? [] : await withinGrace(check, this.cwdCheckGraceMs);
     const pty = await this.open(target, id, args, size, !alive);
     if (warnings.length > 0) pty.warnings = warnings;
     return pty;
@@ -294,6 +300,19 @@ function wslError(what: string, result: RunResult): Error {
 /** A distro name the protocol accepts in a warning (like other names: 1 to 128 characters, not only spaces). */
 function isDistroName(distro: string): boolean {
   return distro.trim() !== "" && distro.length <= MAX_NAME_LENGTH;
+}
+
+/** The warnings of `check`, or none when it takes longer than `ms`; the timer does not outlive the race. */
+async function withinGrace(check: Promise<SessionWarning[]>, ms: number): Promise<SessionWarning[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<SessionWarning[]>((resolve) => {
+    timer = setTimeout(() => resolve([]), ms);
+  });
+  try {
+    return await Promise.race([check, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function delay(ms: number): Promise<void> {

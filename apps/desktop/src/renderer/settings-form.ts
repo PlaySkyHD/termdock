@@ -309,3 +309,26 @@ export function historyPatch(
   if (bytes !== settings.historyLimitBytes) patch.historyLimitBytes = bytes;
   return { ok: true, patch };
 }
+
+// --- New settings while a section is open (settings.changed) -----------------------------------------
+
+/** Each field of `form` that still shows `from` takes the value of `to`; a field the user changed stays. */
+function rebase<F extends object>(form: F, from: F, to: F): F {
+  const result = { ...form };
+  for (const key of Object.keys(form) as (keyof F)[]) {
+    if (form[key] === from[key]) result[key] = to[key];
+  }
+  return result;
+}
+
+/**
+ * The general form after `settings.changed`: untouched fields show the new values, typed ones stay. The caller then
+ * builds patches against `newBase`, so setting a field back to its old value reaches the core.
+ */
+export function rebaseGeneral(form: GeneralForm, oldBase: Settings, newBase: Settings): GeneralForm {
+  return rebase(form, generalForm(oldBase), generalForm(newBase));
+}
+
+export function rebaseHistory(form: HistoryForm, oldBase: Settings, newBase: Settings): HistoryForm {
+  return rebase(form, historyForm(oldBase), historyForm(newBase));
+}

@@ -18,6 +18,8 @@ import {
   profileChange,
   profileCreateParams,
   profileToForm,
+  rebaseGeneral,
+  rebaseHistory,
 } from "./settings-form.js";
 import type { GeneralErrors, ProfileErrors, ProfileForm } from "./settings-form.js";
 
@@ -153,13 +155,27 @@ export function SettingsDialog({ api, onClose }: { api: Api; onClose: () => void
                 Einstellungen nicht verfügbar: {loadError}
               </p>
             )}
-            {section === "general" &&
-              (settings ? <GeneralSection api={api} settings={settings} distros={distros} /> : <Loading />)}
-            {section === "history" &&
-              (settings ? <HistorySection api={api} settings={settings} /> : <Loading />)}
-            {section === "shortcuts" && <ShortcutsSection />}
-            {section === "profiles" &&
-              (profiles && settings ? (
+            {/* Every section stays mounted while the dialog is open and is only hidden: a change of section keeps
+                what the user typed in another one (spec desktop-shell). */}
+            <div hidden={section !== "general"}>
+              {settings ? (
+                <GeneralSection api={api} settings={settings} distros={distros} onSaved={setSettings} />
+              ) : (
+                <Loading />
+              )}
+            </div>
+            <div hidden={section !== "history"}>
+              {settings ? (
+                <HistorySection api={api} settings={settings} onSaved={setSettings} />
+              ) : (
+                <Loading />
+              )}
+            </div>
+            <div hidden={section !== "shortcuts"}>
+              <ShortcutsSection />
+            </div>
+            <div hidden={section !== "profiles"}>
+              {profiles && settings ? (
                 <ProfilesSection
                   api={api}
                   profiles={profiles}
@@ -169,7 +185,8 @@ export function SettingsDialog({ api, onClose }: { api: Api; onClose: () => void
                 />
               ) : (
                 <Loading />
-              ))}
+              )}
+            </div>
           </div>
         </div>
         <div className="dialog__actions">
@@ -329,16 +346,22 @@ function GeneralSection({
   api,
   settings,
   distros,
+  onSaved,
 }: {
   api: Api;
   settings: Settings;
   distros: WslDistrosResult | undefined;
+  onSaved: (settings: Settings) => void;
 }) {
-  // The form keeps what the user types; it takes the stored values on open and after its own save. The patch is
-  // built against the values the form showed (`base`), so a change of another client in a field the user did not
-  // touch is never undone.
+  // The form keeps what the user types. New settings (`settings.changed`, own save) go into the fields the user has
+  // not touched and become the `base` of the patch, so a field set back to its old value still reaches the core.
   const [base, setBase] = useState(settings);
   const [form, setForm] = useState(() => generalForm(settings));
+  if (settings !== base) {
+    // Adjusting state while rendering (React): no frame shows the old values.
+    setForm(rebaseGeneral(form, base, settings));
+    setBase(settings);
+  }
   const [errors, setErrors] = useState<GeneralErrors>({});
   const save = useSave();
   const submit = (): void => {
@@ -353,9 +376,8 @@ function GeneralSection({
       return;
     }
     save.run(async () => {
-      const saved = await api.updateSettings(result.patch);
-      setBase(saved);
-      setForm(generalForm(saved));
+      // The answer becomes the dialog's settings; the rebase above takes it into the form.
+      onSaved(await api.updateSettings(result.patch));
       return "Gespeichert.";
     });
   };
@@ -421,10 +443,22 @@ function GeneralSection({
   );
 }
 
-function HistorySection({ api, settings }: { api: Api; settings: Settings }) {
-  // Like the general section: the patch goes against the values the form showed.
+function HistorySection({
+  api,
+  settings,
+  onSaved,
+}: {
+  api: Api;
+  settings: Settings;
+  onSaved: (settings: Settings) => void;
+}) {
+  // Like the general section: new settings go into untouched fields and become the base of the patch.
   const [base, setBase] = useState(settings);
   const [form, setForm] = useState(() => historyForm(settings));
+  if (settings !== base) {
+    setForm(rebaseHistory(form, base, settings));
+    setBase(settings);
+  }
   const [error, setError] = useState<string>();
   const save = useSave();
   const submit = (): void => {
@@ -439,9 +473,7 @@ function HistorySection({ api, settings }: { api: Api; settings: Settings }) {
       return;
     }
     save.run(async () => {
-      const saved = await api.updateSettings(result.patch);
-      setBase(saved);
-      setForm(historyForm(saved));
+      onSaved(await api.updateSettings(result.patch));
       return "Gespeichert.";
     });
   };
@@ -657,7 +689,20 @@ function ProfileEditor({
   const [errors, setErrors] = useState<ProfileErrors>({});
   const save = useSave();
   const name = useRef<HTMLInputElement>(null);
+  const root = useRef<HTMLFormElement>(null);
   useEffect(() => name.current?.focus(), []);
+  // Escape in the open editor goes back to the list first; a second Escape closes the dialog. Captured before the
+  // dialog's own listener, and only while the section is shown (a hidden section keeps its editor mounted).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || root.current?.offsetParent === null || root.current === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [onCancel]);
   const set = <K extends keyof ProfileForm>(key: K, value: ProfileForm[K]): void =>
     setForm({ ...form, [key]: value });
   const submit = (): void => {
@@ -671,6 +716,7 @@ function ProfileEditor({
   };
   return (
     <form
+      ref={root}
       className="settings__form"
       data-settings-form="profile-editor"
       onSubmit={(event) => {

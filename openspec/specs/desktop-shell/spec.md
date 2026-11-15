@@ -1383,6 +1383,28 @@ Der Abschnitt Startprofile SHALL alle Profile mit Name, Backend und Befehl aufli
 - **WHEN** der Benutzer „Löschen“ und danach die Rückfrage bestätigt
 - **THEN** sendet das Fenster `profile.delete`, und das Profil verschwindet aus der Liste; „Abbrechen“ sendet nichts
 
+### Requirement: Eingaben im offenen Einstellungsdialog
+
+Ein Abschnittswechsel SHALL die ungespeicherten Eingaben jedes Abschnitts (auch eines offenen Profil-Editors) behalten, bis der Dialog schließt; es gibt keine Rückfrage. Escape im offenen Profil-Editor SHALL zuerst zur Profilliste zurückkehren, erst ein weiteres Escape schließt den Dialog. Kommen neue Einstellungen (`settingsChanged`), SHALL jedes Feld, das der Benutzer nicht geändert hat, den neuen Wert zeigen; geänderte Felder bleiben, und Speichern vergleicht mit den neuen Werten.
+
+#### Scenario: Abschnitt wechseln
+
+- **GIVEN** im Abschnitt Verlauf steht ein ungespeichertes Limit `20`
+- **WHEN** der Benutzer zu Kürzel und zurück zu Verlauf wechselt
+- **THEN** steht dort weiter `20`
+
+#### Scenario: Escape im Editor
+
+- **GIVEN** der Profil-Editor ist offen
+- **WHEN** der Benutzer Escape drückt
+- **THEN** zeigt der Dialog wieder die Profilliste; ein zweites Escape schließt ihn
+
+#### Scenario: Fremde Änderung bei offenem Abschnitt
+
+- **GIVEN** Allgemein ist offen mit `Ubuntu`, und ein anderer Client setzt `defaultDistro: "Debian"`
+- **WHEN** der Benutzer danach wieder `Ubuntu` wählt und speichert
+- **THEN** zeigt das Feld vorher `Debian`, und das Fenster sendet `defaultDistro: "Ubuntu"`
+
 ### Requirement: Formularprüfung der Startprofile
 
 Das Fenster SHALL das Profil vor dem Senden prüfen: Der Name MUST nach Trimmen 1 bis 128 Zeichen haben; das Verzeichnis MUST leer oder `~` (Standardverzeichnis), für WSL sonst ein absoluter Linux-Pfad und für Windows ein Laufwerks- oder UNC-Pfad sein; der Befehl MUST ein Array sein (leer heißt Login-Shell), Zeilen werden nie an Leerzeichen geteilt; Umgebungsnamen MUST `[A-Za-z_][A-Za-z0-9_]*` sein und dürfen sich nicht wiederholen. Ein Fehler steht am Feld, und nichts wird gesendet.

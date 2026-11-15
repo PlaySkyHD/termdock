@@ -20,7 +20,9 @@ export const FOCUSABLE =
  * and nothing inside had it before.
  */
 export function trapFocus(root: HTMLElement, fallback: () => HTMLElement | null): () => void {
-  const focusables = (): HTMLElement[] => [...root.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  // Hidden parts (a section of the settings dialog that is not shown, #64) cannot take the focus: Tab skips them.
+  const focusables = (): HTMLElement[] =>
+    [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => !element.closest("[hidden]"));
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Tab") return;
     event.preventDefault();

@@ -8,6 +8,11 @@ import type { LaunchProfile, Settings } from "@termdock/protocol";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import { pageDriver } from "./screenshot-page.js";
 
+// All sections stay mounted (hidden when not shown): every selector names its section.
+const GENERAL = '[data-settings-form="general"]';
+const HISTORY = '[data-settings-form="history"]';
+const EDITOR = '[data-settings-form="profile-editor"]';
+
 export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   const { dir, bridge, core, createWindow, log } = deps;
   mkdirSync(dir, { recursive: true });
@@ -33,9 +38,10 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
       field.dispatchEvent(new Event(field instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
     })()`);
   };
-  const dialog = `document.querySelector('[data-dialog="settings"]')`;
+  const exists = (selector: string): string => `document.querySelector(${JSON.stringify(selector)})`;
+  const dialog = exists('[data-dialog="settings"]');
   const inSection = (section: string): string =>
-    `document.querySelector('[data-dialog="settings"][data-settings-section="${section}"]')`;
+    exists(`[data-dialog="settings"][data-settings-section="${section}"]`);
   const openTab = async (section: string): Promise<void> => {
     await click(`[data-settings-tab="${section}"]`);
     await waitFor(inSection(section), `the section ${section}`);
@@ -53,9 +59,9 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   win.focus();
   await key(",", ["control"]);
   await waitFor(inSection("general"), "the settings dialog on Allgemein");
-  await waitFor(`document.querySelector('[data-settings-form="general"]')`, "the general form");
+  await waitFor(exists(GENERAL), "the general form");
   await waitFor(
-    `document.querySelector('[data-field="distro"] option:nth-child(2)') || document.querySelector('[data-settings="distro-unavailable"]')`,
+    `${exists(`${GENERAL} [data-field="distro"] option:nth-child(2)`)} || ${exists(`${GENERAL} [data-settings="distro-unavailable"]`)}`,
     "the WSL list or its reason",
   );
   const focusInside = await evaluate<boolean>(
@@ -64,23 +70,23 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   if (!focusInside) throw new Error("The settings dialog does not hold the focus");
   await capture("40-settings-general.png");
 
-  await click('[data-field="confirmQuit"]');
-  await click('[data-settings-form="general"] [data-settings-action="save"]');
-  await waitFor(`document.querySelector('[data-settings="saved"]')`, "the general section to save");
+  await click(`${GENERAL} [data-field="confirmQuit"]`);
+  await click(`${GENERAL} [data-settings-action="save"]`);
+  await waitFor(exists(`${GENERAL} [data-settings="saved"]`), "the general section to save");
   const afterGeneral = await settings();
   if (!afterGeneral.confirmQuitWhileRunning) throw new Error("Beim Schließen fragen did not reach the core");
   log("settings: the quit question is on again");
 
   // --- Verlauf: the limit in MiB --------------------------------------------------------------------------
   await openTab("history");
-  await fill('[data-field="limit"]', "2048");
-  await click('[data-settings-form="history"] [data-settings-action="save"]');
-  await waitFor(`document.querySelector('[data-field-error]')`, "the message of an invalid limit");
+  await fill(`${HISTORY} [data-field="limit"]`, "2048");
+  await click(`${HISTORY} [data-settings-action="save"]`);
+  await waitFor(exists(`${HISTORY} [data-field-error]`), "the message of an invalid limit");
   if ((await settings()).historyLimitBytes !== afterGeneral.historyLimitBytes)
     throw new Error("An invalid limit reached the core");
-  await fill('[data-field="limit"]', "20");
-  await click('[data-settings-form="history"] [data-settings-action="save"]');
-  await waitFor(`document.querySelector('[data-settings="saved"]')`, "the history section to save");
+  await fill(`${HISTORY} [data-field="limit"]`, "20");
+  await click(`${HISTORY} [data-settings-action="save"]`);
+  await waitFor(exists(`${HISTORY} [data-settings="saved"]`), "the history section to save");
   if ((await settings()).historyLimitBytes !== 20 * 1024 * 1024)
     throw new Error("The history limit of 20 MiB did not reach the core");
   await capture("41-settings-history.png");
@@ -88,10 +94,10 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   // --- Kürzel: the overview, read only ----------------------------------------------------------------------
   await openTab("shortcuts");
   await waitFor(
-    `document.querySelector('[data-settings-form="shortcuts"] [data-command="openSettings"]')`,
+    exists('[data-settings-form="shortcuts"] [data-command="openSettings"]'),
     "the row of the settings key",
   );
-  if (await evaluate<boolean>(`Boolean(document.querySelector('[data-settings-form="shortcuts"] input'))`))
+  if (await evaluate<boolean>(`Boolean(${exists('[data-settings-form="shortcuts"] input')})`))
     throw new Error("The overview of the keys must not have fields");
   await capture("42-settings-shortcuts.png");
 
@@ -99,15 +105,15 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   await openTab("profiles");
   const before = (await profiles()).length;
   await click('[data-profile-action="new"]');
-  await waitFor(`document.querySelector('[data-settings-form="profile-editor"]')`, "the profile editor");
-  await fill('[data-field="name"]', "Claude");
-  await fill('[data-field="cwd"]', "/srv/app");
-  await setValue('[data-field="command"]', "claude\n--continue");
-  await setValue('[data-field="env"]', "LANG=de_DE.UTF-8");
-  await click('[data-field="autostart"]');
+  await waitFor(exists(EDITOR), "the profile editor");
+  await fill(`${EDITOR} [data-field="name"]`, "Claude");
+  await fill(`${EDITOR} [data-field="cwd"]`, "/srv/app");
+  await setValue(`${EDITOR} [data-field="command"]`, "claude\n--continue");
+  await setValue(`${EDITOR} [data-field="env"]`, "LANG=de_DE.UTF-8");
+  await click(`${EDITOR} [data-field="autostart"]`);
   await capture("43-settings-profile-editor.png");
-  await click('[data-settings-form="profile-editor"] [data-settings-action="save"]');
-  await waitFor(`document.querySelector('[data-profile-name="Claude"]')`, "the new profile in the list");
+  await click(`${EDITOR} [data-settings-action="save"]`);
+  await waitFor(exists('[data-profile-name="Claude"]'), "the new profile in the list");
   const created = (await profiles()).find((profile) => profile.name === "Claude");
   if (
     !created ||
@@ -122,7 +128,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
     launch: { backend: "wsl", cwd: "/var/log", command: ["tail", "-f", "syslog"] },
   });
   await waitFor(
-    `document.querySelector('[data-profile-name=${JSON.stringify(other.result.profile.name)}]')`,
+    exists(`[data-profile-name=${JSON.stringify(other.result.profile.name)}]`),
     "the profile of another client in the list",
   );
   await capture("44-settings-profiles-list.png");
@@ -130,19 +136,16 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
 
   // --- The core refuses a secret-like env name; the message stays in the dialog ---------------------------
   await click('[data-profile-action="new"]');
-  await waitFor(
-    `document.querySelector('[data-settings-form="profile-editor"]')`,
-    "the profile editor again",
-  );
-  await fill('[data-field="name"]', "Deploy");
-  await setValue('[data-field="command"]', "deploy");
-  await setValue('[data-field="env"]', "API_TOKEN=beispiel");
-  await click('[data-settings-form="profile-editor"] [data-settings-action="save"]');
-  await waitFor(`document.querySelector('[data-settings="error"]')`, "the refusal of the core");
-  const message = await evaluate<string>(`document.querySelector('[data-settings="error"]').textContent`);
+  await waitFor(exists(EDITOR), "the profile editor again");
+  await fill(`${EDITOR} [data-field="name"]`, "Deploy");
+  await setValue(`${EDITOR} [data-field="command"]`, "deploy");
+  await setValue(`${EDITOR} [data-field="env"]`, "API_TOKEN=beispiel");
+  await click(`${EDITOR} [data-settings-action="save"]`);
+  await waitFor(exists(`${EDITOR} [data-settings="error"]`), "the refusal of the core");
+  const message = await evaluate<string>(`${exists(`${EDITOR} [data-settings="error"]`)}.textContent`);
   if (!/secret/i.test(message)) throw new Error(`Unexpected refusal: ${message}`);
   const values = await evaluate<{ name: string; env: string }>(
-    `({ name: document.querySelector('[data-field="name"]').value, env: document.querySelector('[data-field="env"]').value })`,
+    `({ name: ${exists(`${EDITOR} [data-field="name"]`)}.value, env: ${exists(`${EDITOR} [data-field="env"]`)}.value })`,
   );
   if (values.name !== "Deploy" || values.env !== "API_TOKEN=beispiel")
     throw new Error(`The editor lost its input: ${JSON.stringify(values)}`);
@@ -150,9 +153,11 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   await capture("45-settings-profile-error.png");
   log("settings: the core refused the secret-like env name");
 
-  // --- Escape closes, the menu entry opens it again ---------------------------------------------------------
+  // --- Escape: first back to the list, then the dialog closes; the menu entry opens it again ------------------
   await key("Escape");
-  await waitFor(`!${dialog}`, "the dialog to close on Escape");
+  await waitFor(`!${exists(EDITOR)} && ${dialog}`, "Escape to close the editor, not the dialog");
+  await key("Escape");
+  await waitFor(`!${dialog}`, "the dialog to close on the second Escape");
   if (!bridge.sendTo(windowId, { kind: "openSettings" })) throw new Error("The window is gone");
   await waitFor(inSection("general"), "the dialog from the menu entry");
   await key("Escape");

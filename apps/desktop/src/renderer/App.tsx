@@ -31,6 +31,7 @@ import { connectStore } from "./session-sync.js";
 import { QuitDialog } from "./QuitDialog.js";
 import { SearchDialog } from "./SearchDialog.js";
 import { SettingsDialog } from "./SettingsDialog.js";
+import { modalOpen } from "./dialog-state.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { OpenMode, SidebarActions } from "./Sidebar.js";
@@ -221,7 +222,9 @@ export function App({ api }: { api: TermdockApi }) {
       api.onEvent((event) => {
         // The quit dialog is modal too and wins: the app is about to quit.
         if (event.kind === "quitRequested") setSettingsOpen(false);
-        else if (event.kind === "openSettings" && !quitOpenRef.current) openSettings();
+        // Like the keys, which never reach a command while a modal dialog has the focus: no second dialog.
+        else if (event.kind === "openSettings" && !quitOpenRef.current && !modalOpen(document))
+          openSettings();
       }),
     [api, openSettings],
   );

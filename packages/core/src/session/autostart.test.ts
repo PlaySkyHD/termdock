@@ -383,3 +383,34 @@ describe("runAutostart", () => {
     expect(t.reports).toEqual([expect.stringContaining("database locked")]);
   });
 });
+
+describe("runAutostart with distro and shell defaults (issue #64, PR #115 review)", () => {
+  const plain: LaunchSpec = { backend: "wsl", cwd: "/home/dev" };
+  const defaults = () => ({ defaultDistro: "Debian", defaultShell: "cmd" as const });
+
+  it("gives a new session of a profile without distro the default distro", async () => {
+    const t = setup();
+    await t.registry.restore();
+    const profile = t.profiles.create({ name: "a", launch: plain, autostart: true });
+
+    await (
+      await runAutostart(t.options({ settings: defaults }))
+    ).started;
+
+    expect(t.registry.list().map((session) => session.launch)).toEqual([{ ...plain, distro: "Debian" }]);
+    expect(t.profiles.get(profile.id).launch.distro).toBeUndefined();
+  });
+
+  it("restarts an old session without distro with its stored launch spec", async () => {
+    const t = setup();
+    const profile = t.profiles.create({ name: "a", launch: plain, autostart: true });
+    t.repository.save({ ...storedSession("old", "Interrupted", profile.id), launch: plain });
+    await t.registry.restore();
+
+    await (
+      await runAutostart(t.options({ settings: defaults }))
+    ).started;
+
+    expect(t.registry.list().map((session) => [session.id, session.launch])).toEqual([["old", plain]]);
+  });
+});

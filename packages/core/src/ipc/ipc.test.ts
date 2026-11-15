@@ -1737,6 +1737,19 @@ describe("settings dialog (issue #64)", () => {
     // The core goes on answering.
     expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
 
+    // wsl.exe without WSL ignores WSL_UTF8 and answers in UTF-16 (PR #115 review): one clean line, no NUL.
+    const utf16 = await startCore({
+      listDistros: async () => {
+        throw new Error(
+          "wsl.exe -l -v failed (exit 1): \0W\0S\0L\0 \0f\0e\0h\0l\0t\0\x07\r\n\0\r\n\0Zweite Zeile",
+        );
+      },
+    });
+    const third = await newClient(utf16.pipePath);
+    expect((await third.request("wsl.distros", {})).result.unavailable).toBe(
+      "wsl.exe -l -v failed (exit 1): WSL fehlt",
+    );
+
     const none = await startCore();
     const other = await newClient(none.pipePath);
     const empty = (await other.request("wsl.distros", {})).result;

@@ -253,7 +253,8 @@ export class WslBackend implements Backend {
 
 function wslError(what: string, result: RunResult): Error {
   const reason = result.timedOut ? "timed out" : `exit ${result.code ?? "?"}`;
-  const detail = result.stderr.trim() || result.stdout.trim();
+  // wsl.exe without WSL ignores WSL_UTF8 and writes UTF-16: the NUL bytes would end up in logs and answers.
+  const detail = (result.stderr.trim() || result.stdout.trim()).replace(/\0/g, "");
   return new Error(`${what} failed (${reason})${detail ? `: ${detail}` : ""}`);
 }
 

@@ -588,7 +588,7 @@ export class CoreServer {
         ? { distros, defaultDistro }
         : { distros };
     } catch (error) {
-      const reason = error instanceof Error && error.message !== "" ? error.message : "WSL is not available";
+      const reason = oneLine(error instanceof Error ? error.message : "") || "WSL is not available";
       return { distros: [], unavailable: reason.slice(0, MAX_WSL_UNAVAILABLE_LENGTH) };
     }
   }
@@ -747,6 +747,17 @@ export class CoreServer {
     for (const conn of [...this.connections]) this.endConnection(conn);
     await stopped;
   }
+}
+
+/**
+ * The first non-empty line of a message, for `wsl.distros { unavailable }`: wsl.exe without WSL ignores `WSL_UTF8`
+ * and answers in UTF-16, so NUL bytes go and other control characters become spaces.
+ */
+function oneLine(message: string): string {
+  const lines = message.replace(/\0/g, "").split(/\r?\n|\r/);
+  const first = lines.map((line) => line.trim()).find((line) => line !== "") ?? "";
+  // eslint-disable-next-line no-control-regex -- removing control characters is the point
+  return first.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 }
 
 function eventFrame<E extends EventName>(event: E, data: EventMap[E], payload?: Uint8Array): Uint8Array {

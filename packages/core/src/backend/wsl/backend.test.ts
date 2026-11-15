@@ -321,5 +321,8 @@ describe("WslBackend", () => {
     expect(timeouts).toEqual([5_000, 15_000]);
     answer = { code: null, stdout: "", stderr: "", timedOut: true };
     await expect(backend.distros({ timeoutMs: 5_000 })).rejects.toThrow(/timed out/);
+    // Without WSL, wsl.exe ignores WSL_UTF8 and writes UTF-16 (PR #115 review).
+    answer = { code: 1, stdout: "", stderr: "N\0o\0 \0W\0S\0L\0" };
+    await expect(backend.distros()).rejects.toThrow(/^wsl\.exe -l -v failed \(exit 1\): No WSL$/);
   });
 });

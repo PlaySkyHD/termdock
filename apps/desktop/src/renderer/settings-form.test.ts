@@ -17,6 +17,8 @@ import {
   profileChange,
   profileCreateParams,
   profileToForm,
+  rebaseGeneral,
+  rebaseHistory,
 } from "./settings-form.js";
 import type { ProfileForm } from "./settings-form.js";
 
@@ -263,5 +265,44 @@ describe("section Verlauf", () => {
     }
     expect(historyPatch(DEFAULT_SETTINGS, { limitMiB: "1024", enabledByDefault: true }).ok).toBe(true);
     expect(historyPatch(DEFAULT_SETTINGS, { limitMiB: "0.0625", enabledByDefault: true }).ok).toBe(true);
+  });
+});
+
+// PR #115 review: settings.changed while a section is open.
+describe("rebasing an open form on new settings", () => {
+  const old: Settings = { ...DEFAULT_SETTINGS, defaultDistro: "Ubuntu" };
+  const fresh: Settings = {
+    ...old,
+    defaultDistro: "Debian",
+    defaultCwd: "/srv",
+    historyLimitBytes: 20971520,
+  };
+
+  it("takes the new value into untouched fields and keeps what the user typed", () => {
+    const typed = { ...generalForm(old), shell: "cmd" as const };
+    expect(rebaseGeneral(typed, old, fresh)).toEqual({
+      distro: "Debian",
+      shell: "cmd",
+      cwd: "/srv",
+      confirmQuit: true,
+    });
+    const own = { ...generalForm(old), distro: "Arch" };
+    expect(rebaseGeneral(own, old, fresh).distro).toBe("Arch");
+  });
+
+  it("lets the user set back the old value against a change of another client", () => {
+    // The form shows Debian after the event; choosing Ubuntu again must reach the core.
+    const shown = rebaseGeneral(generalForm(old), old, fresh);
+    expect(generalPatch(fresh, { ...shown, distro: "Ubuntu" })).toEqual({
+      ok: true,
+      patch: { defaultDistro: "Ubuntu" },
+    });
+  });
+
+  it("does the same for the history section", () => {
+    const typed = { ...historyForm(old), enabledByDefault: false };
+    expect(rebaseHistory(typed, old, fresh)).toEqual({ limitMiB: "20", enabledByDefault: false });
+    const own = { ...historyForm(old), limitMiB: "5" };
+    expect(rebaseHistory(own, old, fresh).limitMiB).toBe("5");
   });
 });

@@ -68,7 +68,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
     `Boolean(document.activeElement && document.activeElement.closest('[data-dialog="settings"]'))`,
   );
   if (!focusInside) throw new Error("The settings dialog does not hold the focus");
-  await capture("40-settings-general.png");
+  await capture("60-settings-general.png");
 
   await click(`${GENERAL} [data-field="confirmQuit"]`);
   await click(`${GENERAL} [data-settings-action="save"]`);
@@ -89,7 +89,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   await waitFor(exists(`${HISTORY} [data-settings="saved"]`), "the history section to save");
   if ((await settings()).historyLimitBytes !== 20 * 1024 * 1024)
     throw new Error("The history limit of 20 MiB did not reach the core");
-  await capture("41-settings-history.png");
+  await capture("61-settings-history.png");
 
   // --- Kürzel: the overview, read only ----------------------------------------------------------------------
   await openTab("shortcuts");
@@ -99,7 +99,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   );
   if (await evaluate<boolean>(`Boolean(${exists('[data-settings-form="shortcuts"] input')})`))
     throw new Error("The overview of the keys must not have fields");
-  await capture("42-settings-shortcuts.png");
+  await capture("62-settings-shortcuts.png");
 
   // --- Startprofile: editor, list -------------------------------------------------------------------------
   await openTab("profiles");
@@ -111,7 +111,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   await setValue(`${EDITOR} [data-field="command"]`, "claude\n--continue");
   await setValue(`${EDITOR} [data-field="env"]`, "LANG=de_DE.UTF-8");
   await click(`${EDITOR} [data-field="autostart"]`);
-  await capture("43-settings-profile-editor.png");
+  await capture("63-settings-profile-editor.png");
   await click(`${EDITOR} [data-settings-action="save"]`);
   await waitFor(exists('[data-profile-name="Claude"]'), "the new profile in the list");
   const created = (await profiles()).find((profile) => profile.name === "Claude");
@@ -131,7 +131,7 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
     exists(`[data-profile-name=${JSON.stringify(other.result.profile.name)}]`),
     "the profile of another client in the list",
   );
-  await capture("44-settings-profiles-list.png");
+  await capture("64-settings-profiles-list.png");
   log("settings: profile created through the editor and listed");
 
   // --- The core refuses a secret-like env name; the message stays in the dialog ---------------------------
@@ -150,7 +150,17 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   if (values.name !== "Deploy" || values.env !== "API_TOKEN=beispiel")
     throw new Error(`The editor lost its input: ${JSON.stringify(values)}`);
   if ((await profiles()).length !== before + 2) throw new Error("The refused profile was stored");
-  await capture("45-settings-profile-error.png");
+  // The message must be in the visible part of the scrolling panel, not below it (PR #115).
+  await waitFor(
+    `(() => {
+      const error = ${exists(`${EDITOR} [data-settings="error"]`)}.getBoundingClientRect();
+      const panel = document.querySelector('.settings__panel').getBoundingClientRect();
+      return error.top >= panel.top && error.bottom <= panel.bottom;
+    })()`,
+    "the refusal to be visible in the panel",
+    5_000,
+  );
+  await capture("65-settings-profile-error.png");
   log("settings: the core refused the secret-like env name");
 
   // --- Escape: first back to the list, then the dialog closes; the menu entry opens it again ------------------

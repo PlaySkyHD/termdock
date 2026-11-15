@@ -3,7 +3,7 @@
 // failure of the core stays in the dialog. What goes to the core is built by the pure functions of
 // `settings-form.ts`; the dialog keeps settings and profiles current through the core's events.
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { LaunchProfile, Settings, WindowsShell, WslDistrosResult } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import { failureText } from "./dialog-state.js";
@@ -20,6 +20,9 @@ import {
   profileToForm,
   rebaseGeneral,
   rebaseHistory,
+  firstErrorField,
+  PROFILE_FIELDS,
+  reveal,
 } from "./settings-form.js";
 import type { GeneralErrors, ProfileErrors, ProfileForm } from "./settings-form.js";
 
@@ -261,14 +264,39 @@ function Field({
   );
 }
 
+/**
+ * After a check, the first field with a message takes the focus (and so comes into view); its message stands under
+ * it. Runs only for a new set of messages.
+ */
+function useFocusFirstError<F extends string>(
+  root: RefObject<HTMLFormElement | null>,
+  errors: Partial<Record<F, string>>,
+  order: readonly F[],
+): void {
+  useEffect(() => {
+    const field = firstErrorField(errors, order);
+    if (field === undefined) return;
+    root.current?.querySelector<HTMLElement>(`[data-field="${field}"]`)?.focus();
+  }, [root, errors, order]);
+}
+
+const GENERAL_FIELDS = ["distro", "cwd"] as const;
+
+/** A refusal of the core; it scrolls itself into the visible part of the panel when it appears or changes. */
+function ErrorText({ text }: { text: string }) {
+  const element = useRef<HTMLParagraphElement>(null);
+  useEffect(() => reveal(element.current), [text]);
+  return (
+    <p className="new-session__error" data-settings="error" ref={element} role="alert">
+      {text}
+    </p>
+  );
+}
+
 function SaveRow({ save, label = "Speichern" }: { save: ReturnType<typeof useSave>; label?: string }) {
   return (
     <>
-      {save.error && (
-        <p className="new-session__error" data-settings="error">
-          {save.error}
-        </p>
-      )}
+      {save.error && <ErrorText text={save.error} />}
       {save.done && (
         <p className="dialog__note" data-settings="saved">
           {save.done}
@@ -363,6 +391,8 @@ function GeneralSection({
     setBase(settings);
   }
   const [errors, setErrors] = useState<GeneralErrors>({});
+  const root = useRef<HTMLFormElement>(null);
+  useFocusFirstError(root, errors, GENERAL_FIELDS);
   const save = useSave();
   const submit = (): void => {
     const result = generalPatch(base, form);
@@ -383,6 +413,7 @@ function GeneralSection({
   };
   return (
     <form
+      ref={root}
       className="settings__form"
       data-settings-form="general"
       onSubmit={(event) => {
@@ -460,6 +491,11 @@ function HistorySection({
     setBase(settings);
   }
   const [error, setError] = useState<string>();
+  const root = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    // The limit with its message takes the focus, like the first wrong field of the other forms.
+    if (error !== undefined) root.current?.querySelector<HTMLElement>('[data-field="limit"]')?.focus();
+  }, [error]);
   const save = useSave();
   const submit = (): void => {
     const result = historyPatch(base, form);
@@ -479,6 +515,7 @@ function HistorySection({
   };
   return (
     <form
+      ref={root}
       className="settings__form"
       data-settings-form="history"
       onSubmit={(event) => {
@@ -652,11 +689,7 @@ function ProfilesSection({
           ))}
         </ul>
       )}
-      {remove.error && (
-        <p className="new-session__error" data-settings="error">
-          {remove.error}
-        </p>
-      )}
+      {remove.error && <ErrorText text={remove.error} />}
       <div className="settings__actions">
         <button
           className="button button--primary"
@@ -691,6 +724,7 @@ function ProfileEditor({
   const name = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLFormElement>(null);
   useEffect(() => name.current?.focus(), []);
+  useFocusFirstError(root, errors, PROFILE_FIELDS);
   // Escape in the open editor goes back to the list first; a second Escape closes the dialog. Captured before the
   // dialog's own listener, and only while the section is shown (a hidden section keeps its editor mounted).
   useEffect(() => {
@@ -830,11 +864,7 @@ function ProfileEditor({
         />
         Verlauf aufzeichnen
       </label>
-      {save.error && (
-        <p className="new-session__error" data-settings="error">
-          {save.error}
-        </p>
-      )}
+      {save.error && <ErrorText text={save.error} />}
       <div className="settings__actions">
         <button
           className="button"

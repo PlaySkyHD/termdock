@@ -103,6 +103,24 @@ export interface ProfileForm {
 
 export type ProfileField = "name" | "distro" | "cwd" | "command" | "env";
 export type ProfileErrors = Partial<Record<ProfileField, string>>;
+/** The checked fields of the profile editor, top to bottom. */
+export const PROFILE_FIELDS: readonly ProfileField[] = ["name", "distro", "cwd", "command", "env"];
+
+/** The first field of `order` that has a message; it takes the focus, which brings it into view. */
+export function firstErrorField<F extends string>(
+  errors: Partial<Record<F, string>>,
+  order: readonly F[],
+): F | undefined {
+  return order.find((field) => errors[field] !== undefined);
+}
+
+/**
+ * Brings a new message into the visible part of its scrolling panel, scrolling no more than needed (a refusal of
+ * the core under the fields of the editor went unseen, PR #115).
+ */
+export function reveal(element: { scrollIntoView(options: { block: "nearest" }): void } | null): void {
+  element?.scrollIntoView({ block: "nearest" });
+}
 
 export function emptyProfileForm(loggingEnabled: boolean): ProfileForm {
   return {

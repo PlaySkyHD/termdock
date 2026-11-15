@@ -19,6 +19,9 @@ import {
   profileToForm,
   rebaseGeneral,
   rebaseHistory,
+  firstErrorField,
+  PROFILE_FIELDS,
+  reveal,
 } from "./settings-form.js";
 import type { ProfileForm } from "./settings-form.js";
 
@@ -304,5 +307,22 @@ describe("rebasing an open form on new settings", () => {
     expect(rebaseHistory(typed, old, fresh)).toEqual({ limitMiB: "20", enabledByDefault: false });
     const own = { ...historyForm(old), limitMiB: "5" };
     expect(rebaseHistory(own, old, fresh).limitMiB).toBe("5");
+  });
+});
+
+// PR #115 screenshot run: a refusal below the visible part of the editor went unseen.
+describe("showing a new error", () => {
+  it("names the first field with an error in the order of the form", () => {
+    expect(firstErrorField({ env: "x", name: "y" }, PROFILE_FIELDS)).toBe("name");
+    expect(firstErrorField({ env: "x", cwd: "y" }, PROFILE_FIELDS)).toBe("cwd");
+    expect(firstErrorField({}, PROFILE_FIELDS)).toBeUndefined();
+    expect(PROFILE_FIELDS).toEqual(["name", "distro", "cwd", "command", "env"]);
+  });
+
+  it("scrolls a message only as far as needed into the visible part", () => {
+    const calls: unknown[] = [];
+    reveal({ scrollIntoView: (options) => calls.push(options) });
+    reveal(null);
+    expect(calls).toEqual([{ block: "nearest" }]);
   });
 });

@@ -255,5 +255,67 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     "the placeholder in the open tab",
   );
   await capture("36-deleted-session-placeholder.png");
+
+  // --- A session in a project (#104): the menu offers it first, a click starts it in the project directory ---
+  const projectName = "docs";
+  const projectPath = "/usr/share/doc";
+  await core.request("project.create", {
+    workspaceId: web.id,
+    name: projectName,
+    path: projectPath,
+    backend: "wsl",
+  });
+  const projectSelector = `[data-project-name=${JSON.stringify(projectName)}]`;
+  await waitFor(`document.querySelector(${JSON.stringify(projectSelector)})`, "the project docs");
+  const projectRow = await center(projectSelector);
+  mouse("mouseDown", projectRow.x, projectRow.y, "right");
+  mouse("mouseUp", projectRow.x, projectRow.y, "right");
+  await waitFor(`document.querySelector('[role="menu"]')`, "the menu of the project");
+  const projectItems = await evaluate<string[]>(
+    `[...document.querySelectorAll('[role="menuitem"]')].map((el) => el.dataset.menuItem + '=' + el.textContent.trim())`,
+  );
+  log(`project menu: ${projectItems.join(", ")}`);
+  expect(
+    projectItems.length === 3 &&
+      projectItems[0] === "start=Neue Session hier" &&
+      projectItems[1]?.startsWith("rename=") === true &&
+      projectItems[2]?.startsWith("delete=") === true,
+    `the menu of the project is ${projectItems.join(", ")}`,
+  );
+  expect(
+    (await evaluate<boolean>(`document.activeElement?.dataset?.menuItem === 'start'`)) === true,
+    "the focus is not on Neue Session hier",
+  );
+  await capture("37-project-menu.png");
+  await key("Escape");
+  await waitFor(`!document.querySelector('[role="menu"]')`, "the project menu to close on Escape");
+  expect(!(await sessions()).some((each) => each.name === projectName), "closing the menu started a session");
+
+  // A click on the row starts the session; the core knows the directory, name and workspace of the project.
+  await click(projectSelector);
+  await waitForCore(
+    async () => (await sessions()).some((each) => each.name === projectName),
+    "the session of the project",
+  );
+  const started = await session(projectName);
+  expect(
+    started.launch.cwd === projectPath && started.workspaceId === web.id && started.launch.backend === "wsl",
+    `the session of the project has ${JSON.stringify(started.launch)} in ${started.workspaceId}`,
+  );
+  await waitFor(
+    `document.querySelector('.pane[data-tab-active="true"]')?.dataset.sessionId === ${JSON.stringify(started.id)}`,
+    "the session of the project in the active tab",
+  );
+  // The shell shows where it is: the directory is in the prompt (or the rows of the terminal).
+  await waitFor(
+    `[...document.querySelectorAll('.pane[data-tab-active="true"] .xterm-rows > div')].some((row) => (row.textContent ?? '').includes(${JSON.stringify(projectPath)}))`,
+    "the project directory in the terminal",
+  );
+  await capture("38-project-session.png");
+  expect(
+    (await sessions()).filter((each) => each.name === projectName).length === 1,
+    "one click, one session",
+  );
+  log("sidebar: a session starts in the project directory");
   log("sidebar scenes done");
 }

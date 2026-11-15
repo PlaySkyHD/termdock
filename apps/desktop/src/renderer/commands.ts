@@ -1,7 +1,9 @@
 // What the commands of the key map do (#28). They run on the store and the controller of the active pane; the
 // window supplies what depends on React (the form, the overview, the notice), so this module stays testable
 // without DOM. "newWindow" is the application menu's (main process): nothing to do here.
-import type { LayoutTab, SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import type { LayoutTab, Project, SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import { projectSessionParams } from "./sidebar-model.js";
+import type { OpenMode } from "./sidebar-model.js";
 import { tabStepTarget } from "./layout-moves.js";
 import type { MoveTarget } from "./layout-moves.js";
 import { neighborPane } from "./pane-focus.js";
@@ -121,6 +123,46 @@ export async function splitActivePane(deps: SplitDeps, direction: SplitDirection
       : undefined,
   );
   deps.refocus();
+}
+
+/** What starting a session in a project needs (#104): the store, `session.create` and the window's way to open one. */
+export interface ProjectStartDeps {
+  store: UiStore;
+  createSession(params: SessionCreateParams): Promise<SessionInfo>;
+  /** Shows the session in a tab or pane by the mode of the click (App). */
+  open(sessionId: string, mode: OpenMode): void;
+}
+
+/**
+ * Starts a shell in the directory of the project and opens it like a new session (#104). Rejects with the reason
+ * (the core's refusal, or a start that is still running); the caller shows it. The session is not recorded on the
+ * project: the protocol has no `projectId` on a session.
+ */
+export async function startProjectSession(
+  deps: ProjectStartDeps,
+  project: Project,
+  mode: OpenMode,
+): Promise<void> {
+  // The guard of the splits: one session is being started at a time, whether by split or by project.
+  if (splitting.has(deps.store)) throw new Error(SPLIT_BUSY);
+  const state = deps.store.getState();
+  // Like `splitActivePane`: a full tab refuses before the core starts a session that would have no pane.
+  const tab = activeTab(state);
+  if (mode === "split" && tab && paneCount(tab) >= MAX_PANES) throw new Error(panesFull(MAX_PANES));
+  splitting.add(deps.store);
+  let created: SessionInfo;
+  try {
+    // The name of the project, or `<name> 2` … when a session has it already.
+    const name = state.sessions.some((each) => each.name === project.name)
+      ? nextName(project.name, state.sessions)
+      : project.name;
+    created = await deps.createSession(projectSessionParams(project, name));
+  } finally {
+    splitting.delete(deps.store);
+  }
+  // The event of the main process may have added it already; the store keeps what it has.
+  deps.store.sessionCreated(created);
+  deps.open(created.id, mode);
 }
 
 /**

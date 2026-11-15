@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { canRun, panesFull, pasteInto, runCommand, splitActivePane } from "./commands.js";
+import {
+  canRun,
+  panesFull,
+  pasteInto,
+  runCommand,
+  splitActivePane,
+  startProjectSession,
+} from "./commands.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { DragProvider, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
@@ -144,8 +151,14 @@ export function App({ api }: { api: TermdockApi }) {
       createProject: (workspaceId, name, path) => api.createProject(workspaceId, name, path, "wsl"),
       renameProject: (projectId, name) => api.updateProject(projectId, name),
       deleteProject: (projectId) => api.deleteProject(projectId),
+      startProjectSession: (project, mode) =>
+        startProjectSession(
+          { store, createSession: (params) => api.createSession(params), open },
+          project,
+          mode,
+        ),
     }),
-    [api, store],
+    [api, store, open],
   );
 
   const setStatus = useCallback((paneId: string, status: ViewStatus | undefined) => {

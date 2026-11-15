@@ -1,8 +1,17 @@
-import type { SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import type { Project, SessionCreateParams, SessionInfo } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { canRun, PASTE_REFUSED, pasteInto, runCommand, SPLIT_BUSY, SPLIT_UNKNOWN } from "./commands.js";
-import type { Clipboard, CommandDeps } from "./commands.js";
+import {
+  canRun,
+  PASTE_REFUSED,
+  pasteInto,
+  runCommand,
+  SPLIT_BUSY,
+  SPLIT_UNKNOWN,
+  startProjectSession,
+} from "./commands.js";
+import type { Clipboard, CommandDeps, ProjectStartDeps } from "./commands.js";
 import type { CommandId } from "./keymap.js";
+import type { OpenMode } from "./sidebar-model.js";
 import { activeTab, paneCount, panesOf, UiStore } from "./ui-store.js";
 
 /** The part of a TerminalController the commands use. */
@@ -92,7 +101,7 @@ function setup(sessions: Array<string | SessionInfo> = []) {
     deps,
     activeIndex,
     created,
-    failCreate: (error: Error) => (createFailure = error),
+    failCreate: (error: Error | undefined) => (createFailure = error),
     /** Holds the answers of `createSession` until the returned function is called. */
     holdCreate: (): (() => void) => {
       let release!: () => void;
@@ -594,5 +603,118 @@ describe("pasteInto", () => {
 
     expect(controller.pasted).toEqual(["text"]);
     expect(notices).toEqual([PASTE_REFUSED, undefined]);
+  });
+});
+
+describe("startProjectSession (#104)", () => {
+  const project: Project = {
+    id: "p1",
+    workspaceId: "w1",
+    name: "api",
+    path: "/srv/api",
+    backend: "wsl",
+    distro: "Debian",
+  };
+
+  function projectSetup() {
+    const base = setup(["a"]);
+    const opened: Array<[string, OpenMode]> = [];
+    const deps: ProjectStartDeps = {
+      store: base.store,
+      createSession: base.deps.createSession,
+      open: (sessionId, mode) => opened.push([sessionId, mode]),
+    };
+    return { ...base, opened, deps };
+  }
+
+  it("creates the session in the project directory and opens it by the mode of the click", async () => {
+    const { deps, created, opened, store } = projectSetup();
+
+    await startProjectSession(deps, project, "tab");
+    await startProjectSession(deps, project, "newTab");
+    await startProjectSession(deps, project, "split");
+
+    expect(created[0]).toEqual({
+      name: "api",
+      workspaceId: "w1",
+      launch: { backend: "wsl", distro: "Debian", cwd: "/srv/api" },
+    });
+    expect(opened).toEqual([
+      ["new1", "tab"],
+      ["new2", "newTab"],
+      ["new3", "split"],
+    ]);
+    // The store knows the sessions before the event of the main process arrives.
+    expect(store.getState().sessions.map((each) => each.id)).toEqual(["a", "new1", "new2", "new3"]);
+  });
+
+  it("names further sessions of the project docs, docs 2 and so on", async () => {
+    const { deps, created } = projectSetup();
+
+    await startProjectSession(deps, project, "tab");
+    await startProjectSession(deps, project, "tab");
+    await startProjectSession(deps, project, "tab");
+
+    expect(created.map((params) => params.name)).toEqual(["api", "api 2", "api 3"]);
+  });
+
+  it("starts no session for a split when the active tab is full, like splitting does", async () => {
+    const { deps, created, opened, store } = projectSetup();
+    const tab = activeTab(store.getState())!;
+    for (let i = 0; i < 3; i++) store.splitPane(tab.id, tab.activePaneId, "row", "a");
+
+    await expect(startProjectSession(deps, project, "split")).rejects.toThrow("Höchstens 4 Panes je Tab");
+    // Another way to open it does not need a pane.
+    await startProjectSession(deps, project, "newTab");
+
+    expect(created).toHaveLength(1);
+    expect(opened).toEqual([["new1", "newTab"]]);
+  });
+
+  it("rejects with the reason of the core and opens nothing", async () => {
+    const { deps, opened, store, failCreate } = projectSetup();
+    failCreate(new Error("[invalid_argument] Pfad /srv/api fehlt"));
+
+    await expect(startProjectSession(deps, project, "tab")).rejects.toThrow("Pfad /srv/api fehlt");
+
+    expect(opened).toEqual([]);
+    expect(store.getState().sessions.map((each) => each.id)).toEqual(["a"]);
+  });
+
+  it("refuses a second start while the first is being created, and allows one afterwards", async () => {
+    const { deps, created, opened, holdCreate } = projectSetup();
+    const release = holdCreate();
+
+    const first = startProjectSession(deps, project, "tab");
+    await expect(startProjectSession(deps, project, "tab")).rejects.toThrow(SPLIT_BUSY);
+    release();
+    await first;
+    await startProjectSession(deps, project, "tab");
+
+    expect(created).toHaveLength(2);
+    expect(opened).toHaveLength(2);
+  });
+
+  it("refuses a project start while a split is creating its session", async () => {
+    const { deps, created, holdCreate, run } = projectSetup();
+    const release = holdCreate();
+
+    const split = run("splitRow");
+    await expect(startProjectSession(deps, project, "tab")).rejects.toThrow(SPLIT_BUSY);
+    release();
+    await split;
+
+    expect(created).toHaveLength(1);
+  });
+
+  it("allows a new start after a failed one", async () => {
+    const { deps, opened, failCreate } = projectSetup();
+    failCreate(new Error("boom"));
+    await expect(startProjectSession(deps, project, "tab")).rejects.toThrow("boom");
+    failCreate(undefined);
+
+    await startProjectSession(deps, project, "tab");
+
+    expect(opened).toHaveLength(1);
   });
 });

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanStaleSockets,
+  SCENE_GROUPS,
+  screenshotScenes,
   staleSockets,
   isolatedCore,
   QuietWatch,
@@ -22,6 +24,40 @@ describe("screenshotDir", () => {
     expect(screenshotDir(["electron.exe", "."])).toBeUndefined();
     expect(() => screenshotDir(["electron.exe", ".", "--screenshot"])).toThrow(/directory/);
     expect(() => screenshotDir(["electron.exe", ".", "--screenshot", "--other"])).toThrow(/directory/);
+  });
+});
+
+describe("screenshotScenes", () => {
+  const base = ["electron.exe", ".", "--screenshot", "P:/shots"];
+
+  it("runs every group without the option, in the fixed order", () => {
+    expect(screenshotScenes(base)).toEqual(SCENE_GROUPS);
+  });
+
+  it("runs the listed groups, in the fixed order and once each", () => {
+    expect(screenshotScenes([...base, "--scenes", "settings,search"])).toEqual(["search", "settings"]);
+    expect(screenshotScenes([...base, "--scenes", " snap , snap"])).toEqual(["snap"]);
+  });
+
+  it("reads the option wherever it stands", () => {
+    expect(screenshotScenes(["electron.exe", ".", "--scenes", "tabs", "--screenshot", "P:/shots"])).toEqual([
+      "tabs",
+    ]);
+  });
+
+  it("names the valid groups for an unknown name", () => {
+    expect(() => screenshotScenes([...base, "--scenes", "search,nope"])).toThrow(/nope/);
+    expect(() => screenshotScenes([...base, "--scenes", "nope"])).toThrow(
+      new RegExp(SCENE_GROUPS.join(", ")),
+    );
+  });
+
+  it("refuses the form with an equals sign instead of running every group", () => {
+    expect(() => screenshotScenes([...base, "--scenes=search"])).toThrow(/space/);
+  });
+
+  it.each([[[]],[[""]], [[","]], [["--other"]]])("refuses an empty list (%j)", (rest) => {
+    expect(() => screenshotScenes([...base, "--scenes", ...rest])).toThrow(/at least one/);
   });
 });
 

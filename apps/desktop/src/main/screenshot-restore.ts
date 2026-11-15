@@ -125,6 +125,13 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   await closeAllWindows(true);
   await flushLayout();
 
+  // Sessions that the split scenes create in a full run; a run of this group alone makes them here.
+  const existing = new Set((await core.request("session.list", {})).result.sessions.map((s) => s.name));
+  for (const name of ["Editor", "Shell", "Misc"]) {
+    if (!existing.has(name))
+      await core.request("session.create", { name, launch: { backend: "wsl", cwd: "/" } });
+  }
+
   const listed = await core.request("session.list", {});
   const byName = (name: string): SessionInfo => {
     const found = listed.result.sessions.find((session) => session.name === name);
@@ -147,7 +154,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   first.setBounds({ x: 40, y: 40, width: 1000, height: 640 });
   await waitFor(
     first,
-    `document.querySelectorAll('[data-session-name]').length >= 10`,
+    `document.querySelectorAll('[data-session-name]').length >= 9`,
     "the sessions in window 1",
   );
   await click(first, sessionSelector("Build"));
@@ -164,7 +171,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   second.setBounds({ x: 120, y: 100, width: 900, height: 600 });
   await waitFor(
     second,
-    `document.querySelectorAll('[data-session-name]').length >= 10`,
+    `document.querySelectorAll('[data-session-name]').length >= 9`,
     "the sessions in window 2",
   );
   await click(second, sessionSelector("Shell"));

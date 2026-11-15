@@ -51,7 +51,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 
 - CI läuft auf `windows-latest` (Typecheck, Lint, Format, Unit-Tests) und prüft OpenSpec.
 - **Merge:** erst den Worktree entfernen, dann mergen. Die genaue Befehlsfolge steht im Skill `orchestrate-issues`, Abschnitt 5.
-- **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar.
+- **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Mit `--scenes <gruppe,…>` läuft nur eine Szenengruppe (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`; jede bringt ihren Aufbau mit, ein unbekannter Name beendet den Lauf mit Code 1); die Arbeit an einer Szene prüft die Gruppe, vor dem PR läuft einmal alles. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar.
 - Verbotene Befehle (u. a. `git restore`, `git stash`, `git reset --hard`): siehe Abschnitt 5.
 
 ## 5. Agent-Konfiguration

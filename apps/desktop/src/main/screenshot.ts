@@ -12,6 +12,42 @@ export function screenshotDir(argv: readonly string[]): string | undefined {
   return dir;
 }
 
+/**
+ * The scene groups of a screenshot run, in the order of a full run. Each group builds the state it needs itself,
+ * so it also runs alone (`--scenes <group>`); `screenshot-scenario.ts` plays them.
+ */
+export const SCENE_GROUPS = [
+  "scenario",
+  "sidebar",
+  "tabs",
+  "snap",
+  "restore",
+  "quit",
+  "search",
+  "settings",
+] as const;
+
+export type SceneGroup = (typeof SCENE_GROUPS)[number];
+
+/**
+ * Groups after `--scenes <name,…>`: all without the option, otherwise the listed ones in the order of
+ * `SCENE_GROUPS`. An unknown name or an empty list throws; the message names the valid groups.
+ */
+export function screenshotScenes(argv: readonly string[]): readonly SceneGroup[] {
+  if (argv.some((arg) => arg.startsWith("--scenes=")))
+    throw new Error("Write --scenes <group,…> with a space, not --scenes=<group,…>");
+  const index = argv.indexOf("--scenes");
+  if (index < 0) return SCENE_GROUPS;
+  const value = argv[index + 1];
+  const names = value === undefined || value.startsWith("--") ? [] : value.split(",").map((n) => n.trim());
+  const listed = names.filter((name) => name !== "");
+  if (listed.length === 0) throw new Error(`--scenes needs at least one group: ${SCENE_GROUPS.join(", ")}`);
+  const unknown = listed.filter((name) => !(SCENE_GROUPS as readonly string[]).includes(name));
+  if (unknown.length > 0)
+    throw new Error(`Unknown scene group ${unknown.join(", ")}; valid groups: ${SCENE_GROUPS.join(", ")}`);
+  return SCENE_GROUPS.filter((group) => listed.includes(group));
+}
+
 export interface IsolatedCore {
   pipePath: string;
   /** Environment for the started core; nothing of it reaches the productive core or socket `termdock`. */

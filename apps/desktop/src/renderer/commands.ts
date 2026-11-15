@@ -133,9 +133,6 @@ export interface ProjectStartDeps {
   open(sessionId: string, mode: OpenMode): void;
 }
 
-/** Stores with a project start in flight; a second click would create a second session. */
-const startingProject = new WeakSet<UiStore>();
-
 /**
  * Starts a shell in the directory of the project and opens it like a new session (#104). Rejects with the reason
  * (the core's refusal, or a start that is still running); the caller shows it. The session is not recorded on the
@@ -146,13 +143,14 @@ export async function startProjectSession(
   project: Project,
   mode: OpenMode,
 ): Promise<void> {
-  if (startingProject.has(deps.store)) throw new Error(SPLIT_BUSY);
-  startingProject.add(deps.store);
+  // The guard of the splits: one session is being started at a time, whether by split or by project.
+  if (splitting.has(deps.store)) throw new Error(SPLIT_BUSY);
+  splitting.add(deps.store);
   let created: SessionInfo;
   try {
     created = await deps.createSession(projectSessionParams(project));
   } finally {
-    startingProject.delete(deps.store);
+    splitting.delete(deps.store);
   }
   // The event of the main process may have added it already; the store keeps what it has.
   deps.store.sessionCreated(created);

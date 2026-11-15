@@ -672,6 +672,18 @@ describe("startProjectSession (#104)", () => {
     expect(opened).toHaveLength(2);
   });
 
+  it("refuses a project start while a split is creating its session", async () => {
+    const { deps, created, holdCreate, run } = projectSetup();
+    const release = holdCreate();
+
+    const split = run("splitRow");
+    await expect(startProjectSession(deps, project, "tab")).rejects.toThrow(SPLIT_BUSY);
+    release();
+    await split;
+
+    expect(created).toHaveLength(1);
+  });
+
   it("allows a new start after a failed one", async () => {
     const { deps, opened, failCreate } = projectSetup();
     failCreate(new Error("boom"));

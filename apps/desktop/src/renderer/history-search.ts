@@ -59,8 +59,48 @@ export function formatHitTime(timestamp: number): string {
 export type SearchView =
   | { status: "idle" }
   | { status: "searching"; query: string }
-  | { status: "done"; query: string; groups: HitGroup[]; total: number; truncated: boolean }
+  | {
+      status: "done";
+      query: string;
+      groups: HitGroup[];
+      total: number;
+      truncated: boolean;
+      /** Index of the chosen hit over all groups in display order; -1 when none is chosen. */
+      selected: number;
+    }
   | { status: "error"; query: string; message: string };
+
+export type SelectionKey = "ArrowDown" | "ArrowUp" | "Home" | "End";
+
+/**
+ * Hit chosen after a key. ArrowDown starts at the first hit, ArrowUp at the last; both stop at the ends (no
+ * wrapping: with up to 100 hits, Home and End are the way across). -1 when there are no hits.
+ */
+export function moveSelection(count: number, current: number, key: SelectionKey): number {
+  if (count <= 0) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  const valid = current >= 0 && current < count;
+  if (key === "ArrowDown") return valid ? Math.min(current + 1, count - 1) : current < 0 ? 0 : count - 1;
+  return valid ? Math.max(current - 1, 0) : count - 1;
+}
+
+/** The hit with this index, counted over all groups in display order. */
+export function hitAt(
+  groups: readonly HitGroup[],
+  index: number,
+): { group: HitGroup; hit: HistoryHit } | undefined {
+  if (index < 0) return undefined;
+  let rest = index;
+  for (const group of groups) {
+    if (rest < group.hits.length) return { group, hit: group.hits[rest]! };
+    rest -= group.hits.length;
+  }
+  return undefined;
+}
+
+/** DOM id of the hit with this index, for `aria-activedescendant`. */
+export const hitDomId = (index: number): string => `search-hit-${index}`;
 
 const IDLE: SearchView = { status: "idle" };
 
@@ -84,6 +124,8 @@ export class HistorySearchModel {
   private timer: unknown;
   private generation = 0;
   private disposed = false;
+  /** The text changed after the shown results: they are old, so keys must not choose or open from them. */
+  private stale = false;
   private readonly listeners = new Set<() => void>();
 
   constructor(
@@ -103,11 +145,14 @@ export class HistorySearchModel {
     this.cancelTimer();
     // The text changed: an answer to an older text must not show next to it.
     this.generation++;
+    this.stale = true;
     const query = raw.trim();
     if (query === "") {
       this.set(IDLE);
       return;
     }
+    // The old results stay until the answer comes, but nothing in them stays chosen (Home/End go back to the caret).
+    if (this.view.status === "done" && this.view.selected >= 0) this.set({ ...this.view, selected: -1 });
     this.timer = this.timers.set(() => {
       this.timer = undefined;
       void this.run(query);
@@ -131,17 +176,46 @@ export class HistorySearchModel {
     try {
       const { hits, truncated } = await this.api.searchHistory(query, SEARCH_LIMIT);
       if (generation !== this.generation) return;
+      this.stale = false;
       this.set({
         status: "done",
         query,
         groups: groupHits(hits, this.sessions()),
         total: hits.length,
         truncated,
+        selected: -1,
       });
     } catch (error) {
       if (generation !== this.generation) return;
       this.set({ status: "error", query, message: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  /**
+   * A navigation key in the text field. Returns whether the model used it (the caller then stops the default
+   * action). Home and End stay with the text caret until a hit is chosen; keys do nothing on old results.
+   */
+  move(key: SelectionKey): boolean {
+    const view = this.view;
+    if (view.status !== "done" || this.stale || view.total === 0) return false;
+    if ((key === "Home" || key === "End") && view.selected < 0) return false;
+    const selected = moveSelection(view.total, view.selected, key);
+    if (selected !== view.selected) this.set({ ...view, selected });
+    return true;
+  }
+
+  /**
+   * Enter in the text field. With a chosen hit of the shown results, returns its session for the caller to open.
+   * Otherwise (nothing chosen, or the text changed since) it searches now and returns undefined.
+   */
+  activate(raw: string): SessionId | undefined {
+    const view = this.view;
+    if (view.status === "done" && !this.stale) {
+      const chosen = hitAt(view.groups, view.selected);
+      if (chosen) return chosen.group.sessionId;
+    }
+    void this.run(raw);
+    return undefined;
   }
 
   dispose(): void {

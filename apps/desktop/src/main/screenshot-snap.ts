@@ -1,5 +1,6 @@
 // Scenes of the screenshot mode for the layout patterns while dragging (#78, ADR 0006). The mouse is real
-// (`webContents.sendInputEvent`): a tab dragged to the top edge of the tab area opens the bar, its fields are named
+// (`webContents.sendInputEvent`): crossing or moving along the top edge keeps the bar closed, a tab resting there
+// opens it (one row, not too high), its fields are named
 // after the views that would land there, Esc aborts, a drop arranges the active tab, and the pane menu offers the same
 // patterns by keyboard. Besides the pictures it checks that no view is attached again and every role stays. Needs
 // Electron, WSL and the isolated core; no unit test (patterns, targets, menus and store are tested).
@@ -12,6 +13,8 @@ import type { ScenarioDeps } from "./screenshot-scenario.js";
 
 const tabSelector = (title: string): string => `.tab[data-tab-title=${JSON.stringify(title)}]`;
 const PANES = `.pane[data-tab-active="true"]`;
+/** Upper bound of the bar's height in one row (80 px fields, label, padding in `styles.css`; ADR 0006). */
+const SNAP_BAR_MAX_HEIGHT_PX = 130;
 const field = (pattern: string, slot: number): string =>
   `[data-snap-pattern="${pattern}"] [data-snap-field="${slot}"]`;
 
@@ -127,9 +130,48 @@ export async function snapScenes(deps: ScenarioDeps): Promise<void> {
     });
   };
 
+  // --- Crossing the top edge does not open the bar; moving in the strip does not either; resting does ------------
+  const barClosed = (): Promise<boolean> =>
+    evaluate<boolean>(`Boolean(document.querySelector('[data-snap-bar="closed"]'))`);
+  const topZone = await pointIn(PANES, 0.5, 0.2);
+  await dragTo(await pointIn(`${tabSelector("Snap A")} .tab__main`), topZone);
+  await sleep(600);
+  expect(await barClosed(), "crossing the top edge on the way to a pane opened the bar");
+  await waitFor(
+    `document.querySelector('[data-drop-overlay="top"]')`,
+    "the top zone of B's pane after crossing",
+  );
+  const stripStart = await pointIn(".tab-panels", 0.4, 0);
+  let moving = { x: stripStart.x, y: stripStart.y + 12 };
+  await moveHeld(topZone, moving);
+  for (let step = 0; step < 15; step += 1) {
+    moving = { x: moving.x + 8, y: moving.y };
+    mouse("mouseMove", moving.x, moving.y);
+    await sleep(60);
+    expect(await barClosed(), "the bar opened while the pointer moved through the strip");
+  }
+  await waitFor(`document.querySelector('[data-snap-bar="open"]')`, "the bar once the pointer rests");
+  await key("Escape");
+  mouse("mouseUp", moving.x, moving.y);
+  await sleep(500);
+  expect((await tabOrder()).length === 3, "the crossing changed the tabs");
+  log("snap: crossing and moving keep the bar closed, resting opens it");
+
   // --- The bar: Tab A over the first field of "1 + 2" ------------------------------------------------------
   let at = await tabToBar("Snap A");
   expect((await hiddenPatterns()).length === 0, "a pattern is hidden for two views");
+  // One row, low enough to leave the top zone (30 %) of the top panes reachable below it.
+  const barShape = await evaluate<{ height: number; rows: number }>(`(() => {
+    const bar = document.querySelector('[data-snap-bar]').getBoundingClientRect();
+    const tops = new Set([...document.querySelectorAll('.snap-pattern:not(.snap-pattern--hidden)')]
+      .map((p) => Math.round(p.getBoundingClientRect().top)));
+    return { height: bar.height, rows: tops.size };
+  })()`);
+  log(`snap bar: ${JSON.stringify(barShape)}`);
+  expect(
+    barShape.rows === 1 && barShape.height <= SNAP_BAR_MAX_HEIGHT_PX,
+    `the bar is ${barShape.height} px high in ${barShape.rows} rows`,
+  );
   let to = await pointIn(field("mainLeft", 0));
   await moveHeld(at, to);
   await waitFor(

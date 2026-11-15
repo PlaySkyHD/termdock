@@ -1213,27 +1213,33 @@ body.is-dragging * {
 
 /* --- Layout patterns while dragging (#78): a bar at the top edge of the tab area, one mini layout per pattern --- */
 
-/* Mounted all the time so its fields are drop targets from the start of a drag; shown only when open. */
+/* Mounted and laid out all the time, so its fields are drop targets from the start of a drag and its box gives the
+   width of the strip that opens it; invisible (and so never under the pointer) until it is open. One row as wide as
+   its patterns, centred; it wraps only in a window too narrow for the patterns. */
 .snap-bar {
   position: absolute;
   top: 8px;
-  left: 50%;
+  right: 8px;
+  left: 8px;
   z-index: 20;
-  display: none;
+  display: flex;
+  box-sizing: border-box;
   flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
+  width: fit-content;
   max-width: calc(100% - 16px);
+  margin-inline: auto;
   padding: 10px 12px 6px;
   border: 1px solid var(--td-border);
   border-radius: 6px;
   background: var(--td-sidebar);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
-  transform: translateX(-50%);
+  visibility: hidden;
 }
 
 .snap-bar--open {
-  display: flex;
+  visibility: visible;
 }
 
 .snap-pattern {

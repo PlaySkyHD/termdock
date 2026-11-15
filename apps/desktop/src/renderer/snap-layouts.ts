@@ -234,15 +234,17 @@ function sameTree(a: PaneNode, b: PaneNode): boolean {
 export const SNAP_REVEAL_PX = 32;
 /** How long the pointer has to rest in that strip before the bar opens. */
 export const SNAP_DWELL_MS = 250;
-/** Margin left and right of the open bar that keeps it open. */
+/** A pointer that moves less than this from where it started to rest still rests. */
+export const SNAP_DWELL_SLOP_PX = 4;
+/** Margin left and right of the bar: the strip and the open bar reach this far beside it. */
 export const SNAP_KEEP_PX = 16;
-
 /**
- * What the bar does for the pointer. `dwell`: the pointer is in the strip at the top edge of the tab area (not above
- * it, over the tab bar); the bar opens when it stays there for `SNAP_DWELL_MS`, so a tab dragged from the tab bar
- * down to a pane only crosses the strip. `open`: the bar is open and the pointer is in the strip or over the bar
- * (with a margin at its sides, none below, so the zones of the panes under it come back right away). `close`:
- * anywhere else.
+ * What the bar does for the pointer. `bar` is its box, also while it is closed (it is laid out, only invisible).
+ * Everything happens within the bar's width plus `SNAP_KEEP_PX` at each side. `dwell`: the bar is closed and the
+ * pointer is in the strip at the top edge of the tab area (not above it, over the tab bar); the bar opens when it
+ * rests there for `SNAP_DWELL_MS` (`dwellAnchor`), so a tab dragged from the tab bar down to a pane only crosses
+ * the strip. `open`: the bar is open and the pointer is over it, from the top edge of the area to its bottom (none
+ * below, so the zones of the panes under it come back right away). `close`: anywhere else.
  */
 export function snapBarStep(
   point: { x: number; y: number },
@@ -251,13 +253,21 @@ export function snapBarStep(
   open: boolean,
 ): "open" | "dwell" | "close" {
   const { x, y } = point;
-  if (x < area.left || x > area.left + area.width) return "close";
-  if (y >= area.top && y < area.top + SNAP_REVEAL_PX) return open ? "open" : "dwell";
-  if (!open || !bar) return "close";
-  const over =
-    x >= bar.left - SNAP_KEEP_PX &&
-    x <= bar.left + bar.width + SNAP_KEEP_PX &&
-    y >= area.top &&
-    y <= bar.top + bar.height;
-  return over ? "open" : "close";
+  if (!bar || x < area.left || x > area.left + area.width) return "close";
+  if (x < bar.left - SNAP_KEEP_PX || x > bar.left + bar.width + SNAP_KEEP_PX || y < area.top) return "close";
+  if (open) return y <= Math.max(bar.top + bar.height, area.top + SNAP_REVEAL_PX) ? "open" : "close";
+  return y < area.top + SNAP_REVEAL_PX ? "dwell" : "close";
+}
+
+/**
+ * Where the pointer rests: the previous anchor while the pointer stays within `SNAP_DWELL_SLOP_PX` of it, otherwise
+ * the pointer itself. A new anchor (another object) restarts the wait of `SNAP_DWELL_MS`, so moving through the strip
+ * never opens the bar.
+ */
+export function dwellAnchor(
+  anchor: { x: number; y: number } | undefined,
+  point: { x: number; y: number },
+): { x: number; y: number } {
+  if (anchor && Math.hypot(point.x - anchor.x, point.y - anchor.y) <= SNAP_DWELL_SLOP_PX) return anchor;
+  return { x: point.x, y: point.y };
 }

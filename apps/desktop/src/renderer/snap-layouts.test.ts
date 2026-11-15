@@ -9,6 +9,8 @@ import {
   SNAP_PATTERNS,
   SNAP_REVEAL_PX,
   snapBarStep,
+  dwellAnchor,
+  SNAP_DWELL_SLOP_PX,
   snapFields,
   visiblePatterns,
 } from "./snap-layouts.js";
@@ -259,14 +261,23 @@ describe("snapBarStep", () => {
   const bar = { left: 400, top: 48, width: 400, height: 90 };
 
   it("waits in the strip at the top edge of the tab area before it opens, and stays open there", () => {
-    expect(snapBarStep({ x: 600, y: 41 }, area, undefined, false)).toBe("dwell");
+    expect(snapBarStep({ x: 600, y: 41 }, area, bar, false)).toBe("dwell");
     expect(snapBarStep({ x: 600, y: 41 }, area, bar, true)).toBe("open");
-    expect(snapBarStep({ x: 600, y: 40 + SNAP_REVEAL_PX + 1 }, area, undefined, false)).toBe("close");
+    expect(snapBarStep({ x: 600, y: 40 + SNAP_REVEAL_PX + 1 }, area, bar, false)).toBe("close");
   });
 
-  it("stays closed over the tab bar above and beside the area", () => {
-    expect(snapBarStep({ x: 600, y: 30 }, area, undefined, false)).toBe("close");
-    expect(snapBarStep({ x: 100, y: 45 }, area, undefined, false)).toBe("close");
+  it("stays closed over the tab bar above, beside the area and without the bar's box", () => {
+    expect(snapBarStep({ x: 600, y: 30 }, area, bar, false)).toBe("close");
+    expect(snapBarStep({ x: 100, y: 45 }, area, bar, false)).toBe("close");
+    expect(snapBarStep({ x: 600, y: 41 }, area, undefined, false)).toBe("close");
+  });
+
+  it("works only within the bar's width and its margin, also in the strip", () => {
+    expect(snapBarStep({ x: 390, y: 41 }, area, bar, false)).toBe("dwell");
+    expect(snapBarStep({ x: 380, y: 41 }, area, bar, false)).toBe("close");
+    expect(snapBarStep({ x: 380, y: 41 }, area, bar, true)).toBe("close");
+    expect(snapBarStep({ x: 815, y: 41 }, area, bar, true)).toBe("open");
+    expect(snapBarStep({ x: 820, y: 41 }, area, bar, true)).toBe("close");
   });
 
   it("stays open over the open bar and its sides, and closes right below it for the zones of the panes", () => {
@@ -274,5 +285,33 @@ describe("snapBarStep", () => {
     expect(snapBarStep({ x: 390, y: 100 }, area, bar, true)).toBe("open");
     expect(snapBarStep({ x: 500, y: 130 }, area, bar, false)).toBe("close");
     expect(snapBarStep({ x: 500, y: 139 }, area, bar, true)).toBe("close");
+    expect(snapBarStep({ x: 370, y: 100 }, area, bar, true)).toBe("close");
+  });
+});
+
+describe("dwellAnchor", () => {
+  it("keeps the anchor while the pointer rests within the slop, so the wait goes on", () => {
+    const anchor = dwellAnchor(undefined, { x: 500, y: 50 });
+    expect(anchor).toEqual({ x: 500, y: 50 });
+    expect(dwellAnchor(anchor, { x: 500 + SNAP_DWELL_SLOP_PX, y: 50 })).toBe(anchor);
+    expect(dwellAnchor(anchor, { x: 502, y: 52 })).toBe(anchor);
+  });
+
+  it("moves the anchor, restarting the wait, as soon as the pointer moves farther", () => {
+    const anchor = { x: 500, y: 50 };
+    const moved = dwellAnchor(anchor, { x: 500 + SNAP_DWELL_SLOP_PX + 1, y: 50 });
+    expect(moved).not.toBe(anchor);
+    expect(moved).toEqual({ x: 505, y: 50 });
+  });
+
+  it("never rests while the pointer moves through the strip step by step", () => {
+    let anchor: { x: number; y: number } | undefined;
+    const restarts = [0, 6, 12, 18, 24].map((dx) => {
+      const next = dwellAnchor(anchor, { x: 400 + dx, y: 50 });
+      const restarted = next !== anchor;
+      anchor = next;
+      return restarted;
+    });
+    expect(restarts).toEqual([true, true, true, true, true]);
   });
 });

@@ -1282,7 +1282,7 @@ Nach erfolgreichem Archivieren (Menü, Tastatur, Ziehen aufs Archiv) SHALL die a
 
 ### Requirement: Muster-Leiste beim Ziehen
 
-Verweilt ein gezogener Tab oder ein Pane kurz am oberen Rand des Tab-Bereichs, SHALL oben eine Leiste mit den Mustern „2 nebeneinander“, „2 übereinander“, „1 + 2“, „2 + 1“ und „2 × 2“ erscheinen. Sichtbar MUST nur ein Muster mit Platz für alle Views sein, die es ordnet (höchstens 4 Panes). Jedes Feld SHALL Namen und Statuspunkt der View zeigen, die dort landen würde; das Feld des gezogenen Elements ist markiert, freie Felder heißen „leer“.
+Ruht ein gezogener Tab oder ein Pane kurz am oberen Rand des Tab-Bereichs (innerhalb der Breite der Leiste), SHALL oben eine einzeilige Leiste mit den Mustern „2 nebeneinander“, „2 übereinander“, „1 + 2“, „2 + 1“ und „2 × 2“ erscheinen. Sichtbar MUST nur ein Muster mit Platz für alle Views sein, die es ordnet (höchstens 4 Panes). Jedes Feld SHALL Namen und Statuspunkt der View zeigen, die dort landen würde; das Feld des gezogenen Elements ist markiert, freie Felder heißen „leer“.
 
 #### Scenario: Leiste mit beschrifteten Feldern
 
@@ -1299,8 +1299,14 @@ Verweilt ein gezogener Tab oder ein Pane kurz am oberen Rand des Tab-Bereichs, S
 #### Scenario: Leiste nur am oberen Rand
 
 - **GIVEN** ein Tab wird gezogen
-- **WHEN** der Zeiger über der Tab-Leiste oder in der Mitte eines Panes steht oder den oberen Rand nur auf dem Weg zur oberen Zone eines Panes überquert
+- **WHEN** der Zeiger über der Tab-Leiste oder in der Mitte eines Panes steht, den oberen Rand nur auf dem Weg zur oberen Zone eines Panes überquert oder sich im Rand weiter bewegt
 - **THEN** bleibt die Leiste geschlossen, die Zonen der Panes gelten wie bisher
+
+#### Scenario: Offene Leiste nur über sich selbst
+
+- **GIVEN** die Leiste ist offen
+- **WHEN** der Zeiger unter ihre Unterkante oder mehr als 16 Pixel neben sie geht
+- **THEN** schließt sie, und die Zonen der Panes darunter gelten sofort wieder
 
 ### Requirement: Ablegen auf ein Muster
 

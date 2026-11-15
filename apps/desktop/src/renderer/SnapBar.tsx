@@ -10,6 +10,7 @@ import { DROP_TARGET_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { parseZoneTarget } from "./drag/drop-zones.js";
 import { dropSource, snapTarget } from "./layout-drop.js";
 import {
+  dwellAnchor,
   patternRects,
   SNAP_DWELL_MS,
   SNAP_PATTERNS,
@@ -43,11 +44,14 @@ export function SnapBar({ window, sessions, area }: SnapBarProps) {
   const y = dragging?.y;
   const canOpen = shown.length > 0;
 
-  // Opens and closes after the pointer, outside of render: the boxes are read once the page is laid out.
+  // Opens and closes after the pointer, outside of render: the boxes are read once the page is laid out. The closed
+  // bar is laid out too (only invisible), so the strip that opens it is as wide as the bar.
+  const anchor = useRef<{ x: number; y: number }>(undefined);
   useLayoutEffect(() => {
     const stopDwell = (): void => {
       clearTimeout(dwell.current);
       dwell.current = undefined;
+      anchor.current = undefined;
     };
     const areaBox = area.current?.getBoundingClientRect();
     if (x === undefined || y === undefined || !canOpen || !areaBox) {
@@ -55,17 +59,19 @@ export function SnapBar({ window, sessions, area }: SnapBarProps) {
       setOpen(false);
       return;
     }
-    const step = snapBarStep(
-      { x, y },
-      areaBox,
-      open ? bar.current?.getBoundingClientRect() : undefined,
-      open,
-    );
+    const step = snapBarStep({ x, y }, areaBox, bar.current?.getBoundingClientRect(), open);
     if (step === "dwell") {
-      dwell.current ??= setTimeout(() => {
-        dwell.current = undefined;
-        setOpen(true);
-      }, SNAP_DWELL_MS);
+      // Every move beyond the slop restarts the wait: only a pointer that rests opens the bar.
+      const rest = dwellAnchor(anchor.current, { x, y });
+      if (rest !== anchor.current || dwell.current === undefined) {
+        clearTimeout(dwell.current);
+        anchor.current = rest;
+        dwell.current = setTimeout(() => {
+          dwell.current = undefined;
+          anchor.current = undefined;
+          setOpen(true);
+        }, SNAP_DWELL_MS);
+      }
       return;
     }
     stopDwell();

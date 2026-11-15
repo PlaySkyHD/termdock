@@ -7,6 +7,7 @@ import type { FocusDirection } from "./pane-focus.js";
 import { findPane, MAX_PANES, MAX_TABS, PANE_ZONES } from "./pane-tree.js";
 import type { PaneZone } from "./pane-tree.js";
 import type { MenuEntry } from "./sidebar-model.js";
+import { SNAP_PATTERNS, snapViewCount } from "./snap-layouts.js";
 
 export type LayoutAction =
   | { kind: "move"; source: MoveSource; target: MoveTarget }
@@ -98,6 +99,13 @@ export function tabMenu(window: LayoutWindow, tabId: string): MenuEntry<LayoutAc
         ...(index === 0 ? { separator: true } : {}),
       }),
     );
+  entries.push(
+    ...snapEntries(
+      window,
+      source,
+      tabId === window.activeTabId ? "Anordnen" : "Mit dem aktiven Tab anordnen",
+    ),
+  );
   entries.push({
     key: "close",
     label: "Tab schließen",
@@ -136,6 +144,7 @@ export function paneMenu(window: LayoutWindow, paneId: string): MenuEntry<Layout
       ...(index === 0 ? { separator: true } : {}),
     }),
   );
+  entries.push(...snapEntries(window, source, "Anordnen"));
   entries.push({
     key: "close",
     label: "Pane schließen",
@@ -143,6 +152,25 @@ export function paneMenu(window: LayoutWindow, paneId: string): MenuEntry<Layout
     separator: true,
   });
   return entries;
+}
+
+/**
+ * The layout patterns (#78) as entries: the tab or pane goes to the first field, the other views of the active tab
+ * follow. The keyboard way to the bar that opens while dragging; disabled with the reason when `canMove` refuses.
+ */
+function snapEntries(window: LayoutWindow, source: MoveSource, verb: string): MenuEntry<LayoutAction>[] {
+  const count = snapViewCount(window, source);
+  return SNAP_PATTERNS.map(({ id, label, slots }, index) => ({
+    ...moveEntry(
+      window,
+      `snap:${id}`,
+      `${verb}: ${label}`,
+      source,
+      { kind: "snap", pattern: id, slot: 0 },
+      count > MAX_PANES ? FULL : count > slots ? "Zu wenige Felder für alle Panes" : "Ändert nichts",
+    ),
+    ...(index === 0 ? { separator: true } : {}),
+  }));
 }
 
 /**

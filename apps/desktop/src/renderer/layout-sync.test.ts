@@ -146,6 +146,24 @@ describe("startLayoutSync", () => {
     expect(api.reports[0]!.activeTabId).toBe(second);
   });
 
+  it("reports a tab arranged after a layout pattern (#78)", async () => {
+    const { api, store, scheduler } = await started();
+    const second = store.openSession("s2", { forceNew: true })!;
+
+    store.focusTab("t1");
+    expect(store.move({ kind: "tab", tabId: second }, { kind: "snap", pattern: "rows", slot: 0 })).toBe(true);
+    scheduler.fire();
+    await settle();
+
+    expect(api.reports).toHaveLength(1);
+    expect(api.reports[0]!.tabs.map((tab) => tab.id)).toEqual(["t1"]);
+    expect(api.reports[0]!.tabs[0]!.root).toMatchObject({
+      kind: "split",
+      direction: "column",
+      children: [{ sessionId: "s2" }, { id: "p1", sessionId: "s1" }],
+    });
+  });
+
   it("starts a new delay for a change after a report", async () => {
     const { api, store, scheduler } = await started();
 

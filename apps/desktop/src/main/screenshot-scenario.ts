@@ -17,6 +17,7 @@ import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
 import { sidebarScenes } from "./screenshot-sidebar.js";
+import { snapScenes } from "./screenshot-snap.js";
 import { tabScenes } from "./screenshot-tabs.js";
 
 const run = promisify(execFile);
@@ -210,6 +211,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await keymapScenes(deps, capture);
   await sidebarScenes(deps);
   await tabScenes(deps);
+  await snapScenes(deps);
   await restoreScenes(deps, wsl);
   await quitScenes(deps, capture);
   await searchScenes(deps);

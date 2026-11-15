@@ -2,7 +2,7 @@ import { MAX_PANES_PER_TAB, MAX_TABS_PER_WINDOW, validateLayoutDocument } from "
 import type { LayoutTab, SessionInfo, SessionState } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { paneContent } from "./pane-placeholder.js";
-import { activeTab, MAX_PANES, MAX_TABS, paneCount, tabSessionId, UiStore } from "./ui-store.js";
+import { activeTab, MAX_PANES, MAX_TABS, paneCount, panesOf, tabSessionId, UiStore } from "./ui-store.js";
 
 function session(
   id: string,
@@ -491,6 +491,109 @@ describe("UiStore move (#67)", () => {
 
     expect(restored.getState().window).toEqual(arranged);
     expect(sessionsOfTabs(restored)).toEqual(["s3", "s1", "s2"]);
+  });
+});
+
+describe("UiStore snap layouts (#78)", () => {
+  /** A tab with `count` panes of sessions s1..sN (opened and split to the right); returns its id and pane ids. */
+  function tabWithPanes(store: UiStore, count: number): { tabId: string; panes: string[] } {
+    const tabId = store.openSession("s1")!;
+    for (let index = 2; index <= count; index++) {
+      const tab = tabOf(store, tabId);
+      store.splitPane(tabId, tab.activePaneId, "row", `s${index}`);
+    }
+    return { tabId, panes: panesOf(tabOf(store, tabId).root).map((pane) => pane.id) };
+  }
+  const paneIds = (store: UiStore, tabId: string): string[] =>
+    panesOf(tabOf(store, tabId).root)
+      .map((pane) => `${pane.id}=${pane.sessionId}`)
+      .sort();
+  const PATTERNS = [
+    ["columns", 2],
+    ["rows", 2],
+    ["mainLeft", 3],
+    ["mainRight", 3],
+    ["grid", 4],
+  ] as const;
+
+  for (const count of [1, 2, 3, 4])
+    for (const [pattern, slots] of PATTERNS)
+      it(`arranges a tab of ${count} pane(s) into ${pattern} when it fits`, () => {
+        const store = newStore();
+        const { tabId, panes } = tabWithPanes(store, count);
+        const before = paneIds(store, tabId);
+        // The first pane goes to the last field: always a change when the pattern holds every pane.
+        const moved = store.move(
+          { kind: "pane", paneId: panes[0]! },
+          { kind: "snap", pattern, slot: slots - 1 },
+        );
+
+        expect(moved).toBe(count > 1 && count <= slots);
+        expect(paneIds(store, tabId)).toEqual(before);
+        expect(tabOf(store, tabId).activePaneId).toBe(moved ? panes[0] : panes.at(-1));
+        expect(validWindow(store)).toBe(true);
+      });
+
+  it("refuses to join a tab beyond 4 panes and changes nothing", () => {
+    const store = newStore();
+    const other = store.openSession("s9", { forceNew: true })!;
+    store.splitPane(other, tabOf(store, other).activePaneId, "row", "s8");
+    const { tabId } = tabWithPanes(store, 3);
+    const before = store.getState().window;
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    expect(store.canMove({ kind: "tab", tabId: other }, { kind: "snap", pattern: "grid", slot: 0 })).toBe(
+      false,
+    );
+    expect(store.move({ kind: "tab", tabId: other }, { kind: "snap", pattern: "grid", slot: 3 })).toBe(false);
+
+    expect(store.getState().window).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+    expect(paneCount(tabOf(store, tabId))).toBe(3);
+  });
+
+  it("joins a tab up to 4 panes: its panes keep ids and sessions, the tab closes", () => {
+    const store = newStore();
+    const other = store.openSession("s9", { forceNew: true })!;
+    const otherPane = tabOf(store, other).activePaneId;
+    const { tabId, panes } = tabWithPanes(store, 3);
+
+    expect(store.move({ kind: "tab", tabId: other }, { kind: "snap", pattern: "grid", slot: 0 })).toBe(true);
+
+    expect(tabIds(store)).toEqual([tabId]);
+    expect(panesOf(tabOf(store, tabId).root).map((pane) => pane.id)).toEqual([otherPane, ...panes]);
+    expect(tabOf(store, tabId).activePaneId).toBe(otherPane);
+  });
+
+  it("keeps the writing and the reading pane of one session as they are (the roles stay)", () => {
+    const store = newStore();
+    const tabId = store.openSession("s1")!;
+    const writer = tabOf(store, tabId).activePaneId;
+    const reader = store.splitPane(tabId, writer, "row", "s1")!;
+    store.splitPane(tabId, writer, "column", "s2");
+
+    store.move({ kind: "pane", paneId: reader }, { kind: "snap", pattern: "mainLeft", slot: 0 });
+
+    const panes = panesOf(tabOf(store, tabId).root);
+    expect(panes.map((pane) => pane.id)[0]).toBe(reader);
+    expect(panes.find((pane) => pane.id === writer)?.sessionId).toBe("s1");
+    expect(panes.find((pane) => pane.id === reader)?.sessionId).toBe("s1");
+    expect(panes).toHaveLength(3);
+  });
+
+  it("restores the arranged window from what it reported", () => {
+    const store = newStore();
+    const { panes } = tabWithPanes(store, 3);
+    store.move({ kind: "pane", paneId: panes[2]! }, { kind: "snap", pattern: "mainRight", slot: 2 });
+    store.move({ kind: "pane", paneId: panes[0]! }, { kind: "snap", pattern: "mainRight", slot: 0 });
+    const arranged = store.getState().window;
+
+    const restored = newStore();
+    restored.loadWindow(structuredClone(arranged));
+
+    expect(restored.getState().window).toEqual(arranged);
+    expect(validateLayoutDocument({ version: 1, windows: [restored.getState().window] }).ok).toBe(true);
   });
 });
 

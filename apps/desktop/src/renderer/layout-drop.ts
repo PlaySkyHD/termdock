@@ -8,6 +8,8 @@ import type { MoveSource, MoveTarget } from "./layout-moves.js";
 import { PANE_ZONES } from "./pane-tree.js";
 import type { PaneZone } from "./pane-tree.js";
 import { SESSION_KIND } from "./sidebar-model.js";
+import { snapPattern } from "./snap-layouts.js";
+import type { SnapPatternId } from "./snap-layouts.js";
 
 export const TAB_KIND = "tab";
 export const PANE_KIND = "pane";
@@ -18,6 +20,8 @@ export const TAB_BAR_END = "tabbar";
 export const paneTarget = (paneId: string): string => `pane:${paneId}`;
 /** Base of a tab's half targets (`tab:<id>:before|after`, `data-drop-zones="sides"`). */
 export const tabTarget = (tabId: string): string => `tab:${tabId}`;
+/** A field of a layout pattern in the bar at the top of the tab area (#78): `snap:<pattern>:<field>`. */
+export const snapTarget = (pattern: SnapPatternId, slot: number): string => `snap:${pattern}:${slot}`;
 
 export function dropSource(payload: DragPayload): MoveSource | undefined {
   switch (payload.kind) {
@@ -39,6 +43,13 @@ export function dropTarget(window: LayoutWindow, targetId: string): MoveTarget |
   if (!parsed) return undefined;
   if (parsed.base.startsWith("pane:") && (PANE_ZONES as readonly string[]).includes(parsed.zone))
     return { kind: "pane", paneId: parsed.base.slice("pane:".length), zone: parsed.zone as PaneZone };
+  if (parsed.base.startsWith("snap:")) {
+    const pattern = snapPattern(parsed.base.slice("snap:".length));
+    const slot = /^\d$/.test(parsed.zone) ? Number(parsed.zone) : -1;
+    return pattern && slot >= 0 && slot < pattern.slots
+      ? { kind: "snap", pattern: pattern.id, slot }
+      : undefined;
+  }
   if (parsed.base.startsWith("tab:") && (parsed.zone === "before" || parsed.zone === "after")) {
     const tabId = parsed.base.slice("tab:".length);
     const index = window.tabs.findIndex((tab) => tab.id === tabId);

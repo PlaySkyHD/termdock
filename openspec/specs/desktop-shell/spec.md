@@ -960,7 +960,7 @@ Esc, ein Loslassen außerhalb gültiger Ziele und ein Verlust des Zeigers (`poin
 
 ### Requirement: Kontextmenü als Tastatur-Alternative
 
-Rechtsklick, Menütaste und Umschalt+F10 auf einer Session, einem Workspace oder einem Projekt SHALL ein Menü (`role="menu"`) mit denselben Aktionen wie Maus und Drag&Drop öffnen: Sessions Öffnen, Umbenennen, Verschieben, Archivieren, Löschen; Workspaces Umbenennen, Projekt hinzufügen, Löschen; Projekte Umbenennen, Löschen. Pfeiltasten wechseln den Eintrag, Enter wählt, Esc schließt und gibt den Fokus zurück. Löschen einer Session ist nur in `Exited`, `Interrupted` und `Archived` wählbar.
+Rechtsklick, Menütaste und Umschalt+F10 auf einer Session, einem Workspace oder einem Projekt SHALL ein Menü (`role="menu"`) mit denselben Aktionen wie Maus und Drag&Drop öffnen: Sessions Öffnen, Umbenennen, Verschieben, Archivieren, Löschen; Workspaces Umbenennen, Projekt hinzufügen, Löschen; Projekte Neue Session hier, Umbenennen, Löschen. Pfeiltasten wechseln den Eintrag, Enter wählt, Esc schließt mit Fokus zurück. Löschen einer Session geht nur in `Exited`, `Interrupted`, `Archived`.
 
 #### Scenario: Verschieben per Tastatur
 
@@ -989,6 +989,12 @@ Rechtsklick, Menütaste und Umschalt+F10 auf einer Session, einem Workspace oder
 
 - **WHEN** der Benutzer bei offenem Menü Esc drückt
 - **THEN** schließt es ohne Aufruf, und der Eintrag hat wieder den Fokus
+
+#### Scenario: Menü eines Projekts
+
+- **GIVEN** ein Projekt „api“ hat den Fokus
+- **WHEN** der Benutzer die Menütaste drückt
+- **THEN** zeigt das Menü „Neue Session hier“, „Umbenennen …“ und „Löschen …“ in dieser Reihenfolge, und der Fokus steht auf „Neue Session hier“
 
 ### Requirement: Archiv-Bereich mit Löschen
 
@@ -1202,3 +1208,52 @@ Im Suchdialog SHALL Pfeil runter und hoch den nächsten und vorigen Treffer übe
 - **GIVEN** der Dialog zeigt Treffer, nichts ist gewählt
 - **WHEN** der Benutzer Pos1 drückt
 - **THEN** bewegt sich der Textcursor im Suchfeld, und die Auswahl bleibt leer
+
+### Requirement: Session im Projekt starten
+
+Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue Session hier“ SHALL eine neue Session im Projekt starten: `session.create` mit Workspace des Projekts, seinem Namen (bei Namensgleichheit „api 2“ …) und `launch` aus Backend, Distro (falls da), Pfad als `cwd`, ohne Shell, Befehl, Umgebung. Sie öffnet sich wie jede neue Session (Strg+Klick Tab, Umschalt+Klick Split; Tab voll: abgewiesen). Fehler und ein gleichzeitiger zweiter Start melden sich in der Statusleiste.
+
+#### Scenario: Klick startet im Projektpfad
+
+- **GIVEN** ein Projekt „api“ mit Pfad `/srv/api` im Workspace „Web“
+- **WHEN** der Benutzer die Zeile „api“ anklickt
+- **THEN** sendet der Main `session.create` mit Name „api“, der `workspaceId` von „Web“ und `launch.cwd` `/srv/api`, und die neue Session ist in einem Tab geöffnet
+
+#### Scenario: Strg+Klick und Umschalt+Klick
+
+- **GIVEN** ein Tab mit der Session `s1` ist aktiv
+- **WHEN** der Benutzer ein Projekt mit Strg+Klick anklickt, danach ein Projekt mit Umschalt+Klick
+- **THEN** liegt die erste neue Session in einem neuen Tab, und die zweite in einem Split neben dem aktiven Pane
+
+#### Scenario: Core lehnt ab
+
+- **GIVEN** ein Projekt, dessen Start der Core mit einem Fehler ablehnt
+- **WHEN** der Benutzer es anklickt
+- **THEN** steht der Grund des Core in der Statusleiste, es entsteht weder Tab noch Session, und die Projektzeile hat den Fokus
+
+#### Scenario: Weiterer Klick
+
+- **GIVEN** eine Session „api“ aus einem früheren Klick auf das Projekt „api“
+- **WHEN** der Benutzer das Projekt erneut anklickt
+- **THEN** sendet der Main `session.create` mit Name „api 2“
+
+#### Scenario: Split bei vollem Tab
+
+- **GIVEN** der aktive Tab hat 4 Panes
+- **WHEN** der Benutzer ein Projekt mit Umschalt+Klick anklickt
+- **THEN** sendet das Fenster kein `session.create`, und die Statusleiste meldet „Höchstens 4 Panes je Tab“
+
+#### Scenario: Doppelklick
+
+- **GIVEN** der Start einer Session für ein Projekt ist unterwegs
+- **WHEN** der Benutzer erneut klickt
+- **THEN** sendet das Fenster kein zweites `session.create`, und die Statusleiste meldet, dass die Session noch gestartet wird
+
+### Requirement: Screenshot-Szene für Projekt-Sessions
+
+Der Screenshot-Modus SHALL das Menü eines Projekts mit „Neue Session hier“ und die gestartete Session im Projektpfad aufnehmen und prüfen, dass der Core die Session mit `cwd` des Projekts, dem Namen und dem Workspace des Projekts kennt und das Terminal das Verzeichnis zeigt. Tritt eine erwartete Änderung nicht ein, SHALL der Lauf mit Code 1 enden.
+
+#### Scenario: Aufnahme
+
+- **WHEN** die App mit `--screenshot <dir>` startet
+- **THEN** enthält `<dir>` zusätzlich PNG-Dateien des Projektmenüs und der Session im Projektpfad

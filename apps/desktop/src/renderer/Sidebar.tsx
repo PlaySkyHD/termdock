@@ -23,6 +23,7 @@ import {
   focusReady,
   isDraggable,
   NEW_WORKSPACE_FOCUS,
+  openModeOf,
   parseTarget,
   projectFocus,
   projectMenu,
@@ -36,11 +37,10 @@ import {
   workspaceMenu,
   workspaceTarget,
 } from "./sidebar-model.js";
-import type { Confirmation, FocusPlan, MenuEntry, SessionAction } from "./sidebar-model.js";
+import type { Confirmation, FocusPlan, MenuEntry, OpenMode, SessionAction } from "./sidebar-model.js";
 import { StateIcon } from "./StateIcon.js";
 
-/** `tab`: open or focus the tab; `newTab`: always a new tab; `split`: next to the active pane. */
-export type OpenMode = "tab" | "newTab" | "split";
+export type { OpenMode };
 
 /** What the sidebar asks of the window. Each rejects with the reason (the message of the core). */
 export interface SidebarActions {
@@ -54,6 +54,8 @@ export interface SidebarActions {
   createProject(workspaceId: string, name: string, path: string): Promise<void>;
   renameProject(projectId: string, name: string): Promise<void>;
   deleteProject(projectId: string): Promise<void>;
+  /** Starts a session in the project and opens it (#104); rejects with the reason (core, or a start still running). */
+  startProjectSession(project: Project, mode: OpenMode): Promise<void>;
 }
 
 export interface SidebarProps {
@@ -271,8 +273,18 @@ export function Sidebar(props: SidebarProps) {
     }
   };
 
-  const runProject = (project: Project, kind: "rename" | "delete"): void => {
-    if (kind === "rename")
+  /** A new session in the project (#104); a failure goes to the status bar and the row keeps the focus. */
+  const startInProject = (project: Project, mode: OpenMode): void =>
+    quietly(
+      actions.startProjectSession(project, mode).catch((error: unknown) => {
+        setPendingFocus(projectFocus(project.id));
+        throw error;
+      }),
+    );
+
+  const runProject = (project: Project, kind: "start" | "rename" | "delete"): void => {
+    if (kind === "start") startInProject(project, "tab");
+    else if (kind === "rename")
       ask(
         "Projekt umbenennen",
         [{ key: "name", label: "Name", value: project.name }],
@@ -412,10 +424,8 @@ export function Sidebar(props: SidebarProps) {
                       data-project-name={project.name}
                       data-project-id={project.id}
                       aria-haspopup="menu"
-                      title={`${project.name} · ${project.path}\nKlick oder Rechtsklick: Aktionen`}
-                      onClick={(event) =>
-                        openMenu(event, `Aktionen für ${project.name}`, projectEntries(project))
-                      }
+                      title={`${project.name} · ${project.path}\nKlick: neue Session im Projekt\nStrg+Klick: in neuem Tab\nUmschalt+Klick: neben dem aktiven Pane\nRechtsklick oder Menütaste: Aktionen`}
+                      onClick={(event) => startInProject(project, openModeOf(event))}
                       onContextMenu={(event) =>
                         openMenu(event, `Aktionen für ${project.name}`, projectEntries(project))
                       }
@@ -574,7 +584,7 @@ function SessionRow({
         aria-haspopup="menu"
         title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace, das Archiv oder ein Pane, Rechtsklick oder Menütaste für Aktionen`}
         {...sourceProps}
-        onClick={(event) => onOpen(session.id, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")}
+        onClick={(event) => onOpen(session.id, openModeOf(event))}
         onContextMenu={onMenu}
       >
         <StateIcon session={session} />

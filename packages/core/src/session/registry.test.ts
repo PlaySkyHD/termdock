@@ -653,6 +653,69 @@ describe("SessionRegistry: output", () => {
       expect(outputs).toEqual([{ text: "after", fromRedraw: false, viewIds: ["view-a"] }]);
     });
 
+    it("flags the repaint of tmux after a resize until the requested redraw ends (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitData("before");
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+      // Like tmux after the client got SIGWINCH: the repaint follows the resize through the PTY.
+      backend.pty(id).emitData("resize-repaint");
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id]);
+      expect(backend.pty(id).resizes).toEqual([{ cols: 120, rows: 40 }]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "before:false",
+        "repaint:true",
+        "resize-repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("merges resizes while a redraw runs into one follow-up and flags them all (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+      // Like dragging the window edge: one resize after the other.
+      for (const cols of [100, 101, 102]) {
+        registry.resize(id, "view-a", { cols, rows: 30 });
+        backend.pty(id).emitData(`resize-${cols}`);
+      }
+      backend.redrawGate = undefined;
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "resize-100:true",
+        "resize-101:true",
+        "resize-102:true",
+        "repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("requests no redraw for a resize to the current size (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      const { size } = registry.get(id);
+
+      registry.resize(id, "view-a", { ...size });
+      backend.pty(id).emitData("live");
+
+      expect(backend.redraws).toEqual([]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual(["live:false"]);
+    });
+
     it("does not flag output when no redraw was requested", async () => {
       const { registry, backend, id, outputs } = await redrawing({}, false);
       backend.pty(id).emitData("buffered");

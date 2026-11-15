@@ -713,11 +713,19 @@ export class SessionRegistry {
     entry.pty.write(data);
   }
 
-  /** Sets the authoritative terminal size. Only the writer may resize (ADR 0003). */
+  /**
+   * Sets the authoritative terminal size. Only the writer may resize (ADR 0003). A changed size of a running
+   * PTY requests a redraw first: tmux repaints the client after the resize, and that repaint arrives while the
+   * redraw call runs, so it is flagged `fromRedraw` like the repaint after an attach (issue #99).
+   */
   resize(sessionId: SessionId, viewId: ViewId, size: TerminalSize): void {
     const entry = this.entry(sessionId);
     this.assertWriter(entry, viewId);
     assertSize(size);
+    const changed = size.cols !== entry.info.size.cols || size.rows !== entry.info.size.rows;
+    const backend = this.backendFor(entry.info.launch);
+    // Before the resize, so that the flag is set when the first byte of the repaint arrives.
+    if (entry.pty && changed && backend) this.requestRedraw(entry, backend);
     entry.pty?.resize(size);
     entry.info.size = { cols: size.cols, rows: size.rows };
     entry.info.updatedAt = this.now().toISOString();

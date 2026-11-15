@@ -476,6 +476,53 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect(await settledHistory()).toContain("after-2");
   }, 60_000);
 
+  it("does not store the repaint of tmux after a resize (issue #99)", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const { session } = (
+      await c.request("session.create", { name: "e2e", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    distros.add(session.launch.distro!);
+    const view = collect(c);
+    const { viewId } = (await c.request("session.attach", { sessionId: session.id })).result;
+    await c.request("session.input", { viewId }, new TextEncoder().encode("echo seen-$((6*7))\r"));
+    await waitFor(() => view().includes("seen-42"), "marker output");
+
+    const history = async () => {
+      let text = "";
+      for await (const entry of readHistory(dataDir, session.id)) text += decoder.decode(entry.data);
+      return text;
+    };
+    // The core writes in the background, and tmux repaints by itself a few seconds after the start.
+    const settledHistory = async () => {
+      let before: string | undefined;
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const now = await history();
+        if (now === before) return now;
+        before = now;
+      }
+      throw new Error("history did not settle");
+    };
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    const stored = await settledHistory();
+    expect(stored).toContain("seen-42");
+
+    // Like dragging the window edge: several resizes right after each other; tmux repaints after each.
+    const shown = occurrences(view(), "seen-42");
+    for (const cols of [90, 91, 92]) {
+      await c.request("session.resize", { viewId, size: { cols, rows: 30 } });
+    }
+    await waitFor(() => occurrences(view(), "seen-42") > shown, "repaint after the resize");
+    expect(await settledHistory()).toBe(stored);
+
+    await c.request("session.input", { viewId }, new TextEncoder().encode("echo after-$((1+1))\r"));
+    await waitFor(() => view().includes("after-2"), "output after the resize");
+    expect(await settledHistory()).toContain("after-2");
+  }, 60_000);
+
   it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
     freshDataDir();
     await startCore();

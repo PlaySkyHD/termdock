@@ -161,7 +161,7 @@ Wird `historyLimitBytes` gesenkt, SHALL der Core beim nächsten Schreiben mit ge
 
 ### Requirement: Neuzeichnen beim Anhängen nicht speichern
 
-Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie die Ausgabe der PTY, die ein Backend-Aufruf dafür neu zeichnet, während dieses Aufrufs und höchstens 2 s je Aufruf als Neuzeichnen kennzeichnen; ein gescheiterter Aufruf beendet die Kennzeichnung sofort. Der Verlauf MUST solche Ausgabe nicht speichern; Views MUST sie unverändert erhalten. Alle übrige Ausgabe SHALL der Verlauf speichern, auch Neuzeichnen, das tmux von selbst oder beim Anbinden einer PTY auslöst.
+Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie die Ausgabe der PTY, die ein Backend-Aufruf dafür neu zeichnet, während dieses Aufrufs und höchstens 2 s je Aufruf als Neuzeichnen kennzeichnen; ein gescheiterter Aufruf beendet das sofort. Der Verlauf MUST solche Ausgabe nicht speichern, Views MUST sie unverändert erhalten. Übrige Ausgabe SHALL er speichern, auch Neuzeichnen von tmux selbst oder beim Anbinden einer PTY, nicht aber nach einer Größenänderung.
 
 #### Scenario: Neuzeichnen beim Anhängen
 
@@ -260,3 +260,31 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 - **GIVEN** Zeilen „a.c“ und „abc“
 - **WHEN** der Client „a.c“ sucht
 - **THEN** liefert der Core nur „a.c“
+
+### Requirement: Neuzeichnen nach Größenänderung nicht speichern
+
+Ändert die schreibende View die Größe einer Session mit PTY, SHALL die Registry vor der Größenänderung der PTY ein Neuzeichnen anfordern; die Ausgabe während dieses Laufs ist gekennzeichnet wie beim Anhängen, und der Verlauf MUST sie nicht speichern. Größenänderungen, während ein Neuzeichnen läuft, SHALL die Registry zu genau einem folgenden zusammenfassen. Eine Größenänderung auf die bisherige Größe MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
+
+#### Scenario: Größenänderung
+
+- **GIVEN** eine WSL-Session mit Logging, einer schreibenden View und gespeicherter Ausgabe „seen-42“
+- **WHEN** die View die Größe ändert und tmux den Bildschirm neu in die PTY schreibt
+- **THEN** entsteht kein neuer Verlaufseintrag, und die View erhält das Neuzeichnen als Ausgabe
+
+#### Scenario: Fenster ziehen
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung noch läuft
+- **WHEN** zwei weitere Größenänderungen folgen und tmux jedes Mal neu zeichnet
+- **THEN** läuft genau ein weiteres Neuzeichnen danach, und keine dieser Ausgaben wird gespeichert
+
+#### Scenario: Ausgabe nach der Größenänderung
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung beendet ist
+- **WHEN** das Programm „after-2“ ausgibt
+- **THEN** speichert der Verlauf „after-2“
+
+#### Scenario: Gleiche Größe
+
+- **GIVEN** eine Session mit PTY und der Größe 80×24
+- **WHEN** die schreibende View die Größe 80×24 sendet
+- **THEN** fordert die Registry kein Neuzeichnen an, und die folgende Ausgabe wird gespeichert

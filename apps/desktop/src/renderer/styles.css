@@ -1183,6 +1183,12 @@ body.is-dragging * {
   outline-offset: -1px;
 }
 
+.search__hit--selected {
+  background: var(--td-hover);
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
 .search__time {
   flex: none;
   color: var(--td-muted);

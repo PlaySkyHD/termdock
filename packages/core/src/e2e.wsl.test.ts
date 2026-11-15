@@ -133,6 +133,24 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     tempDirs.push(dataDir);
   }
 
+  /** Stored history of a session, once it stopped changing: the core writes in the background. */
+  async function settledHistory(sessionId: string): Promise<string> {
+    const history = async () => {
+      let text = "";
+      for await (const entry of readHistory(dataDir, sessionId)) text += decoder.decode(entry.data);
+      return text;
+    };
+    let before: string | undefined;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const now = await history();
+      if (now === before) return now;
+      before = now;
+    }
+    throw new Error("history did not settle");
+  }
+
   it("survives a core restart and reports a session killed from outside as Interrupted", async () => {
     freshDataDir();
     await startCore();
@@ -444,36 +462,20 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     await c.request("session.input", { viewId }, new TextEncoder().encode("echo seen-$((6*7))\r"));
     await waitFor(() => first().includes("seen-42"), "marker output");
 
-    const history = async () => {
-      let text = "";
-      for await (const entry of readHistory(dataDir, session.id)) text += decoder.decode(entry.data);
-      return text;
-    };
-    // The core writes in the background, and tmux repaints by itself a few seconds after the start.
-    const settledHistory = async () => {
-      let before: string | undefined;
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        const now = await history();
-        if (now === before) return now;
-        before = now;
-      }
-      throw new Error("history did not settle");
-    };
+    // tmux repaints by itself a few seconds after the start.
     await new Promise((resolve) => setTimeout(resolve, 6_000));
-    const stored = await settledHistory();
+    const stored = await settledHistory(session.id);
     expect(stored).toContain("seen-42");
 
     const second = await client();
     const repaint = collect(second);
     await second.request("session.attach", { sessionId: session.id });
     await waitFor(() => repaint().includes("seen-42"), "repaint in the second view");
-    expect(await settledHistory()).toBe(stored);
+    expect(await settledHistory(session.id)).toBe(stored);
 
     await c.request("session.input", { viewId }, new TextEncoder().encode("echo after-$((1+1))\r"));
     await waitFor(() => first().includes("after-2"), "output after the attach");
-    expect(await settledHistory()).toContain("after-2");
+    expect(await settledHistory(session.id)).toContain("after-2");
   }, 60_000);
 
   it("does not store the repaint of tmux after a resize (issue #99)", async () => {
@@ -489,25 +491,9 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     await c.request("session.input", { viewId }, new TextEncoder().encode("echo seen-$((6*7))\r"));
     await waitFor(() => view().includes("seen-42"), "marker output");
 
-    const history = async () => {
-      let text = "";
-      for await (const entry of readHistory(dataDir, session.id)) text += decoder.decode(entry.data);
-      return text;
-    };
-    // The core writes in the background, and tmux repaints by itself a few seconds after the start.
-    const settledHistory = async () => {
-      let before: string | undefined;
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        const now = await history();
-        if (now === before) return now;
-        before = now;
-      }
-      throw new Error("history did not settle");
-    };
+    // tmux repaints by itself a few seconds after the start.
     await new Promise((resolve) => setTimeout(resolve, 6_000));
-    const stored = await settledHistory();
+    const stored = await settledHistory(session.id);
     expect(stored).toContain("seen-42");
 
     // Like dragging the window edge: several resizes right after each other; tmux repaints after each.
@@ -516,11 +502,11 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
       await c.request("session.resize", { viewId, size: { cols, rows: 30 } });
     }
     await waitFor(() => occurrences(view(), "seen-42") > shown, "repaint after the resize");
-    expect(await settledHistory()).toBe(stored);
+    expect(await settledHistory(session.id)).toBe(stored);
 
     await c.request("session.input", { viewId }, new TextEncoder().encode("echo after-$((1+1))\r"));
     await waitFor(() => view().includes("after-2"), "output after the resize");
-    expect(await settledHistory()).toContain("after-2");
+    expect(await settledHistory(session.id)).toContain("after-2");
   }, 60_000);
 
   it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {

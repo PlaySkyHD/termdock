@@ -113,5 +113,70 @@ export async function searchScenes(deps: ScenarioDeps): Promise<void> {
     "the Tests tab to be active",
   );
   await capture("28-history-search-opened-session.png");
+
+  // Keyboard (#103): the arrow keys choose a hit of the second group, Enter opens its session. The focus stays in
+  // the field the whole time. Any other outcome ends the run with an error (exit code 1).
+  win.focus();
+  await key("F", ["control", "shift"]);
+  await waitFor(`document.querySelector('[data-dialog="search"]')`, "the search dialog (second time)");
+  await waitFor(
+    `document.activeElement && document.activeElement.dataset.search === 'input'`,
+    "the field to have the focus",
+  );
+  win.webContents.insertText("deploy");
+  await waitFor(
+    `document.querySelectorAll('[data-search-group]').length === 2`,
+    "hits of two sessions",
+    15_000,
+  );
+  const layout = await evaluate<{ names: string[]; counts: number[] }>(
+    `({ names: [...document.querySelectorAll('[data-search-group]')].map((group) => group.dataset.searchGroup),
+       counts: [...document.querySelectorAll('[data-search-group]')].map((group) => group.querySelectorAll('[role=option]').length) })`,
+  );
+  const target = layout.names[1]!;
+  const activeTab = await evaluate<string | null>(
+    `document.querySelector('.tab--active')?.dataset.tabTitle ?? null`,
+  );
+  if (activeTab === target)
+    throw new Error(`The tab ${target} is active already; the scene would show nothing`);
+  // The first hit of the second group comes after all hits of the first one.
+  const steps = layout.counts[0]! + 1;
+  for (let step = 0; step < steps; step++) await key("Down", []);
+  const chosen = await evaluate<{
+    focus: string | undefined;
+    active: string | null;
+    selectedId: string | undefined;
+    group: string | undefined;
+    selectedCount: number;
+  }>(
+    `(() => {
+      const input = document.querySelector('[data-search="input"]');
+      const selected = document.querySelectorAll('[role=option][aria-selected=true]');
+      return {
+        focus: document.activeElement && document.activeElement.dataset.search,
+        active: input.getAttribute('aria-activedescendant'),
+        selectedId: selected[0]?.id,
+        group: selected[0]?.closest('[data-search-group]')?.dataset.searchGroup,
+        selectedCount: selected.length,
+      };
+    })()`,
+  );
+  if (
+    chosen.focus !== "input" ||
+    chosen.selectedCount !== 1 ||
+    chosen.active !== chosen.selectedId ||
+    chosen.group !== target
+  )
+    throw new Error(`Arrow keys did not choose the first hit of ${target}: ${JSON.stringify(chosen)}`);
+  await capture("29-history-search-keyboard-selected.png");
+  log(`history search: the arrow keys chose a hit of ${target}`);
+
+  await key("Return", []);
+  await waitFor(`!document.querySelector('[data-dialog="search"]')`, "the dialog to close after Enter");
+  await waitFor(
+    `document.querySelector('.tab--active[data-tab-title=${JSON.stringify(target)}]')`,
+    `the ${target} tab to be active after Enter`,
+  );
+  await capture("30-history-search-keyboard-opened.png");
   log("history search scenes done");
 }

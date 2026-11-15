@@ -724,7 +724,8 @@ describe("SessionRegistry: output", () => {
       /** Like the WSL backend: a redraw call takes about 270 ms and repaints right before it ends. */
       async function slowRedraws(options: Partial<SessionRegistryOptions> = {}) {
         vi.useFakeTimers();
-        const setup = await redrawing(options, false);
+        // The fake clock drives the monotonic clock of the chain as well.
+        const setup = await redrawing({ monotonicNow: () => Date.now(), ...options }, false);
         const { backend } = setup;
         backend.onRedraw = (sessionId) => {
           backend.redrawGate = new Promise<void>((resolve) =>
@@ -759,6 +760,52 @@ describe("SessionRegistry: output", () => {
         // No flagged follow-up after the limit; the bounded chain also bounds the backend calls.
         expect(backend.redraws.length).toBeLessThanOrEqual(5);
         expect(outputs.at(-1)).toEqual({ text: "after", fromRedraw: false, viewIds: ["view-a"] });
+      });
+
+      it("keeps the follow-up an attach asked for during a resize call flagged past the limit", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        registry.resize(id, "view-a", { cols: 100, rows: 30 });
+        await vi.advanceTimersByTimeAsync(800);
+        // A second resize of the chain: its call runs from 800 to 1070 ms.
+        registry.resize(id, "view-a", { cols: 101, rows: 30 });
+        await vi.advanceTimersByTimeAsync(100);
+        backend.setSnapshot(id, "screen");
+        await registry.attachView(id, "view-b");
+        // The limit passes at 1000 ms; the follow-up for the attach runs from 1070 to 1340 ms.
+        await vi.advanceTimersByTimeAsync(300);
+        backend.pty(id).emitData("during-attach-redraw");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(backend.redraws).toEqual([id, id, id]);
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "repaint:true",
+          // The resize call ends after the limit: its repaint is stored.
+          "repaint:false",
+          "during-attach-redraw:true",
+          "repaint:true",
+          "after:false",
+        ]);
+      });
+
+      it("keeps an attach redraw that runs past the limit of a resize chain flagged", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        registry.resize(id, "view-a", { cols: 100, rows: 30 });
+        await vi.advanceTimersByTimeAsync(850);
+        backend.setSnapshot(id, "screen");
+        // Its call runs from 850 to 1120 ms, across the limit of the chain at 1000 ms.
+        await registry.attachView(id, "view-b");
+        await vi.advanceTimersByTimeAsync(200);
+        backend.pty(id).emitData("during-attach-redraw");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "repaint:true",
+          "during-attach-redraw:true",
+          "repaint:true",
+          "after:false",
+        ]);
       });
 
       it("flags a single resize after a quiet pause again", async () => {

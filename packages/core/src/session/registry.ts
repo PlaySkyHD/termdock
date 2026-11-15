@@ -27,6 +27,8 @@ export interface SessionRegistryOptions {
   backends: readonly Backend[];
   /** Clock for `createdAt`/`updatedAt`; defaults to `new Date()`. */
   now?: () => Date;
+  /** Monotonic clock in ms for durations (resize chains, issue #99); defaults to `performance.now()`. */
+  monotonicNow?: () => number;
   /**
    * Storage of the session metadata (ADR 0004). Every change of a session is saved before it is reported.
    * Without a repository the registry keeps sessions only in memory. Required for `restore()`.
@@ -190,7 +192,9 @@ interface RedrawRun {
 interface ResizeChain {
   /** `RESIZE_REDRAW_MAX_MS` passed since the first resize: resizes request no redraw any more. */
   expired: boolean;
-  /** Time of the last resize in ms. */
+  /** Monotonic time of the first resize in ms. */
+  startedAt: number;
+  /** Monotonic time of the last resize in ms. */
   lastAt: number;
 }
 
@@ -252,6 +256,7 @@ export class SessionRegistry {
   private readonly sessions = new Map<SessionId, SessionEntry>();
   private readonly backends: readonly Backend[];
   private readonly now: () => Date;
+  private readonly monotonicNow: () => number;
   private readonly repository: SessionRepository | undefined;
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
@@ -273,6 +278,7 @@ export class SessionRegistry {
   constructor(options: SessionRegistryOptions) {
     this.backends = options.backends;
     this.now = options.now ?? (() => new Date());
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
     this.redrawOutputMaxMs = options.redrawOutputMaxMs ?? DEFAULT_REDRAW_OUTPUT_MAX_MS;
@@ -721,29 +727,39 @@ export class SessionRegistry {
    * Requests the redraw of a resize, within its chain (issue #99). The first resize after a quiet pause starts a
    * chain; `RESIZE_REDRAW_MAX_MS` later the chain expires: the flag of a running resize call ends, a follow-up
    * only resizes asked for is dropped, and further resizes request nothing. Program output while the window is
-   * dragged is lost for at most that long; afterwards repaints are stored again. The chain ends once no resize
-   * came for `RESIZE_REDRAW_MAX_MS` after it expired.
+   * dragged is lost for at most that long; afterwards repaints are stored again. The chain ends
+   * `RESIZE_REDRAW_MAX_MS` after its last resize, at the earliest at its limit. Durations use the monotonic
+   * clock; the timer ends the flag of a running call, the check here covers a late timer.
    */
   private flagResizeRepaint(entry: SessionEntry, backend: Backend): void {
-    const now = this.now().getTime();
+    const now = this.monotonicNow();
     let chain = entry.resizeChain;
+    if (chain && !chain.expired && now - chain.startedAt >= RESIZE_REDRAW_MAX_MS) {
+      this.expireResizeChain(entry, chain);
+    }
     if (chain?.expired && now - chain.lastAt >= RESIZE_REDRAW_MAX_MS) chain = undefined;
     if (!chain) {
-      const fresh: ResizeChain = { expired: false, lastAt: now };
+      const fresh: ResizeChain = { expired: false, startedAt: now, lastAt: now };
       chain = fresh;
       entry.resizeChain = fresh;
       const limit = setTimeout(() => {
         this.timers.delete(limit);
-        fresh.expired = true;
-        const run = entry.redraw;
-        if (!run || entry.resizeChain !== fresh) return;
-        if (!run.againForAttach) run.again = false;
-        if (!run.callForAttach) run.pty = undefined;
+        this.expireResizeChain(entry, fresh);
       }, RESIZE_REDRAW_MAX_MS);
       this.timers.add(limit);
     }
     chain.lastAt = now;
     if (!chain.expired) this.requestRedraw(entry, backend, "resize");
+  }
+
+  /** Ends the flag a resize chain set; a redraw an attach asked for keeps its flag (issue #88). */
+  private expireResizeChain(entry: SessionEntry, chain: ResizeChain): void {
+    if (chain.expired) return;
+    chain.expired = true;
+    const run = entry.redraw;
+    if (!run || entry.resizeChain !== chain) return;
+    if (!run.againForAttach) run.again = false;
+    if (!run.callForAttach) run.pty = undefined;
   }
 
   /** Detaches a view. The process keeps running; the writer gets no automatic successor (ADR 0005). */

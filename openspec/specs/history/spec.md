@@ -263,7 +263,7 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 
 ### Requirement: Neuzeichnen nach Größenänderung nicht speichern
 
-Ändert die schreibende View die Größe einer Session mit PTY eines Backends mit Neuzeichnen (WSL), SHALL die Registry vor der Größenänderung der PTY ein Neuzeichnen anfordern; dessen Ausgabe ist gekennzeichnet wie beim Anhängen, der Verlauf MUST sie nicht speichern. Größenänderungen während eines Neuzeichnens SHALL sie zu genau einem folgenden zusammenfassen. Eine Größenänderung auf die bisherige Größe oder ohne PTY MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
+Ändert die schreibende View die Größe einer Session mit PTY eines Backends mit Neuzeichnen (WSL), SHALL die Registry vorher ein Neuzeichnen anfordern; dessen Ausgabe ist gekennzeichnet wie beim Anhängen, der Verlauf MUST sie nicht speichern. Größenänderungen während eines Neuzeichnens SHALL sie bis zur Grenze ihrer Kette (nächste Anforderung) zu genau einem folgenden zusammenfassen. Gleiche Größe oder fehlende PTY MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
 
 #### Scenario: Größenänderung
 
@@ -303,7 +303,7 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 
 ### Requirement: Grenze der Kennzeichnung bei Größenänderungen
 
-Größenänderungen, die höchstens 1 s nacheinander folgen, bilden eine Kette. Die Kennzeichnung ihrer Neuzeichnen SHALL ab der ersten Größenänderung der Kette höchstens 1 s dauern; Programmausgabe in dieser Zeit MUST im Verlauf fehlen. Danach SHALL die Registry für die Kette kein Neuzeichnen und kein gekennzeichnetes Folge-Neuzeichnen mehr starten; der Verlauf MUST wieder speichern, auch doppelte Neuzeichnen. Eine Kette endet, wenn nach ihrer Grenze 1 s lang keine Größenänderung kam.
+Eine Größenänderung ohne laufende Kette beginnt eine; Grenze 1 s danach. Sie endet 1 s nach ihrer letzten Größenänderung, frühestens an der Grenze. Die Kennzeichnung ihrer Neuzeichnen SHALL an der Grenze enden; Ausgabe bis dahin MUST im Verlauf fehlen. Danach SHALL die Registry für die Kette kein Neuzeichnen und kein gekennzeichnetes Folge-Neuzeichnen mehr starten, der Verlauf MUST wieder speichern, auch doppelte Neuzeichnen. Neuzeichnen beim Anhängen MUST gekennzeichnet bleiben.
 
 #### Scenario: Fenster lange ziehen
 
@@ -313,9 +313,15 @@ Größenänderungen, die höchstens 1 s nacheinander folgen, bilden eine Kette. 
 
 #### Scenario: Neue Kette nach einer Pause
 
-- **GIVEN** eine Kette, deren Grenze abgelaufen ist, und danach mehr als 1 s ohne Größenänderung
+- **GIVEN** eine Kette, deren Grenze abgelaufen ist, und seit ihrer letzten Größenänderung mehr als 1 s
 - **WHEN** die View die Größe ändert und tmux neu zeichnet
-- **THEN** speichert der Verlauf dieses Neuzeichnen nicht
+- **THEN** beginnt eine neue Kette, und der Verlauf speichert dieses Neuzeichnen nicht
+
+#### Scenario: Anhängen bleibt unberührt
+
+- **GIVEN** eine Kette, deren Grenze in 150 ms abläuft, und eine zweite View, die mit Snapshot des Backends anhängt
+- **WHEN** das Neuzeichnen für das Anhängen über die Grenze hinaus läuft oder als Folge-Neuzeichnen nach dem Aufruf der Größenänderung startet
+- **THEN** speichert der Verlauf weder dieses Neuzeichnen noch die Ausgabe während seines Aufrufs
 
 ### Requirement: Trefferzeilen wie im Terminal
 

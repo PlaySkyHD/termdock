@@ -289,6 +289,13 @@ describe("focus plans", () => {
     expect(focusReady(ungroup, [session("a")])).toBe(true);
   });
 
+  it("waits for an archived session to show up in the archive (#97)", () => {
+    const toArchive = sessionFocus("a", { sessionId: "a", archived: true });
+    expect(focusReady(toArchive, [session("a")])).toBe(false);
+    expect(focusReady(toArchive, [session("a", { state: "Archived" })])).toBe(true);
+    expect(focusReady(toArchive, [])).toBe(true);
+  });
+
   it("does not wait for a session that is gone", () => {
     expect(focusReady(sessionFocus("a", { sessionId: "a", workspaceId: "w1" }), [])).toBe(true);
   });

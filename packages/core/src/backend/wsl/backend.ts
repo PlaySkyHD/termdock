@@ -77,9 +77,16 @@ export class WslBackend implements Backend {
     );
   }
 
-  /** Distros known to WSL and the default one (`wsl.exe -l -v`). */
-  async distros(): Promise<{ names: string[]; defaultDistro: string | undefined }> {
-    const result = await this.exec(listDistrosArgs());
+  /**
+   * Distros known to WSL and the default one (`wsl.exe -l -v`). `timeoutMs` replaces the command timeout, e.g. for
+   * a client that waits for the answer (`wsl.distros`, #64). Rejects with the reason when the call fails.
+   */
+  async distros(
+    options: { timeoutMs?: number } = {},
+  ): Promise<{ names: string[]; defaultDistro: string | undefined }> {
+    const result = await this.run(listDistrosArgs(), {
+      timeoutMs: options.timeoutMs ?? this.commandTimeoutMs,
+    });
     if (result.code !== 0) throw wslError("wsl.exe -l -v", result);
     return parseDistroList(result.stdout);
   }

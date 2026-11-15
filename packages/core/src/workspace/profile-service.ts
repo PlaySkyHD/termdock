@@ -17,6 +17,7 @@ import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput } from "../session/registry.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
 import { defaultCwd } from "./default-cwd.js";
+import { launchDefaults } from "./launch-defaults.js";
 import type { WorkspaceService } from "./service.js";
 
 /** `launch.cwd` of a profile that names no directory of its own: the session takes `defaultCwd(...)`. */
@@ -24,6 +25,9 @@ export const PROFILE_DEFAULT_CWD = "~";
 
 /** Names of `launch.env` variables that obviously hold a secret; a profile does not store them in plain text. */
 const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)$/i;
+
+/** The settings a session from a profile depends on: directory, distro and shell defaults. */
+export type LaunchSettings = Pick<Settings, "defaultCwd" | "defaultDistro" | "defaultShell">;
 
 /** Fields of `session.create` that `ProfileService.sessionInput` combines with the profile. */
 export type ProfileSessionRequest = Pick<
@@ -97,12 +101,13 @@ export class ProfileService {
   /**
    * Launch spec and logging switch of a new session from the profile. An explicit `launch` replaces the spec of
    * the profile as a whole. Without one, a profile `cwd` of `~` becomes `defaultCwd(...)` (project of the profile,
-   * its workspace, `settings`, then `~`).
+   * its workspace, `settings`, then `~`). Either way a missing distro or shell comes from the settings
+   * (`launchDefaults`); the stored profile keeps none, so a later change of the setting applies.
    */
   launchFor(
     profileId: string,
     explicitLaunch: LaunchSpec | undefined,
-    settings: Pick<Settings, "defaultCwd">,
+    settings: LaunchSettings,
   ): ProfileLaunch {
     const profile = this.get(profileId);
     let launch = explicitLaunch;
@@ -117,7 +122,10 @@ export class ProfileService {
         launch = { ...launch, cwd: defaultCwd(input) };
       }
     }
-    const result: ProfileLaunch = { launch, loggingEnabled: profile.loggingEnabled };
+    const result: ProfileLaunch = {
+      launch: launchDefaults(launch, settings),
+      loggingEnabled: profile.loggingEnabled,
+    };
     if (profile.workspaceId !== undefined) result.workspaceId = profile.workspaceId;
     return result;
   }
@@ -130,7 +138,7 @@ export class ProfileService {
   sessionInput(
     profileId: string,
     request: ProfileSessionRequest,
-    settings: Pick<Settings, "defaultCwd">,
+    settings: LaunchSettings,
   ): CreateSessionInput {
     const fromProfile = this.launchFor(profileId, request.launch, settings);
     const input: CreateSessionInput = {

@@ -154,6 +154,9 @@ export const MAX_HISTORY_QUERY_LENGTH = 256;
 export const MAX_HISTORY_SESSION_IDS = 256;
 export const MAX_HISTORY_HITS = 200;
 export const MAX_HISTORY_LINE_LENGTH = 512;
+/** `wsl.distros` (since 1.4): names per answer and characters of the reason why the list is empty. */
+export const MAX_WSL_DISTROS = 64;
+export const MAX_WSL_UNAVAILABLE_LENGTH = 512;
 
 /** A folder of a workspace. `path` is a Linux path for "wsl" and a Windows path for "windows". */
 export interface Project {
@@ -253,5 +256,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 1.2: event `session.created`.
  * 1.3: phase 3 (workspaces, projects, profiles, session update/archive/delete, settings, history search and
  * their events); `session.create` may omit `launch` when it names a `profileId`.
+ * 1.4: method `wsl.distros` (settings dialog, #64).
  */
-export const PROTOCOL_VERSION = "1.3" as const;
+export const PROTOCOL_VERSION = "1.4" as const;

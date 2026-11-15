@@ -30,6 +30,7 @@ import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
 import { QuitDialog } from "./QuitDialog.js";
 import { SearchDialog } from "./SearchDialog.js";
+import { SettingsDialog } from "./SettingsDialog.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { OpenMode, SidebarActions } from "./Sidebar.js";
@@ -208,6 +209,26 @@ export function App({ api }: { api: TermdockApi }) {
     [api],
   );
   const answeredQuits = useRef(new Set<string>());
+  // The settings dialog (#64): Ctrl+, (key map) or the menu entry of the main process, in the focused window.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => {
+    setShortcutsOpen(false);
+    setSearchOpen(false);
+    setSettingsOpen(true);
+  }, []);
+  useEffect(
+    () =>
+      api.onEvent((event) => {
+        // The quit dialog is modal too and wins: the app is about to quit.
+        if (event.kind === "quitRequested") setSettingsOpen(false);
+        else if (event.kind === "openSettings" && !quitOpenRef.current) openSettings();
+      }),
+    [api, openSettings],
+  );
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    refocus();
+  }, [refocus]);
   // The dialog confirms to the main process that it is shown; without that the question is cancelled there.
   const quitRequestId = quit?.requestId;
   useEffect(() => {
@@ -231,6 +252,7 @@ export function App({ api }: { api: TermdockApi }) {
       setSearchOpen(!searchOpen);
       if (searchOpen) refocus();
     },
+    openSettings,
     notify: setNotice,
     refocus,
   };
@@ -439,6 +461,7 @@ export function App({ api }: { api: TermdockApi }) {
             }}
           />
         )}
+        {settingsOpen && <SettingsDialog api={api} onClose={closeSettings} />}
         {shortcutsOpen && (
           <ShortcutsDialog
             onClose={() => {

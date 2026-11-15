@@ -6,7 +6,10 @@ import type { Server, Socket } from "node:net";
 import {
   encodeFrame,
   FrameDecoder,
+  MAX_NAME_LENGTH,
   MAX_PAYLOAD_BYTES,
+  MAX_WSL_DISTROS,
+  MAX_WSL_UNAVAILABLE_LENGTH,
   negotiateHello,
   parseRequest,
 } from "@termdock/protocol";
@@ -23,6 +26,7 @@ import type {
   SessionAttachResult,
   SessionId,
   ViewId,
+  WslDistrosResult,
 } from "@termdock/protocol";
 import type { Disposable } from "../backend/types.js";
 import { CoreError } from "../session/errors.js";
@@ -34,6 +38,7 @@ import { InMemorySettingsRepository } from "../storage/settings-repository.js";
 import type { SettingsRepository } from "../storage/settings-repository.js";
 import { InMemoryWorkspaceRepository } from "../storage/workspace-repository.js";
 import type { WorkspaceRepository } from "../storage/workspace-repository.js";
+import { launchDefaults } from "../workspace/launch-defaults.js";
 import { ProfileService } from "../workspace/profile-service.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { defaultPipeName } from "./pipe-name.js";
@@ -86,6 +91,11 @@ export interface CoreServerOptions {
   /** Backs `history.search`; without it (tests, no history) every search finds nothing. */
   searchHistory?: (params: HistorySearchParams) => Promise<HistorySearchResult>;
   /**
+   * Backs `wsl.distros` (the WSL backend's `distros`); may reject, the answer then names the reason. Without it
+   * (no WSL backend) the answer is an empty list with a reason.
+   */
+  listDistros?: () => Promise<{ names: string[]; defaultDistro: string | undefined }>;
+  /**
    * Requests other than `hello` wait for this before they reach the registry; the core resolves it after the
    * reconcile, so no client sees the state before it. A rejection is answered like any error of the request.
    */
@@ -135,6 +145,7 @@ export class CoreServer {
   private readonly workspaces: WorkspaceService;
   private readonly profiles: ProfileService;
   private readonly historySearch: (params: HistorySearchParams) => Promise<HistorySearchResult>;
+  private readonly listDistros: CoreServerOptions["listDistros"];
   private readonly maxBufferedBytes: number;
   private readonly onShutdown: (() => void) | undefined;
   private readonly helloTimeoutMs: number;
@@ -161,6 +172,7 @@ export class CoreServer {
     this.workspaces = new WorkspaceService(options.workspaces ?? new InMemoryWorkspaceRepository());
     this.profiles = new ProfileService(options.profiles ?? new InMemoryProfileRepository(), this.workspaces);
     this.historySearch = options.searchHistory ?? (async () => ({ hits: [], truncated: false }));
+    this.listDistros = options.listDistros;
     this.ready = options.ready ?? Promise.resolve();
     // Waiting requests observe a rejection; this keeps it from counting as unhandled before one arrives.
     this.ready.catch(() => {});
@@ -409,7 +421,8 @@ export class CoreServer {
         }
         // The parser guarantees a launch spec when there is no profile.
         if (launch === undefined) throw new CoreError("bad_request", "params.launch is required");
-        const input: CreateSessionInput = { name, launch };
+        // Distro and shell the request leaves open come from the settings (spec settings, #64).
+        const input: CreateSessionInput = { name, launch: launchDefaults(launch, this.settings.get()) };
         if (size !== undefined) input.size = size;
         if (workspaceId !== undefined) input.workspaceId = workspaceId;
         if (loggingEnabled !== undefined) input.loggingEnabled = loggingEnabled;
@@ -557,6 +570,26 @@ export class CoreServer {
       // History search: issue #62. Reads only; no state changes, no events.
       case "history.search":
         return { result: await this.historySearch(request.params) };
+      // Settings dialog: issue #64. Reads only; WSL failing is an answer, not an error.
+      case "wsl.distros":
+        return { result: await this.wslDistros() };
+    }
+  }
+
+  private async wslDistros(): Promise<WslDistrosResult> {
+    if (!this.listDistros) return { distros: [], unavailable: "No WSL backend is configured" };
+    try {
+      const { names, defaultDistro } = await this.listDistros();
+      // Names the contract does not allow are left out, so one odd entry does not cost the whole list.
+      const distros = names
+        .filter((name) => name.trim().length > 0 && name.length <= MAX_NAME_LENGTH)
+        .slice(0, MAX_WSL_DISTROS);
+      return defaultDistro !== undefined && distros.includes(defaultDistro)
+        ? { distros, defaultDistro }
+        : { distros };
+    } catch (error) {
+      const reason = error instanceof Error && error.message !== "" ? error.message : "WSL is not available";
+      return { distros: [], unavailable: reason.slice(0, MAX_WSL_UNAVAILABLE_LENGTH) };
     }
   }
 

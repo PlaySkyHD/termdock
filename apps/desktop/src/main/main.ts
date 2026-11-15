@@ -315,6 +315,16 @@ async function main(): Promise<void> {
         label: "Datei",
         submenu: [
           { label: "Neues Fenster", accelerator: "CmdOrCtrl+Shift+N", click: () => void createWindow() },
+          // The key is the renderer's (key map, #64), so it also works in the terminal; the menu only shows it.
+          {
+            label: "Einstellungen …",
+            accelerator: "CmdOrCtrl+,",
+            registerAccelerator: false,
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+              if (win) bridge.sendTo(win.webContents.id, { kind: "openSettings" });
+            },
+          },
           { type: "separator" },
           { label: "Beenden", role: "quit" },
         ],

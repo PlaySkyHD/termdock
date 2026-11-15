@@ -54,6 +54,13 @@ const api: TermdockApi = {
   quitShown: async (requestId) => void (await call({ method: "quitShown", requestId })),
   searchHistory: (query, limit) =>
     call({ method: "searchHistory", query, ...(limit === undefined ? {} : { limit }) }),
+  getSettings: () => call({ method: "getSettings" }),
+  updateSettings: (settings) => call({ method: "updateSettings", settings }),
+  listProfiles: () => call({ method: "listProfiles" }),
+  createProfile: (profile) => call({ method: "createProfile", profile }),
+  updateProfile: (profileId, change) => call({ method: "updateProfile", profileId, change }),
+  deleteProfile: async (profileId) => void (await call({ method: "deleteProfile", profileId })),
+  listDistros: () => call({ method: "listDistros" }),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

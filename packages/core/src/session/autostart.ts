@@ -1,8 +1,8 @@
 // Autostart of launch profiles (issue #61, spec launch-profiles, ADR 0005): once per Core start, after the
 // reconcile, only from the Core. No client request reaches this module.
-import type { BackendKind, LaunchProfile, SessionInfo, SessionState, Settings } from "@termdock/protocol";
+import type { BackendKind, LaunchProfile, SessionInfo, SessionState } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
-import type { ProfileService } from "../workspace/profile-service.js";
+import type { LaunchSettings, ProfileService } from "../workspace/profile-service.js";
 import type { SessionRegistry } from "./registry.js";
 
 /** States in which a session of a profile counts as its running instance. */
@@ -16,8 +16,11 @@ export interface AutostartOptions {
   /** Already restored: the autostart sees the reconciled states. */
   registry: SessionRegistry;
   profiles: ProfileService;
-  /** The stored settings, read once; `defaultCwd` takes part in the directory of a profile with `cwd: "~"`. */
-  settings: () => Pick<Settings, "defaultCwd">;
+  /**
+   * The stored settings, read once; `defaultCwd` takes part in the directory of a profile with `cwd: "~"`,
+   * `defaultDistro` and `defaultShell` fill a launch spec without distro or shell (#64).
+   */
+  settings: () => LaunchSettings;
   backends: readonly Backend[];
   /** Backends the reconcile found unreachable and reported; they are neither asked nor reported again. */
   knownUnavailable?: readonly BackendKind[];
@@ -85,7 +88,7 @@ export async function runAutostart(options: AutostartOptions): Promise<Autostart
     );
   }
 
-  let settings: Pick<Settings, "defaultCwd">;
+  let settings: LaunchSettings;
   try {
     settings = options.settings();
   } catch (error) {
@@ -137,7 +140,7 @@ function newer(a: SessionInfo, b: SessionInfo | undefined): boolean {
  */
 function start(
   plan: Plan,
-  settings: Pick<Settings, "defaultCwd">,
+  settings: LaunchSettings,
   options: AutostartOptions,
   result: AutostartResult,
 ): Promise<void> {

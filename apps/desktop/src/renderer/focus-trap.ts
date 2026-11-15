@@ -11,7 +11,9 @@ export function nextFocusIndex(count: number, current: number, backwards: boolea
   return backwards ? (current - 1 + count) % count : (current + 1) % count;
 }
 
-const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
+/** What Tab may reach inside a trap; selects and text areas since the settings dialog (#64). */
+export const FOCUSABLE =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
 /**
  * Keeps the focus inside `root` until the returned function is called. `fallback` gets the focus when it escapes

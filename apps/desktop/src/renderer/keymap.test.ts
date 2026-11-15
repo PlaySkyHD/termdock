@@ -208,3 +208,25 @@ describe("handleKey", () => {
     expect(key.preventDefault).not.toHaveBeenCalled();
   });
 });
+
+describe("settings dialog key (#64)", () => {
+  it("maps Ctrl+, to openSettings by the physical key, and nothing else with that key", () => {
+    expect(DEFAULT_KEYMAP.openSettings).toBe("Ctrl+,");
+    expect(resolveKey(press("Comma", { ctrlKey: true, key: "," }))).toBe("openSettings");
+    expect(resolveKey(press("Comma", { ctrlKey: true, shiftKey: true, key: ";" }))).toBeUndefined();
+    expect(resolveKey(press("Comma", { key: "," }))).toBeUndefined();
+  });
+
+  it("runs the command itself: the menu only shows the key", () => {
+    const commands = { applies: vi.fn(() => true), run: vi.fn() };
+    const key = { ...press("Comma", { ctrlKey: true, key: "," }), preventDefault: vi.fn() };
+    expect(handleKey(key, commands)).toBe(false);
+    expect(commands.run).toHaveBeenCalledWith("openSettings");
+    expect(key.preventDefault).toHaveBeenCalled();
+    expect(overviewRows().find((row) => row.command === "openSettings")).toEqual({
+      command: "openSettings",
+      label: "Einstellungen",
+      shortcut: "Ctrl+,",
+    });
+  });
+});

@@ -301,4 +301,25 @@ describe("WslBackend", () => {
     backend.dispose();
     expect(running()).toEqual([]);
   });
+
+  it("lists the distros with its own timeout and fails with the reason (issue #64)", async () => {
+    const timeouts: number[] = [];
+    let answer: RunResult = ok("  NAME STATE VERSION\r\n* Ubuntu Running 2\r\n  Debian Stopped 2\r\n");
+    const backend = new WslBackend({
+      commandTimeoutMs: 15_000,
+      run: async (args, options) => {
+        expect(args).toEqual(["-l", "-v"]);
+        timeouts.push(options.timeoutMs);
+        return answer;
+      },
+    });
+    expect(await backend.distros({ timeoutMs: 5_000 })).toEqual({
+      names: ["Ubuntu", "Debian"],
+      defaultDistro: "Ubuntu",
+    });
+    await backend.distros();
+    expect(timeouts).toEqual([5_000, 15_000]);
+    answer = { code: null, stdout: "", stderr: "", timedOut: true };
+    await expect(backend.distros({ timeoutMs: 5_000 })).rejects.toThrow(/timed out/);
+  });
 });

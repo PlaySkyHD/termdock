@@ -70,6 +70,14 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
   });
   const size = { cols: 80, rows: 24 };
 
+  it("lists the distros for the settings dialog (issue #64)", async () => {
+    backend = new WslBackend({ socket: SOCKET });
+    const { names, defaultDistro } = await backend.distros({ timeoutMs: 5_000 });
+    expect(names).toContain(distro);
+    expect(defaultDistro === undefined || names.includes(defaultDistro)).toBe(true);
+    for (const name of names) expect(name).not.toMatch(/[\0\s]/);
+  });
+
   it("is available", async () => {
     backend = new WslBackend({ socket: SOCKET, distro });
     expect(await backend.available()).toBe(true);

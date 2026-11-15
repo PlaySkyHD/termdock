@@ -201,6 +201,16 @@ export interface HistorySearchResult {
   truncated: boolean;
 }
 
+/** `wsl.distros` (since 1.4). Never an error for WSL itself: an empty list names its reason. */
+export interface WslDistrosResult {
+  /** At most MAX_WSL_DISTROS names, in the order of `wsl.exe -l -v`. */
+  distros: string[];
+  /** The WSL default; one of `distros`. */
+  defaultDistro?: string;
+  /** Why the list is empty (WSL missing, failed or too slow); 1 to MAX_WSL_UNAVAILABLE_LENGTH characters. */
+  unavailable?: string;
+}
+
 type Empty = Record<string, never>;
 
 export interface MethodMap {
@@ -238,6 +248,7 @@ export interface MethodMap {
   "settings.get": { params: Empty; result: { settings: Settings } };
   "settings.set": { params: { settings: SettingsPatch }; result: { settings: Settings } };
   "history.search": { params: HistorySearchParams; result: HistorySearchResult };
+  "wsl.distros": { params: Empty; result: WslDistrosResult };
 }
 
 export type Method = keyof MethodMap;
@@ -278,6 +289,7 @@ export const METHODS = [
   "layout.get",
   "layout.save",
   ...PHASE_3_METHODS,
+  "wsl.distros",
 ] as const satisfies readonly Method[];
 
 // --- Events ---------------------------------------------------------------------------------
@@ -376,6 +388,7 @@ export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
   "core.shutdown": "none",
   "layout.get": "none",
   "layout.save": "none",
+  "wsl.distros": "none",
 };
 
 export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
@@ -393,6 +406,7 @@ export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
   "core.shutdown": "none",
   "layout.get": "none",
   "layout.save": "none",
+  "wsl.distros": "none",
 };
 
 export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {

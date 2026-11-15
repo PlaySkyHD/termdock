@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { nextFocusIndex } from "./focus-trap.js";
+import { FOCUSABLE, nextFocusIndex } from "./focus-trap.js";
+
+describe("FOCUSABLE", () => {
+  it("takes enabled selects and text areas into the trap (settings dialog, #64)", () => {
+    const parts = FOCUSABLE.split(",").map((part) => part.trim());
+    expect(parts).toContain("select:not([disabled])");
+    expect(parts).toContain("textarea:not([disabled])");
+    expect(parts).toContain("input:not([disabled])");
+  });
+});
 
 describe("nextFocusIndex", () => {
   it("moves forward and wraps from the last element to the first", () => {

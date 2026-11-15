@@ -18,6 +18,7 @@ import {
   MAX_PROJECTS_PER_WORKSPACE,
   MAX_WORKSPACE_BYTES,
   MAX_WORKSPACES,
+  MAX_WSL_DISTROS,
 } from "./model.js";
 
 /** Goes through the real codec so tests see what a peer would see. */
@@ -614,5 +615,35 @@ describe("shared phase-3 constants", () => {
       "workspace.update",
     ]);
     for (const method of PHASE_3_METHODS) expect(METHODS).toContain(method);
+  });
+});
+
+// Issue #64 (openspec change settings-dialog): the WSL distributions for the settings dialog, protocol 1.4.
+describe("wsl.distros", () => {
+  const parse = (result: unknown) => parseResponse(response(result), "wsl.distros");
+
+  it("takes no params and no payload", () => {
+    expect(METHODS).toContain("wsl.distros");
+    accepts("wsl.distros", {});
+    rejects("wsl.distros", { all: true }, "all");
+    rejected(parseRequest(request("wsl.distros", {}, new Uint8Array([1]))));
+  });
+
+  it("accepts a list with its default, and an empty list with a reason", () => {
+    expect(parse({ distros: ["Ubuntu", "Debian"], defaultDistro: "Ubuntu" }).ok).toBe(true);
+    expect(parse({ distros: [] }).ok).toBe(true);
+    expect(parse({ distros: [], unavailable: "wsl.exe failed (exit 1)" }).ok).toBe(true);
+  });
+
+  it("rejects too many, empty or unlisted names and a bad reason", () => {
+    const many = Array.from({ length: MAX_WSL_DISTROS + 1 }, (_, index) => `d${index}`);
+    expect(parse({ distros: many.slice(0, MAX_WSL_DISTROS) }).ok).toBe(true);
+    expect(rejected(parse({ distros: many }))).toContain("result.distros");
+    expect(rejected(parse({ distros: ["Ubuntu", " "] }))).toContain("result.distros[1]");
+    expect(rejected(parse({ distros: ["n".repeat(129)] }))).toContain("result.distros[0]");
+    expect(rejected(parse({ distros: ["Ubuntu"], defaultDistro: "Arch" }))).toContain("result.defaultDistro");
+    expect(rejected(parse({ distros: [], unavailable: "" }))).toContain("result.unavailable");
+    expect(rejected(parse({ distros: [], unavailable: "x".repeat(513) }))).toContain("result.unavailable");
+    expect(rejected(parse({}))).toContain("result.distros");
   });
 });

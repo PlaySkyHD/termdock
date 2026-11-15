@@ -263,7 +263,7 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 
 ### Requirement: Neuzeichnen nach Größenänderung nicht speichern
 
-Ändert die schreibende View die Größe einer Session mit PTY, SHALL die Registry vor der Größenänderung der PTY ein Neuzeichnen anfordern; die Ausgabe während dieses Laufs ist gekennzeichnet wie beim Anhängen, und der Verlauf MUST sie nicht speichern. Größenänderungen, während ein Neuzeichnen läuft, SHALL die Registry zu genau einem folgenden zusammenfassen. Eine Größenänderung auf die bisherige Größe MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
+Ändert die schreibende View die Größe einer Session mit PTY eines Backends mit Neuzeichnen (WSL), SHALL die Registry vor der Größenänderung der PTY ein Neuzeichnen anfordern; dessen Ausgabe ist gekennzeichnet wie beim Anhängen, der Verlauf MUST sie nicht speichern. Größenänderungen während eines Neuzeichnens SHALL sie zu genau einem folgenden zusammenfassen. Eine Größenänderung auf die bisherige Größe oder ohne PTY MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
 
 #### Scenario: Größenänderung
 
@@ -288,6 +288,34 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 - **GIVEN** eine Session mit PTY und der Größe 80×24
 - **WHEN** die schreibende View die Größe 80×24 sendet
 - **THEN** fordert die Registry kein Neuzeichnen an, und die folgende Ausgabe wird gespeichert
+
+#### Scenario: Session ohne PTY
+
+- **GIVEN** eine beendete Session (`Exited`) mit schreibender View
+- **WHEN** die View die Größe 120×40 sendet
+- **THEN** fordert die Registry kein Neuzeichnen an und speichert die Größe 120×40
+
+#### Scenario: Gescheitertes Neuzeichnen nach Größenänderung
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung zweimal scheitert
+- **WHEN** danach ein Neuzeichnen von tmux eintrifft
+- **THEN** speichert der Verlauf es
+
+### Requirement: Grenze der Kennzeichnung bei Größenänderungen
+
+Größenänderungen, die höchstens 1 s nacheinander folgen, bilden eine Kette. Die Kennzeichnung ihrer Neuzeichnen SHALL ab der ersten Größenänderung der Kette höchstens 1 s dauern; Programmausgabe in dieser Zeit MUST im Verlauf fehlen. Danach SHALL die Registry für die Kette kein Neuzeichnen und kein gekennzeichnetes Folge-Neuzeichnen mehr starten; der Verlauf MUST wieder speichern, auch doppelte Neuzeichnen. Eine Kette endet, wenn nach ihrer Grenze 1 s lang keine Größenänderung kam.
+
+#### Scenario: Fenster lange ziehen
+
+- **GIVEN** eine WSL-Session, deren schreibende View 2 s lang alle 70 ms die Größe ändert, während ein Programm ausgibt
+- **WHEN** die Ausgabe in der ersten Sekunde und danach eintrifft
+- **THEN** fehlt die Ausgabe der ersten Sekunde im Verlauf, die spätere Ausgabe wird gespeichert, auch wenn tmux den Bildschirm dabei neu zeichnet
+
+#### Scenario: Neue Kette nach einer Pause
+
+- **GIVEN** eine Kette, deren Grenze abgelaufen ist, und danach mehr als 1 s ohne Größenänderung
+- **WHEN** die View die Größe ändert und tmux neu zeichnet
+- **THEN** speichert der Verlauf dieses Neuzeichnen nicht
 
 ### Requirement: Trefferzeilen wie im Terminal
 

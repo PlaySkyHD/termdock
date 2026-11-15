@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { InMemorySessionRepository } from "../storage/session-repository.js";
@@ -714,6 +714,100 @@ describe("SessionRegistry: output", () => {
 
       expect(backend.redraws).toEqual([]);
       expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual(["live:false"]);
+    });
+
+    describe("bounds the flag of a resize chain (issue #99)", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** Like the WSL backend: a redraw call takes about 270 ms and repaints right before it ends. */
+      async function slowRedraws(options: Partial<SessionRegistryOptions> = {}) {
+        vi.useFakeTimers();
+        const setup = await redrawing(options, false);
+        const { backend } = setup;
+        backend.onRedraw = (sessionId) => {
+          backend.redrawGate = new Promise<void>((resolve) =>
+            setTimeout(() => {
+              if (!backend.pty(sessionId).ended) backend.pty(sessionId).emitData("repaint");
+              resolve();
+            }, 270),
+          );
+        };
+        await setup.registry.attachView(setup.id, "view-a");
+        return setup;
+      }
+
+      it("stores program output once the window was dragged for longer than the limit", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        // The renderer sends a resize every 70 ms while the edge is dragged, for 2.1 s.
+        for (let step = 0; step < 30; step += 1) {
+          registry.resize(id, "view-a", { cols: 100 + step, rows: 30 });
+          backend.pty(id).emitData(`program-${step * 70}`);
+          await vi.advanceTimersByTimeAsync(70);
+        }
+        await vi.advanceTimersByTimeAsync(2_000);
+        backend.pty(id).emitData("after");
+
+        const program = outputs.filter(({ text }) => text.startsWith("program-"));
+        const flagged = program.filter(({ fromRedraw }) => fromRedraw).map(({ text }) => text);
+        const stored = program.filter(({ fromRedraw }) => !fromRedraw).map(({ text }) => text);
+        // Within RESIZE_REDRAW_MAX_MS the output is flagged, afterwards it is stored again.
+        expect(flagged.at(-1)).toBe("program-980");
+        expect(stored[0]).toBe("program-1050");
+        expect(stored.at(-1)).toBe("program-2030");
+        // No flagged follow-up after the limit; the bounded chain also bounds the backend calls.
+        expect(backend.redraws.length).toBeLessThanOrEqual(5);
+        expect(outputs.at(-1)).toEqual({ text: "after", fromRedraw: false, viewIds: ["view-a"] });
+      });
+
+      it("flags a single resize after a quiet pause again", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        for (let step = 0; step < 20; step += 1) {
+          registry.resize(id, "view-a", { cols: 100 + step, rows: 30 });
+          await vi.advanceTimersByTimeAsync(70);
+        }
+        await vi.advanceTimersByTimeAsync(2_000);
+        outputs.length = 0;
+
+        registry.resize(id, "view-a", { cols: 80, rows: 24 });
+        backend.pty(id).emitData("resize-repaint");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "resize-repaint:true",
+          "repaint:true",
+          "after:false",
+        ]);
+      });
+    });
+
+    it("requests no redraw for a resize of a session without PTY and keeps the size (issue #99)", async () => {
+      const { registry, backend, id } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitExit(0);
+      expect(registry.get(id).state).toBe("Exited");
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+
+      expect(backend.redraws).toEqual([]);
+      expect(registry.get(id).size).toEqual({ cols: 120, rows: 40 });
+    });
+
+    it("stops flagging after the redraw of a resize failed twice (issue #99)", async () => {
+      const failure = new Error("refresh-client failed");
+      const { registry, backend, id, outputs } = await redrawing({ onRedrawError: () => {} }, false);
+      await registry.attachView(id, "view-a");
+      backend.failNextRedraw = failure;
+      backend.onRedraw = () => (backend.failNextRedraw ??= failure);
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+      await settle();
+      backend.pty(id).emitData("late-repaint");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs).toEqual([{ text: "late-repaint", fromRedraw: false, viewIds: ["view-a"] }]);
     });
 
     it("does not flag output when no redraw was requested", async () => {

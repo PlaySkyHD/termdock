@@ -26,7 +26,7 @@
 // - `node -e` and `[IO.File]::Write*` look only at string literals: one absolute path outside the
 //   repository allows the command even if it also writes a relative path.
 
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EDIT_HINT =
@@ -53,8 +53,20 @@ function normalize(path) {
     .toLowerCase();
 }
 
+// `termdock` and `termdock-wt/<dir>/<something>` as whole path segments; `..` segments are resolved
+// first. The `termdock-wt` directory itself and its direct children are not repository files.
 function isRepoAbsolute(path) {
-  return /^(?:p:|\/p|\/mnt\/p)\/github\/termdock/.test(normalize(path));
+  return /^(?:p:|\/p|\/mnt\/p)\/github\/(?:termdock(?:\/|$)|termdock-wt\/[^/]+\/[^/])/.test(
+    posix.normalize(normalize(path)),
+  );
+}
+
+// A working directory inside the checkout or any worktree (also a worktree root directly below `termdock-wt`).
+function isRepoDir(path) {
+  return (
+    isRepoAbsolute(path) ||
+    /^(?:p:|\/p|\/mnt\/p)\/github\/termdock-wt\/[^/]/.test(posix.normalize(normalize(path)))
+  );
 }
 
 function isAbsolute(path) {
@@ -69,7 +81,18 @@ function isNullDevice(path) {
 function isRepoPath(path, ctx) {
   if (isRepoAbsolute(path)) return true;
   if (isNullDevice(path) || isAbsolute(path)) return false;
+  // A relative path is resolved against the working directory (`../../Temp/x` leaves the repository).
+  if (ctx.cwd) return isRepoAbsolute(posix.join(ctx.cwd, normalize(path)));
   return ctx.cwdInRepo;
+}
+
+// Applies a `cd` to the context. An unknown or variable target leaves the working directory unknown.
+function changeDir(dir, ctx) {
+  const inRepo = isRepoPath(dir, ctx);
+  if (isNullDevice(dir) || /^[$%~]/.test(dir)) ctx.cwd = null;
+  else if (isAbsolute(dir)) ctx.cwd = posix.normalize(normalize(dir));
+  else ctx.cwd = ctx.cwd ? posix.join(ctx.cwd, normalize(dir)) : null;
+  ctx.cwdInRepo = ctx.cwd ? isRepoDir(ctx.cwd) : inRepo;
 }
 
 // For inline code (`node -e`, `[IO.File]::WriteAllText`): look at the string literals.
@@ -576,7 +599,8 @@ function checkNode(args, heredocs, ctx) {
 
 // Options that take a value as the next word (`-m 644`). `-t` is handled separately: it names the target.
 const COPY_VALUE_OPTIONS = {
-  cp: { short: "S", long: ["--suffix", "--sparse", "--reflink"] },
+  // `--sparse` and `--reflink` only take `=VALUE`, so they never consume the next word.
+  cp: { short: "S", long: ["--suffix"] },
   mv: { short: "S", long: ["--suffix"] },
   install: { short: "mogS", long: ["--mode", "--owner", "--group", "--suffix", "--strip-program"] },
 };
@@ -682,7 +706,10 @@ function checkWords(words, ctx, dialect, heredocs) {
     case "set-location":
     case "sl": {
       const dir = args.find((a) => !a.startsWith("-"));
-      ctx.cwdInRepo = dir === undefined ? false : isRepoPath(dir, ctx);
+      if (dir === undefined) {
+        ctx.cwd = null;
+        ctx.cwdInRepo = false;
+      } else changeDir(dir, ctx);
       return null;
     }
     case "git":
@@ -734,8 +761,8 @@ function checkSource(src, dialect, ctx) {
     return block("`[IO.File]::Write…`/`Append…` schreibt eine Datei im Repo-Checkout.", EDIT_HINT);
   const outer = [];
   for (const seg of parse(src, dialect)) {
-    if (seg.scope === "open") outer.push(ctx.cwdInRepo);
-    if (seg.scope === "close" && outer.length) ctx.cwdInRepo = outer.pop();
+    if (seg.scope === "open") outer.push({ cwd: ctx.cwd, cwdInRepo: ctx.cwdInRepo });
+    if (seg.scope === "close" && outer.length) Object.assign(ctx, outer.pop());
     if (seg.scope) continue;
     const target = seg.redirects.find((t) => isRepoPath(t, ctx));
     if (target !== undefined) return writeBlock("Die Umleitung `>`/`>>`", target);
@@ -752,9 +779,11 @@ function checkSource(src, dialect, ctx) {
  * @param {string} [cwd] working directory from the hook event; without it the repository is assumed
  */
 export function checkCommand(command, toolName, cwd) {
-  const cwdInRepo = typeof cwd === "string" && cwd !== "" ? isRepoAbsolute(cwd) : true;
+  const known = typeof cwd === "string" && cwd !== "";
+  const cwdInRepo = known ? isRepoDir(cwd) : true;
+  const ctx = { cwdInRepo, cwd: known ? posix.normalize(normalize(cwd)) : null };
   try {
-    return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", { cwdInRepo });
+    return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", ctx);
   } catch (error) {
     if (error instanceof Unparseable) return null;
     throw error;

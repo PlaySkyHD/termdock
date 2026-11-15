@@ -271,7 +271,7 @@ export async function snapScenes(deps: ScenarioDeps): Promise<void> {
     (await evaluate<string>(`document.activeElement?.dataset?.menuItem ?? 'none'`)) === "snap:grid",
     "the arrow keys did not reach 2 × 2",
   );
-  await capture("54-snap-menu.png");
+  await capture("54-snap-menu.png", { visible: '[role="menu"]' });
   await key("Return", [], 800, "\r");
   await sleep(500);
   panes = await visiblePanes();

@@ -2,12 +2,13 @@
 // a restart of the UI, and the restored state compared with the one before. A session killed with
 // `tmux kill-session` while the UI is "away" comes back as a placeholder. Needs Electron, WSL and the isolated
 // core; no unit test (the pieces are tested: layout mapping, coordinator, geometry, placeholder).
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
+import { captureWindow } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
+import type { CaptureOptions } from "./screenshot-visible.js";
 
 type Wsl = (args: readonly string[]) => Promise<string>;
 
@@ -64,12 +65,8 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
       await sleep(100);
     }
   };
-  const capture = async (win: BrowserWindow, name: string): Promise<void> => {
-    await sleep(300);
-    const file = path.join(dir, name);
-    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
-    console.log(file);
-  };
+  const capture = (win: BrowserWindow, name: string, options?: CaptureOptions): Promise<void> =>
+    captureWindow(win, dir, name, options);
   const click = async (
     win: BrowserWindow,
     selector: string,

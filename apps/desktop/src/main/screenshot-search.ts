@@ -2,11 +2,12 @@
 // the dialog, the search finds hits in both sessions (shown grouped by session), and a click on a hit focuses the
 // session's tab. Needs Electron, WSL and the isolated core; no unit test (the pieces are tested: search model,
 // commands, bridge, core search).
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
+import { captureWindow } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
+import type { CaptureOptions } from "./screenshot-visible.js";
 
 const sessionSelector = (name: string): string => `[data-session-name=${JSON.stringify(name)}]`;
 
@@ -34,12 +35,8 @@ export async function searchScenes(deps: ScenarioDeps): Promise<void> {
     await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   };
-  const capture = async (name: string): Promise<void> => {
-    await sleep(300);
-    const file = path.join(dir, name);
-    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
-    console.log(file);
-  };
+  const capture = (name: string, options?: CaptureOptions): Promise<void> =>
+    captureWindow(win, dir, name, options);
   const key = async (keyCode: string, modifiers: Array<"control" | "shift">): Promise<void> => {
     win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
     win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });

@@ -3,8 +3,22 @@
 import { IpcError } from "@termdock/core";
 import type { Disposable } from "@termdock/core";
 import { MAX_HISTORY_HITS, MAX_HISTORY_QUERY_LENGTH } from "@termdock/protocol";
-import type { LayoutWindow, SessionCreateParams, SessionId, TerminalSize, ViewId } from "@termdock/protocol";
-import type { BridgeCall, BridgeErrorBody, BridgeEvent, BridgeResult } from "../shared/bridge.js";
+import type {
+  LayoutWindow,
+  ProfileCreateParams,
+  SessionCreateParams,
+  SessionId,
+  SettingsPatch,
+  TerminalSize,
+  ViewId,
+} from "@termdock/protocol";
+import type {
+  BridgeCall,
+  BridgeErrorBody,
+  BridgeEvent,
+  BridgeResult,
+  ProfileChange,
+} from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
 import type { QuitAnswer } from "../shared/quit-decision.js";
 import type { CorePort } from "./core-connection.js";
@@ -93,6 +107,9 @@ export class DesktopBridge {
         this.toAll({ kind: "sessionRemoved", sessionId });
       }),
       core.on("workspace.changed", ({ workspaces }) => this.toAll({ kind: "workspaceChanged", workspaces })),
+      // Settings dialog (#64): every window, also for changes of other clients.
+      core.on("settings.changed", ({ settings }) => this.toAll({ kind: "settingsChanged", settings })),
+      core.on("profile.changed", ({ profiles }) => this.toAll({ kind: "profilesChanged", profiles })),
       core.onClose(() => this.toAll({ kind: "coreClosed" })),
     ];
   }
@@ -241,6 +258,23 @@ export class DesktopBridge {
             ...(call.limit === undefined ? {} : { limit: call.limit }),
           })
         ).result;
+      // Settings dialog (#64): the windows also learn the outcome from `settingsChanged` and `profilesChanged`.
+      case "getSettings":
+        return (await core.request("settings.get", {})).result.settings;
+      case "updateSettings":
+        return (await core.request("settings.set", { settings: call.settings })).result.settings;
+      case "listProfiles":
+        return (await core.request("profile.list", {})).result.profiles;
+      case "createProfile":
+        return (await core.request("profile.create", call.profile)).result.profile;
+      case "updateProfile":
+        return (await core.request("profile.update", { ...call.change, profileId: call.profileId })).result
+          .profile;
+      case "deleteProfile":
+        await core.request("profile.delete", { profileId: call.profileId });
+        return null;
+      case "listDistros":
+        return (await core.request("wsl.distros", {})).result;
     }
   }
 
@@ -410,9 +444,67 @@ function parseCall(raw: unknown): BridgeCall {
         throw new BadRequest(`limit must be a whole number from 1 to ${MAX_HISTORY_HITS}`);
       return { method: "searchHistory", query, limit };
     }
+    case "getSettings":
+      return { method: "getSettings" };
+    case "updateSettings":
+      return {
+        method: "updateSettings",
+        settings: changeOf(raw["settings"], SETTINGS_KEYS, "settings") as SettingsPatch,
+      };
+    case "listProfiles":
+      return { method: "listProfiles" };
+    case "createProfile": {
+      const profile = changeOf(raw["profile"], PROFILE_CREATE_KEYS, "profile");
+      text(profile["name"], "profile.name");
+      if (!isRecord(profile["launch"])) throw new BadRequest("profile.launch must be an object");
+      return { method: "createProfile", profile: profile as unknown as ProfileCreateParams };
+    }
+    case "updateProfile":
+      return {
+        method: "updateProfile",
+        profileId: text(raw["profileId"], "profileId"),
+        change: changeOf(raw["change"], PROFILE_CHANGE_KEYS, "change") as ProfileChange,
+      };
+    case "deleteProfile":
+      return { method: "deleteProfile", profileId: text(raw["profileId"], "profileId") };
+    case "listDistros":
+      return { method: "listDistros" };
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }
+}
+
+/** Keys of `SettingsPatch`; the values are the core's to check. */
+const SETTINGS_KEYS = [
+  "defaultDistro",
+  "defaultShell",
+  "defaultCwd",
+  "historyLimitBytes",
+  "historyEnabledByDefault",
+  "confirmQuitWhileRunning",
+  "quitAction",
+] as const satisfies readonly (keyof SettingsPatch)[];
+const PROFILE_CHANGE_KEYS = [
+  "name",
+  "workspaceId",
+  "projectId",
+  "launch",
+  "autostart",
+  "loggingEnabled",
+] as const satisfies readonly (keyof ProfileChange)[];
+const PROFILE_CREATE_KEYS = PROFILE_CHANGE_KEYS satisfies readonly (keyof ProfileCreateParams)[];
+
+/**
+ * An object with only `allowed` keys and at least one set (a structured clone keeps `undefined` keys, which count
+ * as absent). Shape only: the core checks the values with its guards.
+ */
+function changeOf(raw: unknown, allowed: readonly string[], name: string): Record<string, unknown> {
+  if (!isRecord(raw)) throw new BadRequest(`${name} must be an object`);
+  const present = Object.entries(raw).filter(([, value]) => value !== undefined);
+  const unknown = present.find(([key]) => !allowed.includes(key));
+  if (unknown !== undefined) throw new BadRequest(`${name}.${unknown[0]} is not allowed`);
+  if (present.length === 0) throw new BadRequest(`${name} needs at least one change`);
+  return Object.fromEntries(present);
 }
 
 const PART_KEYS = ["sidebarVisible", "sidebarWidth", "tabs", "activeTabId"];

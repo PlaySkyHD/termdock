@@ -35,6 +35,8 @@ import { WorkspaceService } from "../workspace/service.js";
 
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
 export const ALREADY_RUNNING_EXIT_CODE = 10;
+/** `wsl.distros` waits at most this long for `wsl.exe -l -v`; a desktop request waits 10 s (spec wsl-backend). */
+const DISTRO_LIST_TIMEOUT_MS = 5_000;
 
 export interface RunCoreOptions {
   /** Defaults to the per-user pipe name. */
@@ -192,6 +194,9 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   const ownBackends: WslBackend[] = options.backends
     ? []
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
+  const wslBackend = (options.backends ?? ownBackends).find(
+    (backend): backend is WslBackend => backend instanceof WslBackend,
+  );
   const repository = new StorageRepository();
   const layouts = new StorageLayoutRepository();
   const settings = new StorageSettingsRepository();
@@ -240,6 +245,10 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
           isKnownSession: (id) => known.has(id),
         });
       },
+      // The distros for the settings dialog (#64), from the core's own or a given WSL backend.
+      ...(wslBackend === undefined
+        ? {}
+        : { listDistros: () => wslBackend.distros({ timeoutMs: DISTRO_LIST_TIMEOUT_MS }) }),
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),

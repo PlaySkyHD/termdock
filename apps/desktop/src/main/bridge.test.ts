@@ -1,6 +1,7 @@
 import { IpcError } from "@termdock/core";
 import type { EventListener } from "@termdock/core";
-import type { EventMap, EventName, Method, SessionInfo } from "@termdock/protocol";
+import { DEFAULT_SETTINGS } from "@termdock/protocol";
+import type { EventMap, EventName, LaunchProfile, Method, SessionInfo } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import type { BridgeEvent } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
@@ -803,5 +804,107 @@ describe("DesktopBridge history search (#62)", () => {
       ok: false,
       error: { code: "internal", message: "disk gone" },
     });
+  });
+});
+
+describe("DesktopBridge settings and profiles (#64)", () => {
+  const settings = { ...DEFAULT_SETTINGS, defaultDistro: "Debian" };
+  const profile: LaunchProfile = {
+    id: "p1",
+    name: "Claude",
+    launch: { backend: "wsl", cwd: "/srv", command: ["claude"] },
+    autostart: false,
+    loggingEnabled: true,
+  };
+
+  it("passes settings, profiles and distros to the core and returns their answers", async () => {
+    const { core, bridge, a } = setup();
+    core.answers.set("settings.get", { result: { settings } });
+    core.answers.set("settings.set", { result: { settings } });
+    core.answers.set("profile.list", { result: { profiles: [profile] } });
+    core.answers.set("profile.create", { result: { profile } });
+    core.answers.set("profile.update", { result: { profile: { ...profile, autostart: true } } });
+    const distros = { distros: ["Ubuntu", "Debian"], defaultDistro: "Ubuntu" };
+    core.answers.set("wsl.distros", { result: distros });
+
+    expect(await bridge.call(a.id, { method: "getSettings" })).toEqual({ ok: true, value: settings });
+    expect(await bridge.call(a.id, { method: "updateSettings", settings: { defaultDistro: null } })).toEqual({
+      ok: true,
+      value: settings,
+    });
+    expect(await bridge.call(a.id, { method: "listProfiles" })).toEqual({ ok: true, value: [profile] });
+    const create = { name: "Claude", launch: profile.launch, autostart: true };
+    expect(await bridge.call(a.id, { method: "createProfile", profile: create })).toEqual({
+      ok: true,
+      value: profile,
+    });
+    expect(
+      await bridge.call(a.id, { method: "updateProfile", profileId: "p1", change: { autostart: true } }),
+    ).toEqual({ ok: true, value: { ...profile, autostart: true } });
+    expect(await bridge.call(a.id, { method: "deleteProfile", profileId: "p1" })).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(await bridge.call(a.id, { method: "listDistros" })).toEqual({ ok: true, value: distros });
+
+    expect(core.requests.map((request) => [request.method, request.params])).toEqual([
+      ["settings.get", {}],
+      ["settings.set", { settings: { defaultDistro: null } }],
+      ["profile.list", {}],
+      ["profile.create", create],
+      ["profile.update", { profileId: "p1", autostart: true }],
+      ["profile.delete", { profileId: "p1" }],
+      ["wsl.distros", {}],
+    ]);
+  });
+
+  it("refuses malformed calls with bad_request and sends nothing to the core", async () => {
+    const { core, bridge, a } = setup();
+    const bad = [
+      { method: "updateSettings", settings: {} },
+      { method: "updateSettings", settings: { farbe: "blau" } },
+      { method: "updateSettings", settings: "x" },
+      { method: "createProfile", profile: { launch: profile.launch } },
+      { method: "createProfile", profile: { name: "x" } },
+      { method: "createProfile", profile: { name: "x", launch: profile.launch, extra: 1 } },
+      { method: "updateProfile", profileId: "p1", change: {} },
+      { method: "updateProfile", profileId: "p1", change: { profileId: "p2" } },
+      { method: "updateProfile", profileId: "", change: { name: "x" } },
+      { method: "deleteProfile" },
+    ];
+    for (const call of bad) {
+      const result = await bridge.call(a.id, call);
+      expect(result.ok, JSON.stringify(call)).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("bad_request");
+    }
+    expect(core.requests).toEqual([]);
+  });
+
+  it("passes the core's refusal of a profile with its code and message", async () => {
+    const { core, bridge, a } = setup();
+    core.answers.set(
+      "profile.create",
+      new IpcError("bad_request", 'launch.env key "API_TOKEN" looks like a secret'),
+    );
+    const result = await bridge.call(a.id, {
+      method: "createProfile",
+      profile: { name: "x", launch: { ...profile.launch, env: { API_TOKEN: "1" } } },
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "bad_request", message: 'launch.env key "API_TOKEN" looks like a secret' },
+    });
+  });
+
+  it("passes settings.changed and profile.changed of any client to every window", () => {
+    const { core, a, b } = setup();
+    core.emit("settings.changed", { settings });
+    core.emit("profile.changed", { profiles: [profile] });
+    for (const win of [a, b]) {
+      expect(win.events).toEqual([
+        { kind: "settingsChanged", settings },
+        { kind: "profilesChanged", profiles: [profile] },
+      ]);
+    }
   });
 });

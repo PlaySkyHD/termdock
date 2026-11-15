@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.4" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.4" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -1001,12 +1001,18 @@ describe("phase 3 (issue #55)", () => {
     expect(seen.get(stranger)).toEqual([]);
   });
 
-  it("accepts a client with protocol 1.2 and answers 1.3", async () => {
+  it("accepts clients with protocol 1.2 and 1.3 and answers 1.4 (issue #64)", async () => {
     const { pipePath } = await startCore();
-    const raw = await rawConnect(pipePath);
-    raw.send({ ...hello, params: helloParams("1.2") });
-    await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.3" } });
+    for (const version of ["1.2", "1.3"]) {
+      const raw = await rawConnect(pipePath);
+      raw.send({ ...hello, params: helloParams(version) });
+      await waitFor(() => raw.frames.length === 1, "hello response");
+      expect(raw.frames[0]?.header).toEqual({
+        kind: "response",
+        id: "h",
+        result: { protocolVersion: "1.4" },
+      });
+    }
   });
 });
 
@@ -1653,5 +1659,101 @@ describe("launch profiles (issue #58)", () => {
     const own = (await a.request("profile.create", { name: "own", launch: claude, projectId: project.id }))
       .result.profile;
     expect(await cwdOf(own.id)).toBe("/home/dev/claude");
+  });
+});
+
+describe("settings dialog (issue #64)", () => {
+  async function withDefaults() {
+    const wsl = new FakeBackend();
+    const windows = new FakeBackend({ kind: "windows" });
+    const core = await startCore({ registry: new SessionRegistry({ backends: [wsl, windows] }) });
+    const client = await newClient(core.pipePath);
+    await client.request("settings.set", { settings: { defaultDistro: "Debian", defaultShell: "cmd" } });
+    return { ...core, client };
+  }
+
+  it("gives new sessions without distro or shell the defaults of the settings", async () => {
+    const { client } = await withDefaults();
+    const plain = (await client.request("session.create", { name: "a", launch })).result.session;
+    expect(plain.launch).toEqual({ ...launch, distro: "Debian" });
+    const own = (
+      await client.request("session.create", { name: "b", launch: { ...launch, distro: "Ubuntu" } })
+    ).result.session;
+    expect(own.launch.distro).toBe("Ubuntu");
+    const win = (
+      await client.request("session.create", { name: "c", launch: { backend: "windows", cwd: "C:\\" } })
+    ).result.session;
+    expect(win.launch).toEqual({ backend: "windows", cwd: "C:\\", shell: "cmd" });
+  });
+
+  it("gives sessions of a profile without distro the default, and leaves the profile alone", async () => {
+    const { client } = await withDefaults();
+    const { profile } = (await client.request("profile.create", { name: "p", launch })).result;
+    const session = (await client.request("session.create", { name: "s", profileId: profile.id })).result
+      .session;
+    expect(session.launch.distro).toBe("Debian");
+    expect((await client.request("profile.list", {})).result.profiles[0]!.launch.distro).toBeUndefined();
+    const pinned = (
+      await client.request("profile.create", { name: "q", launch: { ...launch, distro: "Ubuntu" } })
+    ).result.profile;
+    const second = (await client.request("session.create", { name: "t", profileId: pinned.id })).result
+      .session;
+    expect(second.launch.distro).toBe("Ubuntu");
+  });
+
+  it("answers wsl.distros with the valid names of the backend and its default", async () => {
+    const names = ["Ubuntu", "", "n".repeat(129), ...Array.from({ length: 70 }, (_, i) => `d${i}`)];
+    const { pipePath } = await startCore({
+      listDistros: async () => ({ names, defaultDistro: "Ubuntu" }),
+    });
+    const client = await newClient(pipePath);
+    const { result } = await client.request("wsl.distros", {});
+    expect(result.distros[0]).toBe("Ubuntu");
+    expect(result.distros).toHaveLength(64);
+    expect(result.distros).not.toContain("");
+    expect(result.defaultDistro).toBe("Ubuntu");
+    expect(result.unavailable).toBeUndefined();
+  });
+
+  it("drops a default that is not in the list", async () => {
+    const { pipePath } = await startCore({
+      listDistros: async () => ({ names: ["Debian"], defaultDistro: "Gone" }),
+    });
+    const client = await newClient(pipePath);
+    expect((await client.request("wsl.distros", {})).result).toEqual({ distros: ["Debian"] });
+  });
+
+  it("answers an empty list with the reason when WSL fails or there is no WSL backend", async () => {
+    const failing = await startCore({
+      listDistros: async () => {
+        throw new Error(`wsl.exe -l -v failed (timed out)${"!".repeat(600)}`);
+      },
+    });
+    const client = await newClient(failing.pipePath);
+    const { result } = await client.request("wsl.distros", {});
+    expect(result.distros).toEqual([]);
+    expect(result.unavailable).toContain("timed out");
+    expect(result.unavailable!.length).toBeLessThanOrEqual(512);
+    // The core goes on answering.
+    expect((await client.request("settings.get", {})).result.settings).toEqual(DEFAULT_SETTINGS);
+
+    // wsl.exe without WSL ignores WSL_UTF8 and answers in UTF-16 (PR #115 review): one clean line, no NUL.
+    const utf16 = await startCore({
+      listDistros: async () => {
+        throw new Error(
+          "wsl.exe -l -v failed (exit 1): \0W\0S\0L\0 \0f\0e\0h\0l\0t\0\x07\r\n\0\r\n\0Zweite Zeile",
+        );
+      },
+    });
+    const third = await newClient(utf16.pipePath);
+    expect((await third.request("wsl.distros", {})).result.unavailable).toBe(
+      "wsl.exe -l -v failed (exit 1): WSL fehlt",
+    );
+
+    const none = await startCore();
+    const other = await newClient(none.pipePath);
+    const empty = (await other.request("wsl.distros", {})).result;
+    expect(empty.distros).toEqual([]);
+    expect(empty.unavailable).toBeDefined();
   });
 });

@@ -77,9 +77,16 @@ export class WslBackend implements Backend {
     );
   }
 
-  /** Distros known to WSL and the default one (`wsl.exe -l -v`). */
-  async distros(): Promise<{ names: string[]; defaultDistro: string | undefined }> {
-    const result = await this.exec(listDistrosArgs());
+  /**
+   * Distros known to WSL and the default one (`wsl.exe -l -v`). `timeoutMs` replaces the command timeout, e.g. for
+   * a client that waits for the answer (`wsl.distros`, #64). Rejects with the reason when the call fails.
+   */
+  async distros(
+    options: { timeoutMs?: number } = {},
+  ): Promise<{ names: string[]; defaultDistro: string | undefined }> {
+    const result = await this.run(listDistrosArgs(), {
+      timeoutMs: options.timeoutMs ?? this.commandTimeoutMs,
+    });
     if (result.code !== 0) throw wslError("wsl.exe -l -v", result);
     return parseDistroList(result.stdout);
   }
@@ -246,7 +253,8 @@ export class WslBackend implements Backend {
 
 function wslError(what: string, result: RunResult): Error {
   const reason = result.timedOut ? "timed out" : `exit ${result.code ?? "?"}`;
-  const detail = result.stderr.trim() || result.stdout.trim();
+  // wsl.exe without WSL ignores WSL_UTF8 and writes UTF-16: the NUL bytes would end up in logs and answers.
+  const detail = (result.stderr.trim() || result.stdout.trim()).replace(/\0/g, "");
   return new Error(`${what} failed (${reason})${detail ? `: ${detail}` : ""}`);
 }
 

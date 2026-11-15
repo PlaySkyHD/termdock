@@ -85,6 +85,7 @@ function setup(sessions: Array<string | SessionInfo> = []) {
     toggleShortcuts: () => calls.push("toggleShortcuts"),
     searchOpen: false,
     toggleSearch: () => calls.push("toggleSearch"),
+    openSettings: () => calls.push("openSettings"),
     notify: (text) => notices.push(text),
     refocus: () => calls.push("refocus"),
   };
@@ -391,6 +392,19 @@ describe("canRun", () => {
       "searchHistory",
     ] as const)
       expect(canRun(command, deps), command).toBe(true);
+  });
+});
+
+describe("settings dialog (#64)", () => {
+  it("opens with its command, also without any tab, and not while another dialog is open", async () => {
+    const { deps, calls } = setup();
+
+    expect(canRun("openSettings", deps)).toBe(true);
+    await runCommand("openSettings", deps);
+    await runCommand("openSettings", { ...deps, searchOpen: true });
+    await runCommand("openSettings", { ...deps, shortcutsOpen: true });
+
+    expect(calls).toEqual(["openSettings"]);
   });
 });
 

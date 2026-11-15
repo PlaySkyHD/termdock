@@ -52,6 +52,8 @@ export interface CommandDeps extends SplitDeps {
   /** The history search dialog is open (#62). */
   searchOpen: boolean;
   toggleSearch(): void;
+  /** Opens the settings dialog (#64); it is modal, its keys are its own. */
+  openSettings(): void;
 }
 
 /** Stores with a split whose session is still being created; a second split waits for it (no session over the limit). */
@@ -320,6 +322,9 @@ export async function runCommand(command: CommandId, deps: CommandDeps): Promise
       return;
     case "searchHistory":
       deps.toggleSearch();
+      return;
+    case "openSettings":
+      deps.openSettings();
       return;
     case "newWindow":
       return; // the application menu opens it (main.ts)

@@ -15,6 +15,7 @@ import type { CorePort } from "./core-connection.js";
 import type { QuietWatch } from "./screenshot.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
+import { settingsScenes } from "./screenshot-settings.js";
 import { sidebarScenes } from "./screenshot-sidebar.js";
 import { snapScenes } from "./screenshot-snap.js";
 import { tabScenes } from "./screenshot-tabs.js";
@@ -214,6 +215,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await restoreScenes(deps, wsl);
   await quitScenes(deps, capture);
   await searchScenes(deps);
+  await settingsScenes(deps);
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------

@@ -5,16 +5,23 @@ import type {
   CoreStatusResult,
   ErrorCode,
   HistorySearchResult,
+  LaunchProfile,
+  LaunchProfileId,
   LayoutWindow,
+  ProfileCreateParams,
+  ProfileUpdateParams,
   ProjectId,
   SessionCreateParams,
   SessionId,
   SessionInfo,
   SessionState,
+  Settings,
+  SettingsPatch,
   TerminalSize,
   ViewId,
   Workspace,
   WorkspaceId,
+  WslDistrosResult,
 } from "@termdock/protocol";
 import type { LayoutWindowPart } from "./layout-mapping.js";
 import type { QuitAnswer, QuitChoice } from "./quit-decision.js";
@@ -55,7 +62,21 @@ export type BridgeCall =
   /** This window now shows the quit dialog; without it the main process cancels the question after 5 s. */
   | { method: "quitShown"; requestId: string }
   /** Searches the stored history of all sessions (`history.search`, #62); the dialog never names sessions. */
-  | { method: "searchHistory"; query: string; limit?: number };
+  | { method: "searchHistory"; query: string; limit?: number }
+  // Settings dialog (#64): the core checks the values, the main process the shape and the keys.
+  | { method: "getSettings" }
+  /** A partial change; `null` removes an optional key. At least one key. */
+  | { method: "updateSettings"; settings: SettingsPatch }
+  | { method: "listProfiles" }
+  | { method: "createProfile"; profile: ProfileCreateParams }
+  /** At least one change; a missing field stays as it is. */
+  | { method: "updateProfile"; profileId: LaunchProfileId; change: ProfileChange }
+  | { method: "deleteProfile"; profileId: LaunchProfileId }
+  /** The WSL distributions (`wsl.distros`); an empty list names its reason. */
+  | { method: "listDistros" };
+
+/** The fields of `profile.update` besides the id. */
+export type ProfileChange = Omit<ProfileUpdateParams, "profileId">;
 
 export type BridgeMethod = BridgeCall["method"];
 
@@ -93,6 +114,13 @@ export interface BridgeResults {
   answerQuit: null;
   quitShown: null;
   searchHistory: HistorySearchResult;
+  getSettings: Settings;
+  updateSettings: Settings;
+  listProfiles: LaunchProfile[];
+  createProfile: LaunchProfile;
+  updateProfile: LaunchProfile;
+  deleteProfile: null;
+  listDistros: WslDistrosResult;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -122,6 +150,12 @@ export type BridgeEvent =
   | { kind: "workspaceChanged"; workspaces: Workspace[] }
   /** The app is about to quit while sessions run: this window shows the quit dialog and answers (#60). */
   | { kind: "quitRequested"; requestId: string; activeSessions: number }
+  /** The settings after any change (`settings.changed`), from any client (#64). */
+  | { kind: "settingsChanged"; settings: Settings }
+  /** The complete list of launch profiles after any change (`profile.changed`), from any client (#64). */
+  | { kind: "profilesChanged"; profiles: LaunchProfile[] }
+  /** The menu entry "Einstellungen …" asks the focused window to open the settings dialog (#64). */
+  | { kind: "openSettings" }
   | { kind: "coreClosed" };
 
 /**
@@ -156,6 +190,13 @@ export interface TermdockApi {
   quitShown(requestId: string): Promise<void>;
   /** Plain-text, case-insensitive search of the stored history of all sessions, newest hits first. */
   searchHistory(query: string, limit?: number): Promise<HistorySearchResult>;
+  getSettings(): Promise<Settings>;
+  updateSettings(settings: SettingsPatch): Promise<Settings>;
+  listProfiles(): Promise<LaunchProfile[]>;
+  createProfile(profile: ProfileCreateParams): Promise<LaunchProfile>;
+  updateProfile(profileId: LaunchProfileId, change: ProfileChange): Promise<LaunchProfile>;
+  deleteProfile(profileId: LaunchProfileId): Promise<void>;
+  listDistros(): Promise<WslDistrosResult>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

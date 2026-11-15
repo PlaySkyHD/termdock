@@ -38,6 +38,8 @@ import {
   MAX_TABS_PER_WINDOW,
   MAX_WORKSPACE_BYTES,
   MAX_WORKSPACES,
+  MAX_WSL_DISTROS,
+  MAX_WSL_UNAVAILABLE_LENGTH,
   MIN_HISTORY_LIMIT_BYTES,
   PROTOCOL_VERSION,
   SESSION_STATES,
@@ -685,6 +687,21 @@ const PHASE_3_RESULT_CHECK: Record<(typeof PHASE_3_METHODS)[number], Check> = {
   },
 };
 
+/** `wsl.distros` (since 1.4): names like profile names, the default one of them, an optional reason. */
+const checkWslDistros: Check = (value, path) => {
+  const obj = record(value, path);
+  required(obj, "distros", path, listOf(isName, MAX_WSL_DISTROS));
+  optional(obj, "defaultDistro", path, (distro, distroPath) => {
+    isName(distro, distroPath);
+    if (!(obj["distros"] as unknown[]).includes(distro)) fail(`${distroPath} must be one of ${path}.distros`);
+  });
+  optional(obj, "unavailable", path, (reason, reasonPath) => {
+    if (typeof reason !== "string" || reason.length === 0 || reason.length > MAX_WSL_UNAVAILABLE_LENGTH) {
+      fail(`${reasonPath} must be a string of 1 to ${MAX_WSL_UNAVAILABLE_LENGTH} characters`);
+    }
+  });
+};
+
 function checkVersion(obj: Rec, path: string): void {
   const version = string(obj, "protocolVersion", path);
   if (!VERSION_FORMAT.test(version))
@@ -739,6 +756,7 @@ const PARAMS_CHECK: Record<Method, Check> = {
     checkLayoutDocument(present(obj, "layout", path), `${path}.layout`);
     optional(obj, "baseRevision", path, isNonNegativeInteger);
   },
+  "wsl.distros": checkEmptyParams,
 };
 
 const RESULT_CHECK: Record<Method, Check> = {
@@ -776,6 +794,7 @@ const RESULT_CHECK: Record<Method, Check> = {
   },
   "layout.save": (value, path) =>
     isNonNegativeInteger(present(record(value, path), "revision", path), `${path}.revision`),
+  "wsl.distros": checkWslDistros,
 };
 
 const EVENT_CHECK: Record<EventName, Check> = {

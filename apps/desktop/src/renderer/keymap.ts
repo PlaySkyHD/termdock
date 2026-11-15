@@ -1,6 +1,6 @@
 // Central key map (#28): command -> shortcut, and the resolution of a key event to a command. Free of DOM and
-// Electron, so the table and the rules around it are unit-tested. A settings dialog that rebinds commands
-// comes with phase 3; until then `DEFAULT_KEYMAP` is the only map.
+// Electron, so the table and the rules around it are unit-tested. The settings dialog (#64) shows the map but does
+// not rebind it; `DEFAULT_KEYMAP` is the only map.
 //
 // Rule for the defaults: no shortcut is Ctrl+<letter> without Shift (or Alt), so the shell, tmux (Ctrl+B) and
 // TUIs keep every such key. Everything that is not bound here goes to the terminal unchanged.
@@ -27,6 +27,7 @@ export const COMMAND_IDS = [
   "paste",
   "showShortcuts",
   "searchHistory",
+  "openSettings",
 ] as const;
 
 export type CommandId = (typeof COMMAND_IDS)[number];
@@ -62,6 +63,8 @@ export const DEFAULT_KEYMAP: Keymap = {
   paste: "Ctrl+Shift+V",
   showShortcuts: "Ctrl+Shift+H",
   searchHistory: "Ctrl+Shift+F",
+  // Not a letter: Ctrl+, stays outside the rule above (as in VS Code). The menu shows it without binding it (#64).
+  openSettings: "Ctrl+,",
 };
 
 /** Names of the commands in the overview of the shortcuts. */
@@ -93,6 +96,7 @@ export const COMMAND_LABELS: Readonly<Record<CommandId, string>> = {
   paste: "Einfügen",
   showShortcuts: "Tastenkürzel anzeigen",
   searchHistory: "Im Verlauf suchen",
+  openSettings: "Einstellungen",
 };
 
 /**
@@ -134,6 +138,7 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   Down: "ArrowDown",
   PageUp: "PageUp",
   PageDown: "PageDown",
+  ",": "Comma",
 };
 
 function parseShortcut(shortcut: string): Chord {

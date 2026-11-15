@@ -11,14 +11,18 @@ export function nextFocusIndex(count: number, current: number, backwards: boolea
   return backwards ? (current - 1 + count) % count : (current + 1) % count;
 }
 
-const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
+/** What Tab may reach inside a trap; selects and text areas since the settings dialog (#64). */
+export const FOCUSABLE =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
 /**
  * Keeps the focus inside `root` until the returned function is called. `fallback` gets the focus when it escapes
  * and nothing inside had it before.
  */
 export function trapFocus(root: HTMLElement, fallback: () => HTMLElement | null): () => void {
-  const focusables = (): HTMLElement[] => [...root.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  // Hidden parts (a section of the settings dialog that is not shown, #64) cannot take the focus: Tab skips them.
+  const focusables = (): HTMLElement[] =>
+    [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => !element.closest("[hidden]"));
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Tab") return;
     event.preventDefault();

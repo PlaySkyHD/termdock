@@ -223,7 +223,7 @@ export function projectMenu(): MenuEntry<ProjectAction>[] {
  */
 export interface FocusPlan {
   selector: string;
-  waitFor?: { sessionId: string; workspaceId: string | null };
+  waitFor?: { sessionId: string; workspaceId: string | null } | { sessionId: string; archived: true };
 }
 
 /** The focus of last resort: the "+" of the sidebar header, which is always there. */
@@ -246,7 +246,10 @@ export const projectFocus = (projectId: string): FocusPlan => ({
 export function focusReady(plan: FocusPlan, sessions: readonly SessionInfo[]): boolean {
   if (!plan.waitFor) return true;
   const session = sessions.find((each) => each.id === plan.waitFor?.sessionId);
-  return session === undefined || (session.workspaceId ?? null) === plan.waitFor.workspaceId;
+  if (session === undefined) return true;
+  return "archived" in plan.waitFor
+    ? session.state === "Archived"
+    : (session.workspaceId ?? null) === plan.waitFor.workspaceId;
 }
 
 // --- Confirmations --------------------------------------------------------------------------------

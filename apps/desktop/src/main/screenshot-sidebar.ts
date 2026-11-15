@@ -256,6 +256,36 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
   );
   await capture("36-deleted-session-placeholder.png");
 
+  // --- Archiving by keyboard (#97): the focus follows the row into the archive, which opens for it -------
+  await click("[data-archive-toggle]"); // collapse, so the scene shows that the archive opens by itself
+  await waitFor(`!document.querySelector('[data-archive-list]')`, "the archive to collapse");
+  // An own session again: later scenes still need the others.
+  const victim = "Ablage";
+  await core.request("session.create", { name: victim, launch: { backend: "wsl", cwd: "~" } });
+  await waitFor(
+    `document.querySelector(${JSON.stringify(sessionSelector(victim))})`,
+    "the session to archive",
+  );
+  await evaluate(`document.querySelector(${JSON.stringify(sessionSelector(victim))}).focus()`);
+  await key("F10", ["shift"], 500);
+  await waitFor(`document.querySelector('[role="menu"]')`, "the menu of the session");
+  const archiveItems = await evaluate<string[]>(
+    `[...document.querySelectorAll('[role="menuitem"]')].map((el) => el.dataset.menuItem)`,
+  );
+  const archiveIndex = archiveItems.indexOf("archive");
+  expect(archiveIndex >= 0, `the menu of ${victim} has no archive entry: ${archiveItems.join(", ")}`);
+  for (let index = 0; index < archiveIndex; index += 1) await key("Down", [], 100);
+  await key("Return", [], 600, "\r");
+  await waitFor(`document.querySelector('[data-dialog="confirm"]')`, "the archive confirmation");
+  await click('[data-dialog="confirm"] [data-confirm="ok"]');
+  await waitForCore(async () => (await session(victim)).state === "Archived", `${victim} archived`);
+  await waitFor(
+    `document.activeElement?.dataset?.sessionName === ${JSON.stringify(victim)} &&document.activeElement.closest('[data-archive-list]') !== null`,
+    "the focus on the archived row in the open archive",
+  );
+  await capture("39-archived-row-focus.png");
+  log("sidebar: the focus follows an archived session into the archive");
+
   // --- A session in a project (#104): the menu offers it first, a click starts it in the project directory ---
   const projectName = "docs";
   const projectPath = "/usr/share/doc";

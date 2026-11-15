@@ -115,6 +115,14 @@ export function Sidebar(props: SidebarProps) {
   const [pendingFocus, setPendingFocus] = useState<FocusPlan>();
   useEffect(() => {
     if (!pendingFocus || !focusReady(pendingFocus, sessions)) return;
+    // An archived row is in the DOM only while the archive is open; the plan stays until the next render shows it.
+    // Only a plan that survived `finish` gets here, so a cancelled dialog never opens the archive.
+    if (pendingFocus.waitFor && "archived" in pendingFocus.waitFor && !archiveOpen) {
+      if (sessions.some((each) => each.id === pendingFocus.waitFor?.sessionId)) {
+        setArchiveOpen(true);
+        return;
+      }
+    }
     const target =
       document.querySelector<HTMLElement>(pendingFocus.selector) ??
       document.querySelector<HTMLElement>(SIDEBAR_FOCUS.selector);
@@ -192,12 +200,13 @@ export function Sidebar(props: SidebarProps) {
     );
   };
 
+  /** The row stays, now in the archive (opened for it); the focus waits until the core's event has moved it there. */
   const archive = (session: SessionInfo): void =>
     confirm(
       confirmArchive(session),
       () => actions.archiveSession(session.id),
       sessionFocus(session.id),
-      SIDEBAR_FOCUS,
+      sessionFocus(session.id, { sessionId: session.id, archived: true }),
     );
   const remove = (session: SessionInfo): void =>
     confirm(

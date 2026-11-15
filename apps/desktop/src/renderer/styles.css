@@ -248,6 +248,89 @@ input {
   pointer-events: none;
 }
 
+/*
+ * Warnings of a session's run at the bottom edge of its pane (#113), where a new session has no prompt yet; one line
+ * each, the path shortened. The mouse goes through to the terminal everywhere except on the close button.
+ */
+.pane-warning {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 4px 2px 10px;
+  border-radius: 3px;
+  background: var(--td-status-warning);
+  color: #1e1e1e;
+  font-family: var(--td-font-ui);
+  font-size: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* Above the bar of a reader, which lies at the same edge. */
+.pane:has(.reader-bar) .pane-warning {
+  bottom: 36px;
+}
+
+.pane-warning__texts {
+  flex: 1;
+  min-width: 0;
+}
+
+.pane-warning__text {
+  display: flex;
+  margin: 2px 0;
+}
+
+/* `pre` keeps the spaces at the edges of the parts (a flex item drops them otherwise) and stays on one line. */
+.pane-warning__text > span {
+  white-space: pre;
+}
+
+/* The path gives way first; in a very narrow pane the rest of the sentence is shortened too. */
+.pane-warning__fixed {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-warning__fixed:first-child {
+  flex: none;
+}
+
+.pane-warning__path {
+  flex: 0 1000 auto;
+  min-width: 3em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-warning__close {
+  flex: none;
+  pointer-events: auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #1e1e1e;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-warning__close:hover,
+.pane-warning__close:focus-visible {
+  border-color: #1e1e1e;
+  outline: none;
+}
+
 .reader-bar__button {
   height: 20px;
   padding: 0 8px;

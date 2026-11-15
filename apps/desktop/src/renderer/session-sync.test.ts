@@ -113,6 +113,21 @@ describe("connectStore", () => {
     expect(states(s)).toEqual([["a", "Exited"]]);
   });
 
+  it("takes the warnings of state changes, also of one that arrives before the list (issue #113)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    const warnings = [{ code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" }];
+
+    api.emit({ kind: "stateChanged", sessionId: "a", state: "Running", warnings });
+    api.answer([session("a", "Starting")]);
+    await connection.ready;
+    expect(s.getState().sessions[0]?.warnings).toEqual(warnings);
+
+    api.emit({ kind: "stateChanged", sessionId: "a", state: "Exited", lastExitCode: 0 });
+    expect(s.getState().sessions[0]?.warnings).toBeUndefined();
+  });
+
   it("adds a session created while the list is on its way, unless the list has it", async () => {
     const api = new FakeApi();
     const s = store();

@@ -34,8 +34,10 @@ import {
   MAX_PROFILE_BYTES,
   MAX_PROFILES,
   MAX_PROJECTS_PER_WORKSPACE,
+  MAX_SESSION_WARNINGS,
   MAX_TAB_TITLE_LENGTH,
   MAX_TABS_PER_WINDOW,
+  MAX_WARNING_CODE_LENGTH,
   MAX_WORKSPACE_BYTES,
   MAX_WORKSPACES,
   MAX_WSL_DISTROS,
@@ -182,6 +184,26 @@ const checkSessionInfo: Check = (value, path) => {
   string(obj, "updatedAt", path);
   for (const key of ["workspaceId", "profileId", "writerViewId"]) optional(obj, key, path, isId);
   optional(obj, "lastExitCode", path, isInteger);
+  optional(obj, "warnings", path, checkWarnings);
+};
+
+/** Any code of this shape passes, so a client keeps a session whose warning came from a newer core (since 1.5). */
+const WARNING_CODE = new RegExp(`^[a-z][a-z0-9_]{0,${MAX_WARNING_CODE_LENGTH - 1}}$`);
+
+const checkWarning: Check = (value, path) => {
+  const obj = record(value, path);
+  const code = present(obj, "code", path);
+  if (typeof code !== "string" || !WARNING_CODE.test(code)) {
+    fail(`${path}.code must be 1 to ${MAX_WARNING_CODE_LENGTH} characters of a-z, 0-9 and _`);
+  }
+  optional(obj, "path", path, isPath);
+  optional(obj, "distro", path, isName);
+};
+
+/** `warnings` of a session or a state change: 1 to MAX_SESSION_WARNINGS entries (none means omitting the field). */
+const checkWarnings: Check = (value, path) => {
+  listOf(checkWarning, MAX_SESSION_WARNINGS)(value, path);
+  if ((value as unknown[]).length === 0) fail(`${path} must not be empty; omit it instead`);
 };
 
 // --- Layout document ------------------------------------------------------------------------
@@ -808,6 +830,7 @@ const EVENT_CHECK: Record<EventName, Check> = {
     string(obj, "sessionId", path);
     oneOf(SESSION_STATES)(present(obj, "state", path), `${path}.state`);
     optional(obj, "lastExitCode", path, isInteger);
+    optional(obj, "warnings", path, checkWarnings);
   },
   "session.resized": (value, path) => {
     const obj = record(value, path);

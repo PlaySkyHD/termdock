@@ -25,6 +25,7 @@ export const SCENE_GROUPS = [
   "quit",
   "search",
   "settings",
+  "cwd",
 ] as const;
 
 export type SceneGroup = (typeof SCENE_GROUPS)[number];

@@ -14,6 +14,7 @@ import type {
   SessionId,
   SessionInfo,
   SessionState,
+  SessionWarning,
   Settings,
   SettingsPatch,
   TerminalSize,
@@ -300,7 +301,16 @@ export interface EventMap {
    * 1.1); parts of output split at the payload limit share it.
    */
   "session.output": { sessionId: SessionId; seq?: number };
-  "session.stateChanged": { sessionId: SessionId; state: SessionState; lastExitCode?: number };
+  /**
+   * `warnings` (since 1.5) are those of the session's current run, sent with every change to `Running` or
+   * `Detached` that has some; a change without them means the session has none (any more).
+   */
+  "session.stateChanged": {
+    sessionId: SessionId;
+    state: SessionState;
+    lastExitCode?: number;
+    warnings?: SessionWarning[];
+  };
   "session.resized": { sessionId: SessionId; size: TerminalSize };
   /** writerViewId undefined means nobody writes. */
   "view.writerChanged": { sessionId: SessionId; writerViewId?: ViewId };

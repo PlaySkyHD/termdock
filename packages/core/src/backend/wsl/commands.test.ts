@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { LaunchSpec } from "@termdock/protocol";
 import {
   attachArgs,
+  checksCwd,
+  cwdCheckArgs,
   hasSessionArgs,
   isMissingSession,
   keepaliveArgs,
   killSessionArgs,
   listClientsArgs,
   parseClientTtys,
+  parseCwdCheck,
   parseDistroList,
   parsePaneStatus,
   parseSnapshot,
@@ -299,5 +302,55 @@ describe("parsers", () => {
     const output = "N\0A\0M\0E\0 STATE VERSION\r\n  Debian Running 2\r\n  Ubuntu Stopped 2\r\n";
     expect(parseDistroList(output)).toEqual({ names: ["Debian", "Ubuntu"], defaultDistro: "Debian" });
     expect(parseDistroList("")).toEqual({ names: [], defaultDistro: undefined });
+  });
+});
+
+// Issue #113 (openspec change missing-cwd-warning).
+describe("check of the working directory", () => {
+  it("checks absolute paths within the limit only", () => {
+    expect(checksCwd("/srv/api")).toBe(true);
+    expect(checksCwd("/")).toBe(true);
+    for (const cwd of ["~", "~/src", "src", "C:\\work", "", "/" + "a".repeat(512), "/a\0b"]) {
+      expect(checksCwd(cwd), cwd).toBe(false);
+    }
+  });
+
+  it("runs test -d from ~ with the path as one argument", () => {
+    expect(cwdCheckArgs("Ubuntu", "/srv/my dir;$HOME")).toEqual([
+      "-d",
+      "Ubuntu",
+      "--cd",
+      "~",
+      "--exec",
+      "test",
+      "-d",
+      "/srv/my dir;$HOME",
+    ]);
+    expect(() => cwdCheckArgs("Ubuntu", "~")).toThrow();
+  });
+
+  it("reads exit 0 as present, a silent exit 1 as missing and anything else as unknown", () => {
+    expect(parseCwdCheck({ code: 0, stdout: "", stderr: "" })).toBe(true);
+    expect(parseCwdCheck({ code: 1, stdout: "", stderr: "" })).toBe(false);
+    // What runWsl reports for a silent exit 1 (Node's message as stderr).
+    expect(
+      parseCwdCheck({
+        code: 1,
+        stdout: "",
+        stderr: "Command failed: wsl.exe -d Ubuntu --cd ~ --exec test -d /x\n",
+      }),
+    ).toBe(false);
+    // A notice wsl.exe prints on every call in some setups (review PR #113).
+    const notice = "wsl: Es wurde eine localhost-Proxykonfiguration erkannt, aber nicht gespiegelt.\n";
+    expect(
+      parseCwdCheck({ code: 1, stdout: "", stderr: `Command failed: wsl.exe -d Ubuntu\n${notice}` }),
+    ).toBe(false);
+    expect(parseCwdCheck({ code: 1, stdout: "", stderr: "Wsl/Service/E_UNEXPECTED" })).toBeUndefined();
+    expect(
+      parseCwdCheck({ code: 1, stdout: "", stderr: `${notice}Wsl/Service/E_UNEXPECTED\n` }),
+    ).toBeUndefined();
+    expect(parseCwdCheck({ code: 127, stdout: "", stderr: "" })).toBeUndefined();
+    expect(parseCwdCheck({ code: null, stdout: "", stderr: "", timedOut: true })).toBeUndefined();
+    expect(parseCwdCheck({ code: 1, stdout: "", stderr: "", timedOut: true })).toBeUndefined();
   });
 });

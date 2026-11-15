@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.4" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.5" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.4" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.5" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -422,6 +422,37 @@ describe("two clients on one session", () => {
     // Events are written before this answer, so nothing is still on its way.
     await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
     expect(strangerEvents).toEqual([]);
+  });
+
+  // Issue #113 (openspec change missing-cwd-warning), protocol 1.5.
+  it("reports a missing working directory in the answer, the list and the state changes", async () => {
+    const { pipePath, backend } = await startCore();
+    backend.missingCwds.add("/srv/api");
+    const client = await newClient(pipePath);
+    await client.request("session.list", {});
+    const states: Array<{ state: string; warnings?: unknown }> = [];
+    client.on("session.stateChanged", ({ state, warnings }) =>
+      states.push(warnings === undefined ? { state } : { state, warnings }),
+    );
+    const warning = { code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" };
+
+    const { result } = await client.request("session.create", {
+      name: "api",
+      launch: { backend: "wsl", cwd: "/srv/api" },
+    });
+
+    expect(result.session.state).toBe("Detached");
+    expect(result.session.warnings).toEqual([warning]);
+    expect(states).toEqual([
+      { state: "Running", warnings: [warning] },
+      { state: "Detached", warnings: [warning] },
+    ]);
+    const { sessions } = (await client.request("session.list", {})).result;
+    expect(sessions.find((each) => each.id === result.session.id)?.warnings).toEqual([warning]);
+
+    backend.pty(result.session.id).emitExit(0);
+    await waitFor(() => states.length === 3, "Exited");
+    expect(states[2]).toEqual({ state: "Exited" });
   });
 
   it("tells the clients that listed sessions about a created session, once (issue #46)", async () => {
@@ -1001,16 +1032,16 @@ describe("phase 3 (issue #55)", () => {
     expect(seen.get(stranger)).toEqual([]);
   });
 
-  it("accepts clients with protocol 1.2 and 1.3 and answers 1.4 (issue #64)", async () => {
+  it("accepts clients with protocol 1.2 to 1.4 and answers 1.5 (issues #64, #113)", async () => {
     const { pipePath } = await startCore();
-    for (const version of ["1.2", "1.3"]) {
+    for (const version of ["1.2", "1.3", "1.4"]) {
       const raw = await rawConnect(pipePath);
       raw.send({ ...hello, params: helloParams(version) });
       await waitFor(() => raw.frames.length === 1, "hello response");
       expect(raw.frames[0]?.header).toEqual({
         kind: "response",
         id: "h",
-        result: { protocolVersion: "1.4" },
+        result: { protocolVersion: "1.5" },
       });
     }
   });

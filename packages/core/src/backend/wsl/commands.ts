@@ -1,4 +1,5 @@
 // Argument arrays for wsl.exe and tmux plus parsers for their output (ADR 0003, design add-wsl-backend).
+import { MAX_PATH_LENGTH } from "@termdock/protocol";
 import type { LaunchSpec, SessionId } from "@termdock/protocol";
 import type { TerminalSnapshot } from "../types.js";
 
@@ -175,6 +176,40 @@ export function refreshClientArgs(target: TmuxTarget, tty: string): string[] {
 /** Client ttys from `list-clients`; anything that is not a plain device path is dropped. */
 export function parseClientTtys(stdout: string): string[] {
   return stdout.split(/\r?\n/).filter((line) => CLIENT_TTY.test(line));
+}
+
+/**
+ * Whether the start checks `cwd` before it runs (issue #113): only an absolute Linux path within the protocol's
+ * path limit. `~` (home) and other forms are left to wsl.exe.
+ */
+export function checksCwd(cwd: string): boolean {
+  return cwd.startsWith("/") && cwd.length <= MAX_PATH_LENGTH && !cwd.includes("\0");
+}
+
+/**
+ * `test -d <cwd>` from `~`, as an argument array without shell (issue #113). Two arguments make `test` read the
+ * path as its operand whatever it looks like; GNU `test` does not take `--` here.
+ */
+export function cwdCheckArgs(distro: string, cwd: string): string[] {
+  if (!checksCwd(cwd))
+    throw new Error(`Working directory is not checked: ${JSON.stringify(cwd.slice(0, 64))}`);
+  return wslExec(distro, "~", ["test", "-d", cwd]);
+}
+
+/**
+ * Reads the result of `cwdCheckArgs`: true = the directory exists, false = it does not (`test` exit 1 without
+ * output), undefined = unknown (wsl.exe failed or timed out).
+ */
+export function parseCwdCheck(result: RunResult): boolean | undefined {
+  if (result.timedOut) return undefined;
+  if (result.code === 0) return true;
+  // `test` prints nothing. `runWsl` puts Node's "Command failed: <command line>" into an empty stderr, and some
+  // setups make wsl.exe print a `wsl: …` notice on every call; any other line is an error of wsl.exe, so the
+  // answer is unknown.
+  const lines = result.stderr.replace(/\0/g, "").split(/\r?\n/);
+  const silent = lines.every((line) => line.trim() === "" || /^(Command failed: |wsl: )/.test(line.trim()));
+  if (result.code === 1 && result.stdout.trim() === "" && silent) return false;
+  return undefined;
 }
 
 export function versionArgs(distro: string): string[] {

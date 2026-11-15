@@ -13,6 +13,7 @@ import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
 import { SCENE_GROUPS } from "./screenshot.js";
 import type { QuietWatch, SceneGroup } from "./screenshot.js";
+import { cwdScenes } from "./screenshot-cwd.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
@@ -231,6 +232,7 @@ export async function runScenario(
   if (want("quit")) await quitScenes(deps, capture);
   if (want("search")) await searchScenes(deps);
   if (want("settings")) await settingsScenes(deps);
+  if (want("cwd")) await cwdScenes(deps);
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------

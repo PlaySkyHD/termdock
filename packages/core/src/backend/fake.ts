@@ -1,5 +1,5 @@
 // In-memory Backend for tests (ADR 0003). Exported so that other packages can use it too.
-import type { BackendKind, LaunchSpec, SessionId, TerminalSize } from "@termdock/protocol";
+import type { BackendKind, LaunchSpec, SessionId, SessionWarning, TerminalSize } from "@termdock/protocol";
 import type { Backend, Disposable, PtyHandle, TerminalSnapshot } from "./types.js";
 
 const encoder = new TextEncoder();
@@ -16,6 +16,8 @@ export class FakePty implements PtyHandle {
   size: TerminalSize;
   disposed = false;
   ended = false;
+  /** Set by `FakeBackend.start` for a `cwd` in `missingCwds`. */
+  warnings: readonly SessionWarning[] | undefined;
   private readonly dataListeners = new Set<(data: Uint8Array) => void>();
   private readonly exitListeners = new Set<(event: { exitCode?: number }) => void>();
 
@@ -120,6 +122,11 @@ export class FakeBackend implements Backend {
   defaultDistro: string | undefined;
   /** Test hook: runs for every PTY that `start` or `attach` creates. */
   onPty: ((pty: FakePty) => void) | undefined;
+  /**
+   * Working directories that do not exist (issue #113): `start` still succeeds, and its PTY carries a `cwd_missing`
+   * warning like the WSL backend's (distro of the spec, else "Ubuntu").
+   */
+  readonly missingCwds = new Set<string>();
   readonly starts: FakeBackendCall[] = [];
   readonly attaches: FakeBackendCall[] = [];
   readonly kills: SessionId[] = [];
@@ -173,7 +180,11 @@ export class FakeBackend implements Backend {
 
   async start(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
     this.starts.push({ id, spec, size });
-    return this.open(id, size);
+    const pty = this.open(id, size);
+    if (this.missingCwds.has(spec.cwd)) {
+      pty.warnings = [{ code: "cwd_missing", path: spec.cwd, distro: spec.distro ?? "Ubuntu" }];
+    }
+    return pty;
   }
 
   async attach(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {

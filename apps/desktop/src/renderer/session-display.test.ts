@@ -7,6 +7,7 @@ import {
   isAttachable,
   isRunning,
   stateText,
+  warningTexts,
 } from "./session-display.js";
 
 function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
@@ -121,5 +122,36 @@ describe("stateText", () => {
     expect(stateText(session("a", { state: "Interrupted", lastExitCode: 1 }))).toBe("Interrupted");
     expect(stateText(session("a", { state: "Running" }))).toBe("Running");
     expect(stateText(session("a", { state: "Detached" }))).toBe("Detached");
+  });
+});
+
+// Issue #113 (openspec change missing-cwd-warning).
+describe("warningTexts", () => {
+  const missing = { code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" };
+
+  it("names the missing directory, the distro and where the shell runs", () => {
+    expect(warningTexts(session("a", { state: "Running", warnings: [missing] }), [])).toEqual([
+      {
+        text: "Verzeichnis /srv/api fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.",
+        before: "Verzeichnis ",
+        path: "/srv/api",
+        after: " fehlt in Ubuntu – die Session läuft im Wurzelverzeichnis /.",
+      },
+    ]);
+    const withoutDistro = session("a", {
+      launch: { backend: "wsl", distro: "Debian", cwd: "/srv/api" },
+      warnings: [{ code: "cwd_missing", path: "/srv/api" }],
+    });
+    expect(warningTexts(withoutDistro, []).map((each) => each.text)).toEqual([
+      "Verzeichnis /srv/api fehlt in Debian – die Session läuft im Wurzelverzeichnis /.",
+    ]);
+  });
+
+  it("shows nothing once dismissed, without warnings, for unknown codes or a session that does not live", () => {
+    expect(warningTexts(session("a", { warnings: [missing] }), ["a"])).toEqual([]);
+    expect(warningTexts(session("a"), [])).toEqual([]);
+    expect(warningTexts(undefined, [])).toEqual([]);
+    expect(warningTexts(session("a", { warnings: [{ code: "later_code", path: "/x" }] }), [])).toEqual([]);
+    expect(warningTexts(session("a", { state: "Exited", warnings: [missing] }), [])).toEqual([]);
   });
 });

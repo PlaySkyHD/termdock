@@ -10,6 +10,7 @@ import type {
   SessionId,
   SessionInfo,
   SessionState,
+  SessionWarning,
   Workspace,
 } from "@termdock/protocol";
 import { applyMove, canMove } from "./layout-moves.js";
@@ -44,6 +45,8 @@ export interface UiState {
   readonly coreStatus: CoreStatusResult | undefined;
   /** The connection to the core ended; final. */
   readonly coreClosed: boolean;
+  /** Sessions whose warning hint the user closed in this window, until their next start (#113). */
+  readonly dismissedWarnings: readonly SessionId[];
 }
 
 export interface UiStoreOptions {
@@ -65,6 +68,7 @@ export class UiStore {
       window: { id: options.newId(), sidebarVisible: true, tabs: [] },
       coreStatus: undefined,
       coreClosed: false,
+      dismissedWarnings: [],
     };
   }
 
@@ -97,13 +101,39 @@ export class UiStore {
     this.set({ sessions: byCreation([...this.state.sessions, session]) });
   }
 
-  sessionStateChanged(sessionId: SessionId, state: SessionState, lastExitCode?: number): void {
+  /**
+   * `warnings` are those of the current run (#113) and replace the known ones; without them the session has none.
+   * A new start (`Starting`) shows the warnings of its run again, even where the last ones were dismissed.
+   */
+  sessionStateChanged(
+    sessionId: SessionId,
+    state: SessionState,
+    lastExitCode?: number,
+    warnings?: readonly SessionWarning[],
+  ): void {
     const known = this.state.sessions.find((session) => session.id === sessionId);
     if (!known) return;
     // A stale exit code does not belong to a session that runs again.
-    const { lastExitCode: _old, ...rest } = known;
-    const next: SessionInfo = { ...rest, state, ...(lastExitCode === undefined ? {} : { lastExitCode }) };
-    this.set({ sessions: this.state.sessions.map((session) => (session === known ? next : session)) });
+    const { lastExitCode: _old, warnings: _oldWarnings, ...rest } = known;
+    const next: SessionInfo = {
+      ...rest,
+      state,
+      ...(lastExitCode === undefined ? {} : { lastExitCode }),
+      ...(warnings === undefined || warnings.length === 0 ? {} : { warnings: [...warnings] }),
+    };
+    const restarted = state === "Starting" && this.state.dismissedWarnings.includes(sessionId);
+    this.set({
+      sessions: this.state.sessions.map((session) => (session === known ? next : session)),
+      ...(restarted
+        ? { dismissedWarnings: this.state.dismissedWarnings.filter((id) => id !== sessionId) }
+        : {}),
+    });
+  }
+
+  /** Closes the warning hint of the session's run in this window (#113); it blocks nothing and stays closed. */
+  dismissWarnings(sessionId: SessionId): void {
+    if (this.state.dismissedWarnings.includes(sessionId)) return;
+    this.set({ dismissedWarnings: [...this.state.dismissedWarnings, sessionId] });
   }
 
   /**
@@ -140,7 +170,10 @@ export class UiStore {
   /** The session and its history are gone (`session.removed`); panes that show it fall back to the placeholder. */
   sessionRemoved(sessionId: SessionId): void {
     if (!this.state.sessions.some((session) => session.id === sessionId)) return;
-    this.set({ sessions: this.state.sessions.filter((session) => session.id !== sessionId) });
+    this.set({
+      sessions: this.state.sessions.filter((session) => session.id !== sessionId),
+      dismissedWarnings: this.state.dismissedWarnings.filter((id) => id !== sessionId),
+    });
   }
 
   setWorkspaces(workspaces: readonly Workspace[]): void {

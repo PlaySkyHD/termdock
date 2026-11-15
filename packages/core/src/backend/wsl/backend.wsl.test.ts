@@ -86,6 +86,20 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     missing.dispose();
   });
 
+  // Issue #113: wsl.exe cannot chdir and runs tmux in `/`; the start warns instead of failing.
+  it("starts in / with a cwd_missing warning when the directory does not exist", async () => {
+    backend = new WslBackend({ socket: SOCKET });
+    const id = nextId();
+    const missing = spec({ cwd: `/tmp/termdock-missing-${process.pid}` });
+    const session = track(await backend.start(id, missing, size));
+    expect(session.pty.warnings).toEqual([{ code: "cwd_missing", path: missing.cwd, distro }]);
+    session.pty.write("printf 'cwd=%s\\n' \"$PWD\"\r");
+    await waitFor(async () => /^cwd=\/$/m.test(await screen(id, missing)));
+
+    const other = nextId();
+    expect(track(await backend.start(other, spec(), size)).pty.warnings).toBeUndefined();
+  }, 30_000);
+
   it("starts in the requested directory within 3 s, echoes input and follows resizes", async () => {
     backend = new WslBackend({ socket: SOCKET });
     const id = nextId();

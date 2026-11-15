@@ -43,6 +43,26 @@ export interface LaunchSpec {
   env?: Readonly<Record<string, string>>;
 }
 
+/** Codes of `SessionWarning` this protocol version knows (since 1.5). Clients ignore warnings with another code. */
+export const SESSION_WARNING_CODES = ["cwd_missing"] as const;
+export type SessionWarningCode = (typeof SESSION_WARNING_CODES)[number];
+/** Warnings per session; `code` 1 to 64 characters of `a`–`z`, digits and `_`. */
+export const MAX_SESSION_WARNINGS = 8;
+export const MAX_WARNING_CODE_LENGTH = 64;
+
+/**
+ * A problem the start of a session found that did not stop it (since 1.5). `code` is stable; a later core may send
+ * codes this version does not list, so it is a string. `cwd_missing`: `path` is the working directory that does not
+ * exist in `distro`; the shell then runs in `/` (wsl.exe falls back to the root directory).
+ */
+export interface SessionWarning {
+  code: SessionWarningCode | (string & {});
+  /** Path the warning is about (`cwd_missing`: the missing directory). */
+  path?: string;
+  /** WSL distribution the path was checked in. */
+  distro?: string;
+}
+
 export interface SessionInfo {
   id: SessionId;
   name: string;
@@ -55,6 +75,11 @@ export interface SessionInfo {
   size: TerminalSize;
   loggingEnabled: boolean;
   lastExitCode?: number;
+  /**
+   * Warnings of the current run (since 1.5): set when a start binds its PTY, only in `Running` and `Detached`,
+   * dropped with the next state outside them. Runtime state: the core does not store them.
+   */
+  warnings?: SessionWarning[];
   createdAt: string;
   updatedAt: string;
 }
@@ -257,5 +282,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 1.3: phase 3 (workspaces, projects, profiles, session update/archive/delete, settings, history search and
  * their events); `session.create` may omit `launch` when it names a `profileId`.
  * 1.4: method `wsl.distros` (settings dialog, #64).
+ * 1.5: optional `warnings` in `SessionInfo` and `session.stateChanged` (missing working directory, #113).
  */
-export const PROTOCOL_VERSION = "1.4" as const;
+export const PROTOCOL_VERSION = "1.5" as const;

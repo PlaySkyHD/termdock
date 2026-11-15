@@ -682,6 +682,46 @@ describe("UiStore sessions", () => {
   });
 });
 
+// Issue #113 (openspec change missing-cwd-warning).
+describe("UiStore session warnings", () => {
+  const warnings = [{ code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" }];
+
+  it("replaces the warnings with each state change and drops them with a change without", () => {
+    const store = newStore();
+    store.setSessions([session("a", "Starting")]);
+
+    store.sessionStateChanged("a", "Running", undefined, warnings);
+    expect(store.getState().sessions[0]?.warnings).toEqual(warnings);
+    store.sessionStateChanged("a", "Exited", 0);
+    expect(store.getState().sessions[0]).not.toHaveProperty("warnings");
+  });
+
+  it("keeps a dismissed hint closed while views come and go, and shows the next start's again", () => {
+    const store = newStore();
+    store.setSessions([session("a", "Starting")]);
+    store.sessionStateChanged("a", "Running", undefined, warnings);
+
+    store.dismissWarnings("a");
+    store.dismissWarnings("a");
+    expect(store.getState().dismissedWarnings).toEqual(["a"]);
+    store.sessionStateChanged("a", "Detached", undefined, warnings);
+    store.sessionStateChanged("a", "Running", undefined, warnings);
+    expect(store.getState().dismissedWarnings).toEqual(["a"]);
+
+    store.sessionStateChanged("a", "Exited", 0);
+    store.sessionStateChanged("a", "Starting");
+    expect(store.getState().dismissedWarnings).toEqual([]);
+  });
+
+  it("forgets the dismissal of a removed session", () => {
+    const store = newStore();
+    store.setSessions([session("a", "Running")]);
+    store.dismissWarnings("a");
+    store.sessionRemoved("a");
+    expect(store.getState().dismissedWarnings).toEqual([]);
+  });
+});
+
 describe("UiStore core", () => {
   it("keeps the core status and the end of the connection", () => {
     const store = newStore();

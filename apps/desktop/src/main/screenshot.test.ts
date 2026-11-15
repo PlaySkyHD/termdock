@@ -37,6 +37,9 @@ describe("screenshotScenes", () => {
   it("runs the listed groups, in the fixed order and once each", () => {
     expect(screenshotScenes([...base, "--scenes", "settings,search"])).toEqual(["search", "settings"]);
     expect(screenshotScenes([...base, "--scenes", " snap , snap"])).toEqual(["snap"]);
+    // The missing working directory (#113) is the last group and runs alone.
+    expect(SCENE_GROUPS.at(-1)).toBe("cwd");
+    expect(screenshotScenes([...base, "--scenes", "cwd"])).toEqual(["cwd"]);
   });
 
   it("reads the option wherever it stands", () => {

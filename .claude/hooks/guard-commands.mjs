@@ -10,12 +10,15 @@
 // commit messages, heredoc bodies and comments does not match. `bash -c`, `powershell -Command` and
 // `wsl.exe [-- | --exec]` are checked recursively. Relative paths count as repository paths if the
 // working directory (`cwd` of the event, after any `cd` in the command; a `cd` inside `( … )` stays
-// inside) is in the repository, or if the event has no `cwd`. A command the lexer cannot split cleanly
+// inside) is in the repository, or if the event has no `cwd`. Worktrees (`P:/GitHub/termdock-wt/…`) match
+// the same prefix as the checkout (`isRepoAbsolute`). `cp`, `mv` and `install` are checked by their
+// destination only (last non-option word, `-t <dir>`, `--target-directory`). A command the lexer cannot split cleanly
 // (unbalanced `$(`) is allowed. The guard prefers missing a case over a false alarm.
 //
 // Known gaps (not detected):
-// - writes through other programs: `cp`, `mv`, `dd`, `truncate`, `git apply`, `git checkout -- <file>`,
-//   `git clean`, `awk -i inplace`, `py`, script files (`node x.mjs`, `bash x.sh`), `cmd /c`;
+// - `cp`/`mv`/`install` with a destination outside the repository, even if `mv` removes a source inside it;
+// - writes through other programs: `rsync`, `ln`, `xcopy`, `robocopy`, `Rename-Item`, `dd`, `truncate`, `git apply`, `git checkout -- <file>`, `git clean`,
+//   `awk -i inplace`, `py`, script files (`node x.mjs`, `bash x.sh`: the content is unknown), `cmd /c`;
 // - commands that are not the command word: `xargs sed -i`, `find -exec sed -i`, `Start-Process wsl`,
 //   `powershell -EncodedCommand`, git aliases, tmux command aliases, `pkill tmux`;
 // - paths from variables or command substitution (`> "$f"`, `$(...)`, backticks): a path that starts
@@ -28,6 +31,9 @@ import { fileURLToPath } from "node:url";
 
 const EDIT_HINT =
   "Dateien mit Read/Edit/Write ändern; Formatter (`npm run format`) und Generatoren dürfen schreiben, temporäre Dateien gehören nach P:/Temp/.";
+
+const COPY_HINT =
+  "Repo-Dateien nur mit Read/Edit/Write ändern (lessons Abschnitt 5); temporäre Kopien gehören nach P:/Temp/.";
 
 function block(reason, alternative) {
   return { reason, alternative };
@@ -568,6 +574,68 @@ function checkNode(args, heredocs, ctx) {
   return null;
 }
 
+// Options that take a value as the next word (`-m 644`). `-t` is handled separately: it names the target.
+const COPY_VALUE_OPTIONS = {
+  cp: { short: "S", long: ["--suffix", "--sparse", "--reflink"] },
+  mv: { short: "S", long: ["--suffix"] },
+  install: { short: "mogS", long: ["--mode", "--owner", "--group", "--suffix", "--strip-program"] },
+};
+
+// cp, mv, install (and the PowerShell Copy-Item/Move-Item): the destination is the last non-option word
+// or the directory of `-t`/`--target-directory`/`-Destination`. Only the destination is inspected, so
+// copying out of the repository is allowed.
+function checkCopyMove(name, args, ctx, dialect) {
+  const opts = COPY_VALUE_OPTIONS[name] ?? COPY_VALUE_OPTIONS.cp;
+  const positional = [];
+  let target = null;
+  let dirMode = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      positional.push(...args.slice(i + 1));
+      break;
+    }
+    if (dialect === "ps" && /^-[a-z]{2,}(?::.*)?$/i.test(a)) {
+      const m = /^(-[a-z]+)(?::(.*))?$/i.exec(a);
+      // PowerShell accepts unambiguous parameter abbreviations (`-Dest`).
+      if (m && m[1].length >= 3 && "-destination".startsWith(m[1].toLowerCase()))
+        target = m[2] ?? args[++i] ?? null;
+      else if (/^-(?:path|literalpath|filter|include|exclude|credential|stream)$/i.test(a)) {
+        const value = args[++i];
+        if (/^-(?:path|literalpath)$/i.test(a) && value !== undefined) positional.push(value);
+      }
+      continue;
+    }
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const option = eq === -1 ? a : a.slice(0, eq);
+      // GNU getopt accepts unambiguous abbreviations (`--target=…`).
+      if (option.length >= 4 && "--target-directory".startsWith(option))
+        target = eq === -1 ? (args[++i] ?? null) : a.slice(eq + 1);
+      else if (eq === -1 && opts.long.includes(option)) i++;
+      else if (option.length >= 4 && "--directory".startsWith(option) && name === "install") dirMode = true;
+    } else if (/^-[^-]/.test(a)) {
+      for (let j = 1; j < a.length; j++) {
+        const c = a[j];
+        if (c === "t") {
+          target = j < a.length - 1 ? a.slice(j + 1) : (args[++i] ?? null);
+          break;
+        }
+        if (name === "install" && c === "d") dirMode = true; // only creates directories
+        if (opts.short.includes(c)) {
+          if (j === a.length - 1) i++;
+          break;
+        }
+      }
+    } else positional.push(a);
+  }
+  // Without `-t` the last word is the destination; a lone word is not a valid call.
+  if (dirMode && target === null) return null;
+  const dest = target ?? (positional.length >= 2 ? positional[positional.length - 1] : null);
+  if (!dest || !isRepoPath(dest, ctx)) return null;
+  return block(`\`${name}\` schreibt in den Repo-Checkout (${dest}).`, COPY_HINT);
+}
+
 function checkTee(args, ctx) {
   const target = args.find((a) => !a.startsWith("-") && isRepoPath(a, ctx));
   return target === undefined ? null : writeBlock("`tee`", target);
@@ -638,6 +706,18 @@ function checkWords(words, ctx, dialect, heredocs) {
       return checkNode(args, heredocs, ctx);
     case "tee":
       return checkTee(args, ctx);
+    case "cp":
+    case "mv":
+    case "install":
+      return checkCopyMove(name, args, ctx, dialect);
+    case "copy-item":
+    case "move-item":
+    case "copy":
+    case "move":
+    case "cpi":
+    case "mi":
+      // Copy-Item/Move-Item and their aliases exist only in PowerShell.
+      return dialect === "ps" ? checkCopyMove("cp", args, ctx, dialect) : null;
     default:
       if (PS_WRITERS.has(name) || (dialect === "ps" && PS_WRITER_ALIASES.has(w[0].toLowerCase())))
         return checkPsWriter(w[0], args, ctx);

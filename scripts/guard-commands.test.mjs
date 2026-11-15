@@ -76,6 +76,43 @@ const blocked = [
   ["Bash", "(cd P:/Temp && echo x > a.txt); echo y > b.txt"],
   ["Bash", "node gen.mjs > out.json", "P:/GitHub/termdock-wt/feat/x"],
   ["Bash", "cd P:/Temp && cd P:/GitHub/termdock && echo x > a.md", "P:/Temp"],
+  // cp, mv, install (issue #111): the destination is a repository path
+  ["Bash", "cp /p/Temp/bak/Sidebar.tsx P:/GitHub/termdock-wt/x/apps/desktop/src/renderer/Sidebar.tsx"],
+  ["Bash", "cp P:/Temp/a.txt P:/GitHub/termdock/docs/a.md"],
+  ["Bash", "cp -r P:/Temp/bak /p/GitHub/termdock-wt/feat/x/apps"],
+  ["Bash", "mv P:/Temp/a.ts 'P:\\GitHub\\termdock\\src\\a.ts'"],
+  ["Bash", "mv -f /tmp/a.ts /mnt/p/GitHub/termdock/src/a.ts"],
+  ["Bash", "install -m 644 P:/Temp/a.ts P:/GitHub/termdock/src/a.ts"],
+  ["Bash", "install -D P:/Temp/a.ts P:/GitHub/termdock/src/a.ts"],
+  ["Bash", "cp P:/Temp/a.ts P:/Temp/b.ts P:/GitHub/termdock-wt/feat/x/"],
+  ["Bash", "cp -t P:/GitHub/termdock/docs P:/Temp/a.md P:/Temp/b.md"],
+  ["Bash", "cp -rt P:/GitHub/termdock/docs P:/Temp/a"],
+  ["Bash", "cp --target-directory=P:/GitHub/termdock/docs P:/Temp/a.md"],
+  ["Bash", "mv --target-directory P:/GitHub/termdock/docs P:/Temp/a.md"],
+  ["Bash", "install -t P:/GitHub/termdock/bin P:/Temp/tool"],
+  ["Bash", "cp -- P:/Temp/a.ts P:/GitHub/termdock/a.ts"],
+  ["Bash", "sudo cp P:/Temp/a.ts P:/GitHub/termdock/a.ts"],
+  // relative destination with cwd in the repository or a worktree
+  ["Bash", "cp P:/Temp/a.ts src/a.ts"],
+  ["Bash", "cp P:/Temp/a.ts src/a.ts", "P:/GitHub/termdock-wt/fix/issue-111-hook-cp-mv"],
+  ["Bash", "mv -v P:/Temp/a.ts ./apps/a.ts", "P:\\GitHub\\termdock-wt\\feat\\x"],
+  ["Bash", "cp -t src P:/Temp/a.ts", "P:/GitHub/termdock"],
+  ["Bash", "cd P:/GitHub/termdock-wt/feat/x && cp P:/Temp/a.ts a.ts", "P:/Temp"],
+  // chained commands are checked per segment
+  ["Bash", "echo hi && cp P:/Temp/a.ts P:/GitHub/termdock/a.ts"],
+  ["Bash", "ls; mv P:/Temp/a.ts P:/GitHub/termdock/a.ts"],
+  ["Bash", "cat P:/Temp/list | cp P:/Temp/a.ts P:/GitHub/termdock/a.ts"],
+  ["Bash", "cp P:/Temp/a.ts P:/Temp/b.ts && cp P:/Temp/a.ts a.ts", "P:/GitHub/termdock"],
+  ["Bash", 'bash -c "cp P:/Temp/a.ts P:/GitHub/termdock/a.ts"'],
+  ["Bash", "wsl.exe -d Ubuntu -- cp /tmp/a.ts /mnt/p/GitHub/termdock/a.ts"],
+  ["Bash", "cp --target=P:/GitHub/termdock/docs P:/Temp/a.md"],
+  ["Bash", "cp --target-dir P:/GitHub/termdock/docs P:/Temp/a.md"],
+  ["Bash", "install -d -t P:/GitHub/termdock/bin P:/Temp/tool"],
+  ["PowerShell", "copy P:\\Temp\\a.ts P:\\GitHub\\termdock\\a.ts"],
+  ["PowerShell", "Copy-Item P:\\Temp\\a.ts -Dest P:\\GitHub\\termdock\\a.ts"],
+  ["PowerShell", "cp P:\\Temp\\a.ts P:\\GitHub\\termdock\\a.ts"],
+  ["PowerShell", "Copy-Item -Path P:\\Temp\\a.ts -Destination P:\\GitHub\\termdock\\a.ts"],
+  ["PowerShell", "Move-Item P:\\Temp\\a.ts src\\a.ts", "P:\\GitHub\\termdock-wt\\feat\\x"],
 ];
 
 const allowed = [
@@ -153,6 +190,31 @@ const allowed = [
   ["Bash", 'git commit -m "$(cat <<\'EOF\'\nFix 1) parse "a > b" ok\nEOF\n)"'],
   ["Bash", 'git commit -m "$(cat <<\'EOF\'\nFix 1) parse \\"a > b\\" ok\nEOF\n)"'],
   ["Bash", 'echo "$(echo (unbalanced" > src/a.ts'],
+  // cp, mv, install (issue #111): destination outside the repository
+  ["Bash", "cp P:/GitHub/termdock/src/a.ts P:/Temp/a.ts"],
+  ["Bash", "cp -r P:/GitHub/termdock-wt/feat/x/docs P:/Temp/docs-bak"],
+  ["Bash", "mv P:/Temp/a.txt P:/Temp/b.txt"],
+  ["Bash", "mv P:/Temp/a.txt b.txt", "P:/Temp"],
+  ["Bash", "cp -r P:/Temp/a P:/Temp/b", "P:/GitHub/termdock"],
+  ["Bash", "cp -r P:/Temp/a P:/Temp/b", "P:/GitHub/termdock-wt/fix/issue-111-hook-cp-mv"],
+  ["Bash", "cp src/a.ts /tmp/a.ts", "P:/GitHub/termdock"],
+  ["Bash", "cp src/a.ts ~/a.ts", "P:/GitHub/termdock"],
+  ["Bash", 'cp src/a.ts "$TMPDIR/a.ts"', "P:/GitHub/termdock"],
+  ["Bash", "cp -t P:/Temp/out src/a.ts src/b.ts", "P:/GitHub/termdock"],
+  ["Bash", "cp --target-directory=P:/Temp/out src/a.ts", "P:/GitHub/termdock"],
+  ["Bash", "mv src/a.ts /dev/null", "P:/GitHub/termdock"],
+  ["Bash", "install -m 755 P:/Temp/tool /usr/local/bin/tool"],
+  ["Bash", "install -d P:/GitHub/termdock/out"],
+  ["Bash", "cp a.ts b.ts", "P:/Temp"],
+  ["Bash", "cd P:/Temp && cp a.ts b.ts", "P:/GitHub/termdock"],
+  ["Bash", "cp --help"],
+  ["Bash", "cp P:/Temp/a.ts"],
+  ["Bash", "cp P:/Temp/a.ts P:/Temp/b.ts && echo P:/GitHub/termdock/x"],
+  ["Bash", 'echo "cp P:/Temp/a.ts P:/GitHub/termdock/a.ts"'],
+  ["Bash", 'git commit -m "docs: cp a.ts P:/GitHub/termdock/a.ts"'],
+  ["Bash", "ls P:/GitHub/termdock | cp P:/Temp/a P:/Temp/b"],
+  ["PowerShell", "Copy-Item -Path src\\a.ts -Destination P:\\Temp\\a.ts", "P:\\GitHub\\termdock"],
+  ["PowerShell", "cp P:\\Temp\\a P:\\Temp\\b", "P:\\GitHub\\termdock"],
 ];
 
 for (const [tool, command, cwd] of blocked) {
@@ -189,6 +251,20 @@ test("hook exits 0 for an allowed command", () => {
 test("hook takes the working directory from the event", () => {
   const event = (cwd) =>
     JSON.stringify({ tool_name: "Bash", cwd, tool_input: { command: "node g.mjs > o.json" } });
+  assert.equal(runHook(event("P:\\Temp\\td")).status, 0);
+  assert.equal(runHook(event("P:\\GitHub\\termdock-wt\\feat\\x")).status, 2);
+});
+
+test("hook blocks cp into the repository with the lessons message", () => {
+  const command = "cp P:/Temp/bak/Sidebar.tsx P:/GitHub/termdock-wt/x/apps/desktop/Sidebar.tsx";
+  const result = runHook(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /Repo-Dateien nur mit Read\/Edit\/Write ändern \(lessons Abschnitt 5\)/);
+});
+
+test("hook treats a relative cp destination by the event cwd", () => {
+  const event = (cwd) =>
+    JSON.stringify({ tool_name: "Bash", cwd, tool_input: { command: "cp P:/Temp/a.ts a.ts" } });
   assert.equal(runHook(event("P:\\Temp\\td")).status, 0);
   assert.equal(runHook(event("P:\\GitHub\\termdock-wt\\feat\\x")).status, 2);
 });

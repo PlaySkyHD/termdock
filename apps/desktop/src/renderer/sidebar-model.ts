@@ -1,7 +1,7 @@
 // What the sidebar shows and may do (#63): sections from sessions and workspaces, the rules for which drop target
 // takes which session, and the entries of the context menus. The rules live here once, so the mouse (drag and
 // drop) and the keyboard (context menu) cannot disagree. Pure, no DOM.
-import type { Project, SessionInfo, Workspace } from "@termdock/protocol";
+import type { Project, SessionCreateParams, SessionInfo, Workspace } from "@termdock/protocol";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
 
@@ -179,10 +179,31 @@ export function workspaceMenu(): MenuEntry<WorkspaceAction>[] {
   ];
 }
 
-export type ProjectAction = { kind: "rename" } | { kind: "delete" };
+/** `tab`: open or focus the tab; `newTab`: always a new tab; `split`: next to the active pane. */
+export type OpenMode = "tab" | "newTab" | "split";
+
+/**
+ * `session.create` for a session in the project (#104): its name and workspace, a shell in the project directory
+ * (backend and distro of the project; no command, environment or profile: those are the profile editor's, #64).
+ * The protocol has no `projectId` on a session, so the project is not recorded on it.
+ */
+export function projectSessionParams(project: Project): SessionCreateParams {
+  return {
+    name: project.name,
+    workspaceId: project.workspaceId,
+    launch: {
+      backend: project.backend,
+      ...(project.distro === undefined ? {} : { distro: project.distro }),
+      cwd: project.path,
+    },
+  };
+}
+
+export type ProjectAction = { kind: "start" } | { kind: "rename" } | { kind: "delete" };
 
 export function projectMenu(): MenuEntry<ProjectAction>[] {
   return [
+    { key: "start", label: "Neue Session hier", action: { kind: "start" } },
     { key: "rename", label: "Umbenennen …", action: { kind: "rename" } },
     { key: "delete", label: "Löschen …", action: { kind: "delete" }, danger: true, separator: true },
   ];

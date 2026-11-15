@@ -1,4 +1,4 @@
-import type { SessionInfo, SessionState, Workspace } from "@termdock/protocol";
+import type { Project, SessionInfo, SessionState, Workspace } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_TARGET,
@@ -12,6 +12,7 @@ import {
   parseTarget,
   projectFocus,
   projectMenu,
+  projectSessionParams,
   SIDEBAR_FOCUS,
   sessionFocus,
   workspaceFocus,
@@ -297,8 +298,33 @@ describe("workspace and project menus", () => {
     expect(workspaceMenu().map((e) => e.key)).toEqual(["rename", "addProject", "delete"]);
   });
 
-  it("lists rename and delete for a project", () => {
-    expect(projectMenu().map((e) => e.key)).toEqual(["rename", "delete"]);
+  it("lists a new session first, then rename and delete for a project (#104)", () => {
+    expect(projectMenu().map((e) => e.key)).toEqual(["start", "rename", "delete"]);
+    expect(projectMenu()[0]).toMatchObject({ label: "Neue Session hier", action: { kind: "start" } });
+  });
+});
+
+describe("projectSessionParams (#104)", () => {
+  const project: Project = {
+    id: "p1",
+    workspaceId: "w1",
+    name: "api",
+    path: "/srv/api",
+    backend: "wsl",
+    distro: "Debian",
+  };
+
+  it("starts a shell in the project directory with the name and workspace of the project", () => {
+    expect(projectSessionParams(project)).toEqual({
+      name: "api",
+      workspaceId: "w1",
+      launch: { backend: "wsl", distro: "Debian", cwd: "/srv/api" },
+    });
+  });
+
+  it("leaves the distro out when the project has none, so the configured default applies", () => {
+    const { distro: _distro, ...withoutDistro } = project;
+    expect(projectSessionParams(withoutDistro).launch).toEqual({ backend: "wsl", cwd: "/srv/api" });
   });
 });
 

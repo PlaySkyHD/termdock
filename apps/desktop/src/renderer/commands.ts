@@ -1,7 +1,9 @@
 // What the commands of the key map do (#28). They run on the store and the controller of the active pane; the
 // window supplies what depends on React (the form, the overview, the notice), so this module stays testable
 // without DOM. "newWindow" is the application menu's (main process): nothing to do here.
-import type { LayoutTab, SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import type { LayoutTab, Project, SessionCreateParams, SessionInfo } from "@termdock/protocol";
+import { projectSessionParams } from "./sidebar-model.js";
+import type { OpenMode } from "./sidebar-model.js";
 import { tabStepTarget } from "./layout-moves.js";
 import type { MoveTarget } from "./layout-moves.js";
 import { neighborPane } from "./pane-focus.js";
@@ -121,6 +123,40 @@ export async function splitActivePane(deps: SplitDeps, direction: SplitDirection
       : undefined,
   );
   deps.refocus();
+}
+
+/** What starting a session in a project needs (#104): the store, `session.create` and the window's way to open one. */
+export interface ProjectStartDeps {
+  store: UiStore;
+  createSession(params: SessionCreateParams): Promise<SessionInfo>;
+  /** Shows the session in a tab or pane by the mode of the click (App). */
+  open(sessionId: string, mode: OpenMode): void;
+}
+
+/** Stores with a project start in flight; a second click would create a second session. */
+const startingProject = new WeakSet<UiStore>();
+
+/**
+ * Starts a shell in the directory of the project and opens it like a new session (#104). Rejects with the reason
+ * (the core's refusal, or a start that is still running); the caller shows it. The session is not recorded on the
+ * project: the protocol has no `projectId` on a session.
+ */
+export async function startProjectSession(
+  deps: ProjectStartDeps,
+  project: Project,
+  mode: OpenMode,
+): Promise<void> {
+  if (startingProject.has(deps.store)) throw new Error(SPLIT_BUSY);
+  startingProject.add(deps.store);
+  let created: SessionInfo;
+  try {
+    created = await deps.createSession(projectSessionParams(project));
+  } finally {
+    startingProject.delete(deps.store);
+  }
+  // The event of the main process may have added it already; the store keeps what it has.
+  deps.store.sessionCreated(created);
+  deps.open(created.id, mode);
 }
 
 /**

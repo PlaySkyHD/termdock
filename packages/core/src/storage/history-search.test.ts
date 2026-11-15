@@ -64,9 +64,10 @@ describe("AnsiStripper", () => {
     expect(strip("a\tb\r\nc\x07d\x08e\x7ff")).toBe("a\tb\r\ncd\x08ef");
   });
 
-  it("turns erase-to-end-of-line into NUL (a character that never occurs in text) and drops other CSI", () => {
-    expect(strip("a\x1b[Kb\x1b[0Kc\x9bKd")).toBe("a\0b\0c\0d");
-    expect(strip("a\x1b[", "K", "b\x1b[2Kc\x1b[1Kd\x1b[?Ke\x1b[ Kf")).toBe("a\0bcdef");
+  it("turns the erase sequences into marker characters and drops other CSI", () => {
+    expect(strip("a\x1b[Kb\x1b[0Kc\x9bKd\x1b[Je\x1b[0Jf")).toBe("a\0b\0c\0d\0e\0f");
+    expect(strip("a\x1b[", "K", "b\x1b[2Kc\x1b[1Kd")).toBe("a\0b\x01c\x02d");
+    expect(strip("a\x1b[?Kb\x1b[ Kc\x1b[3Kd\x1b[2Je\x1b[1Jf\x1b[5Pg")).toBe("abcdefg");
   });
 
   it("follows a sequence across chunk boundaries", () => {
@@ -168,12 +169,47 @@ describe("searchHistory", () => {
     expect((await searchHistory(source, { query: "abcXdef" })).hits).toHaveLength(1);
   });
 
-  it("erases from the cursor with ESC[K and ESC[0K only, other sequences are dropped", async () => {
-    const source = memorySource({ s1: ["keep drop\b\b\b\b\x1b[0Kx\r\n", "ab\b\x1b[2Kc\x1b[1Kd\r\n"] });
+  it("erases from the cursor with ESC[K, ESC[0K, ESC[J and ESC[0J, other sequences are dropped", async () => {
+    const source = memorySource({
+      s1: ["keep drop\b\b\b\b\x1b[0Kx\r\n", "keep drop\b\b\b\b\x1b[Jy\r\n", "pq\x1b[5Prs\x1b[2Jt\r\n"],
+    });
 
     const lines = (await searchHistory(source, { query: "k" })).hits.map((hit) => hit.line);
-    expect(lines).toEqual(["keep x"]);
-    expect((await searchHistory(source, { query: "acd" })).hits.map((hit) => hit.line)).toEqual(["acd"]);
+    expect(lines).toEqual(["keep y", "keep x"]);
+    expect((await searchHistory(source, { query: "pqrst" })).hits).toHaveLength(1);
+  });
+
+  it("clears the whole line with ESC[2K and starts it over (no leftover of a longer line)", async () => {
+    const source = memorySource({ s1: ["lange Zeile\r\x1b[2Kkurz\r\n", "x\r\n"] });
+
+    expect((await searchHistory(source, { query: "ge Zeile" })).hits).toHaveLength(0);
+    expect((await searchHistory(source, { query: "kurz" })).hits.map((hit) => hit.line)).toEqual(["kurz"]);
+    // The cursor is not kept: "abc" then ESC[2K then "x" is "x" (a terminal would show blanks before it).
+    const other = memorySource({ s1: ["abc\x1b[2Kx\r\n"] });
+    expect((await searchHistory(other, { query: "x" })).hits.map((hit) => hit.line)).toEqual(["x"]);
+  });
+
+  it("blanks the start of the line up to and including the cursor with ESC[1K", async () => {
+    const source = memorySource({ s1: ["abcdef\b\b\b\x1b[1KXY\r\n"] });
+
+    // The cursor is at 3: "abcd" become blanks and the cursor stays, so X and Y replace the blank and "e".
+    const [hit] = (await searchHistory(source, { query: "XY" })).hits;
+    expect(hit).toMatchObject({ line: "   XYf", offset: 3 });
+  });
+
+  it("moves back by a code point, not by a UTF-16 unit, and overwrites whole code points", async () => {
+    const source = memorySource({
+      s1: ["a😀b\b\b\bX\r\n", "😀😀\bY\r\n", "p😀\b\x1b[Kq\r\n", "😀😀\r\x1b[1KZ\r\n"],
+    });
+
+    const lineOf = async (query: string): Promise<string[]> =>
+      (await searchHistory(source, { query })).hits.map((hit) => hit.line);
+    expect(await lineOf("X")).toEqual(["X😀b"]);
+    expect(await lineOf("Y")).toEqual(["😀Y"]);
+    expect(await lineOf("q")).toEqual(["pq"]);
+    expect(await lineOf("Z")).toEqual(["Z😀"]);
+    for (const line of await lineOf("😀"))
+      expect(line).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
   });
 
   it("lets a carriage return without a line feed overwrite the line (progress bar)", async () => {
@@ -200,12 +236,24 @@ describe("searchHistory", () => {
     expect((await searchHistory(source, { query: "cd" })).hits.map((hit) => hit.line)).toEqual(["cd"]);
   });
 
-  it("keeps a line whose hit stays findable when backspaces cross the read buffer cut", async () => {
-    const source = memorySource({
-      s1: [`${"a".repeat(MAX_SEARCH_LINE_BUFFER + 10)}\b\b\b\bNEEDLE\r\n`],
-    });
+  it("keeps the cursor in place when the read buffer is cut (backspace and carriage return after the cut)", async () => {
+    const long = "a".repeat(MAX_SEARCH_LINE_BUFFER + 10);
+    const source = memorySource({ s1: [`${long}\b\bXY\r\n`, `${long}\rXY\r\n`] });
 
-    expect((await searchHistory(source, { query: "needle" })).hits).toHaveLength(1);
+    // After the cut 11 characters are left (one kept for the overlap of a 2-character query, plus the 10 after it).
+    const hits = (await searchHistory(source, { query: "XY" })).hits;
+    expect(hits).toEqual([
+      { sessionId: "s1", timestamp: 1001, line: `XY${"a".repeat(9)}`, offset: 0 },
+      { sessionId: "s1", timestamp: 1000, line: `${"a".repeat(9)}XY`, offset: 9 },
+    ]);
+  });
+
+  it("reports the position of a hit inside the line as it stands after an overwrite", async () => {
+    const source = memorySource({ s1: ["foo bar\rXY\r\n"] });
+
+    expect((await searchHistory(source, { query: "bar" })).hits).toEqual([
+      { sessionId: "s1", timestamp: 1000, line: "XYo bar", offset: 4 },
+    ]);
   });
 
   it("includes the last line without a line break", async () => {

@@ -1542,7 +1542,7 @@ Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szeneng
 
 ### Requirement: Screenshot-Szenen prüfen die Sichtbarkeit ihres Kernelements
 
-Eine Szene des Screenshot-Modus mit Fehlermeldung, Menü oder Dialog SHALL vor der Aufnahme prüfen, dass das Kernelement existiert und vollständig im nächsten scrollbaren Vorfahren und im Fenster liegt. Sonst SHALL der Lauf mit Code 1 enden und Szenenname und Selektor nennen.
+Eine Szene des Screenshot-Modus mit Fehlermeldung, Menü oder Dialog SHALL vor der Aufnahme prüfen, dass das Kernelement existiert und vollständig innerhalb aller abschneidenden Vorfahren (`overflow` nicht `visible`, ohne Rahmen und Scrollbar) und des Fensters liegt; ein Element mit `position: fixed` liegt nur im Fenster. Sonst SHALL der Lauf mit Code 1 enden und Szenenname und Selektor nennen.
 
 #### Scenario: Element abgeschnitten
 

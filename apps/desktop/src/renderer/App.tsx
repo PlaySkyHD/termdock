@@ -32,6 +32,7 @@ import { QuitDialog } from "./QuitDialog.js";
 import { SearchDialog } from "./SearchDialog.js";
 import { ShortcutsDialog } from "./ShortcutsDialog.js";
 import { Sidebar } from "./Sidebar.js";
+import { SnapBar } from "./SnapBar.js";
 import type { OpenMode, SidebarActions } from "./Sidebar.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabBar } from "./TabBar.js";
@@ -311,6 +312,9 @@ export function App({ api }: { api: TermdockApi }) {
     });
   };
 
+  // The tab area: the bar of layout patterns opens at its top edge (#78).
+  const tabPanels = useRef<HTMLDivElement>(null);
+
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
   return (
@@ -367,10 +371,12 @@ export function App({ api }: { api: TermdockApi }) {
               refocus();
             }}
           />
-          <div className="tab-panels">
+          <div className="tab-panels" ref={tabPanels}>
             {tabs.length === 0 && (
               <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
             )}
+            {/* Layout patterns at the top edge while a tab or pane is dragged (#78). */}
+            {tabs.length > 0 && <SnapBar window={state.window} sessions={state.sessions} area={tabPanels} />}
             {/* One flat list for the panes of all tabs (#67): a pane that moves keeps its element and view. */}
             <PaneTree
               api={api}

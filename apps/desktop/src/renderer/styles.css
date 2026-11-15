@@ -1210,3 +1210,97 @@ body.is-dragging * {
   background: rgba(204, 167, 0, 0.35);
   color: inherit;
 }
+
+/* --- Layout patterns while dragging (#78): a bar at the top edge of the tab area, one mini layout per pattern --- */
+
+/* Mounted all the time so its fields are drop targets from the start of a drag; shown only when open. */
+.snap-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 20;
+  display: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  max-width: calc(100% - 16px);
+  padding: 10px 12px 6px;
+  border: 1px solid var(--td-border);
+  border-radius: 6px;
+  background: var(--td-sidebar);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  transform: translateX(-50%);
+}
+
+.snap-bar--open {
+  display: flex;
+}
+
+.snap-pattern {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.snap-pattern--hidden {
+  display: none;
+}
+
+.snap-pattern__fields {
+  position: relative;
+  width: 128px;
+  height: 80px;
+}
+
+.snap-pattern__label {
+  color: var(--td-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.snap-field {
+  position: absolute;
+  display: flex;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 2px solid var(--td-background);
+  border-radius: 4px;
+  background: var(--td-selected);
+  color: var(--td-foreground);
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.snap-field__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A field the drop would leave without a view: it is not created. */
+.snap-field--empty {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--td-border);
+  color: var(--td-muted);
+  font-style: italic;
+}
+
+/* Where the dragged tab or pane would land. */
+.snap-field--moved {
+  border-color: var(--td-accent);
+}
+
+.snap-field--over {
+  background: rgba(0, 122, 204, 0.45);
+  border-color: var(--td-accent);
+}
+
+.snap-field--blocked {
+  opacity: 0.5;
+}

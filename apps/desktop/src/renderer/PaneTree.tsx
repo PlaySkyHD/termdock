@@ -147,8 +147,9 @@ function WarningHint({ texts, onDismiss }: { texts: readonly string[]; onDismiss
   return (
     <div className="pane-warning" role="status" data-hint="session-warnings">
       <div className="pane-warning__texts">
-        {texts.map((text) => (
-          <p key={text} className="pane-warning__text">
+        {texts.map((text, index) => (
+          // The list only changes as a whole (a new run); two warnings may give the same text.
+          <p key={index} className="pane-warning__text">
             {text}
           </p>
         ))}

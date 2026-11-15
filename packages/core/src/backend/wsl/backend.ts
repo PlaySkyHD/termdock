@@ -119,16 +119,16 @@ export class WslBackend implements Backend {
     const target = await this.target(spec);
     const args = startArgs(target, id, spec);
     // The directory check runs alongside the status call the start needs anyway, so it costs no extra round trip.
-    const [before, warnings] = await Promise.all([
-      this.status(target, id),
-      this.cwdWarnings(target.distro, spec.cwd),
-    ]);
+    // `cwdWarnings` never rejects, so it may be left running.
+    const check = this.cwdWarnings(target.distro, spec.cwd);
+    const before = await this.status(target, id);
     // `new-session -A` would join a leftover whose program already ended (remain-on-exit).
     if (before !== "missing" && before.dead) await this.exec(killSessionArgs(target, id));
     const alive = before !== "missing" && !before.dead;
-    // Joining a session that still runs uses its directory, not `cwd`.
+    // Joining a session that still runs uses its directory, not `cwd`: no need to wait for the check.
+    const warnings = alive ? [] : await check;
     const pty = await this.open(target, id, args, size, !alive);
-    if (!alive && warnings.length > 0) pty.warnings = warnings;
+    if (warnings.length > 0) pty.warnings = warnings;
     return pty;
   }
 

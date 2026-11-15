@@ -430,6 +430,19 @@ describe("WslBackend: missing working directory", () => {
     expect((await start(backend, "/srv/api")).warnings).toBeUndefined();
   });
 
+  it("does not wait for the check when the start joins a session that still runs (review PR #113)", async () => {
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      // The check never answers; the status says the session lives.
+      run: (args) => (isCwdCheck(args) ? new Promise<RunResult>(() => {}) : Promise.resolve(ok("0  \n"))),
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+    });
+    const pty = await start(backend, "/srv/api");
+    expect(pty.warnings).toBeUndefined();
+    backend.dispose();
+  });
+
   it("does not check on attach", async () => {
     const { backend, calls } = setup({ respond: (args) => (isCwdCheck(args) ? ok() : undefined) });
     const pty = await backend.attach(

@@ -260,3 +260,43 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 - **GIVEN** Zeilen „a.c“ und „abc“
 - **WHEN** der Client „a.c“ sucht
 - **THEN** liefert der Core nur „a.c“
+
+### Requirement: Trefferzeilen wie im Terminal
+
+Die Suche SHALL jede Zeile so zusammensetzen, wie das Terminal sie anzeigte: Zeichen überschreiben am Cursor, Backspace setzt ihn um einen Codepoint zurück (nie vor den Anfang), `ESC[K`/`ESC[0K`/`ESC[J` löschen ab dem Cursor, `ESC[1K` ersetzt den Anfang bis zum Cursor durch Leerzeichen, `ESC[2K` leert die Zeile (Cursor auf 0), `\r` setzt ihn an den Anfang, `\n` beendet die Zeile. Zeile und Position eines Treffers MUST aus dieser fertigen Zeile stammen. Andere Sequenzen SHALL nur entfernt werden.
+
+#### Scenario: Tippfehler mit Backspace
+
+- **GIVEN** ein Verlauf mit der Ausgabe `echo Apfelk`, `i`, `u`, `c`, `h`, viermal Backspace mit `ESC[K`, dann `u`, `c`, `h`, `e`, `n`
+- **WHEN** der Client „echo“ sucht
+- **THEN** zeigt der Treffer „echo Apfelkuchen“ mit der Position des Treffers in dieser Zeile, und eine Suche nach „kiu“ findet nichts
+
+#### Scenario: Überschreiben mit Wagenrücklauf
+
+- **GIVEN** die Ausgabe `10%\r20%\r100%\r\n`
+- **WHEN** der Client „%“ sucht
+- **THEN** liefert der Core genau eine Zeile „100%“
+
+#### Scenario: Zeile leeren und neu schreiben
+
+- **GIVEN** die Ausgabe `lange Zeile\r\x1b[2Kkurz\r\n`
+- **WHEN** der Client „ge Zeile“ sucht
+- **THEN** findet er nichts, und „kurz“ liefert genau die Zeile „kurz“; `ESC[2K` setzt den Cursor auf 0, die Lücke vor einem Cursor jenseits davon wird nicht mit Leerzeichen gefüllt
+
+#### Scenario: Backspace über Eintragsgrenzen
+
+- **GIVEN** ein Eintrag `abcx`, im nächsten Eintrag ein Backspace, im dritten `d` und ein Zeilenende
+- **WHEN** der Client „abcd“ sucht
+- **THEN** liefert der Core diese Zeile als Treffer, und „abcx“ findet nichts; am Anfang einer Zeile bleibt der Cursor bei 0
+
+#### Scenario: Emoji
+
+- **GIVEN** die Ausgabe `a😀b` mit drei Backspace und `X`
+- **WHEN** der Client „X“ sucht
+- **THEN** lautet die Zeile „X😀b“, und keine Zeile enthält ein einzelnes Surrogat: Backspace und Überschreiben arbeiten mit Codepoints
+
+#### Scenario: Grenzen des Zeilenmodells
+
+- **GIVEN** eine Zeile über 4096 Zeichen, deren Kopf beim Zuschneiden schon durchsucht wurde, und breite Zeichen (CJK, zwei Spalten)
+- **WHEN** die Zeile danach mit `\r` oder Backspace geändert wird
+- **THEN** bleibt ein Treffer im schon durchsuchten Kopf bestehen, und der Cursor behält seine Stelle im Rest der Zeile; Backspace zählt ein breites Zeichen als eine Spalte, die Spaltenbreite wird nicht nachgebildet

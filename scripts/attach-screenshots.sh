@@ -15,9 +15,14 @@ shift 2
 title="Screenshots"
 if [[ "${1:-}" == "--title" ]]; then title="${2:?$usage}"; shift 2; fi
 [[ $# -gt 0 ]] || { echo "$usage" >&2; exit 2; }
+declare -A seen=()
 for f in "$@"; do
   [[ -f "$f" ]] || { echo "not a file: $f" >&2; exit 2; }
-  [[ "$(basename "$f")" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "use only A-Z a-z 0-9 . _ - in file names: $f" >&2; exit 2; }
+  name="$(basename "$f")"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "use only A-Z a-z 0-9 . _ - in file names: $f" >&2; exit 2; }
+  # Files land under their basename, so a second file of the same name would replace the first (PR #109).
+  [[ -z "${seen[$name]:-}" ]] || { echo "duplicate file name: $name (rename before/after copies)" >&2; exit 2; }
+  seen[$name]=1
 done
 
 root="$(git rev-parse --show-toplevel)"

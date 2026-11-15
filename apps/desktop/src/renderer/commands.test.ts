@@ -648,6 +648,29 @@ describe("startProjectSession (#104)", () => {
     expect(store.getState().sessions.map((each) => each.id)).toEqual(["a", "new1", "new2", "new3"]);
   });
 
+  it("names further sessions of the project docs, docs 2 and so on", async () => {
+    const { deps, created } = projectSetup();
+
+    await startProjectSession(deps, project, "tab");
+    await startProjectSession(deps, project, "tab");
+    await startProjectSession(deps, project, "tab");
+
+    expect(created.map((params) => params.name)).toEqual(["api", "api 2", "api 3"]);
+  });
+
+  it("starts no session for a split when the active tab is full, like splitting does", async () => {
+    const { deps, created, opened, store } = projectSetup();
+    const tab = activeTab(store.getState())!;
+    for (let i = 0; i < 3; i++) store.splitPane(tab.id, tab.activePaneId, "row", "a");
+
+    await expect(startProjectSession(deps, project, "split")).rejects.toThrow("Höchstens 4 Panes je Tab");
+    // Another way to open it does not need a pane.
+    await startProjectSession(deps, project, "newTab");
+
+    expect(created).toHaveLength(1);
+    expect(opened).toEqual([["new1", "newTab"]]);
+  });
+
   it("rejects with the reason of the core and opens nothing", async () => {
     const { deps, opened, store, failCreate } = projectSetup();
     failCreate(new Error("[invalid_argument] Pfad /srv/api fehlt"));

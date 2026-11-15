@@ -11,6 +11,7 @@ import {
   focusReady,
   parseTarget,
   projectFocus,
+  openModeOf,
   projectMenu,
   projectSessionParams,
   SIDEBAR_FOCUS,
@@ -304,7 +305,21 @@ describe("workspace and project menus", () => {
   });
 });
 
+describe("openModeOf (#104)", () => {
+  it("maps Ctrl to a new tab, Shift to a split, and a plain click to the tab; Ctrl wins", () => {
+    expect(openModeOf({ ctrlKey: false, shiftKey: false })).toBe("tab");
+    expect(openModeOf({ ctrlKey: true, shiftKey: false })).toBe("newTab");
+    expect(openModeOf({ ctrlKey: false, shiftKey: true })).toBe("split");
+    expect(openModeOf({ ctrlKey: true, shiftKey: true })).toBe("newTab");
+  });
+});
+
 describe("projectSessionParams (#104)", () => {
+  it("takes the name it is given instead of the project's", () => {
+    const project: Project = { id: "p", workspaceId: "w1", name: "api", path: "/x", backend: "wsl" };
+    expect(projectSessionParams(project, "api 2").name).toBe("api 2");
+  });
+
   const project: Project = {
     id: "p1",
     workspaceId: "w1",

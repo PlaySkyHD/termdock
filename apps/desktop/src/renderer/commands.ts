@@ -145,10 +145,18 @@ export async function startProjectSession(
 ): Promise<void> {
   // The guard of the splits: one session is being started at a time, whether by split or by project.
   if (splitting.has(deps.store)) throw new Error(SPLIT_BUSY);
+  const state = deps.store.getState();
+  // Like `splitActivePane`: a full tab refuses before the core starts a session that would have no pane.
+  const tab = activeTab(state);
+  if (mode === "split" && tab && paneCount(tab) >= MAX_PANES) throw new Error(panesFull(MAX_PANES));
   splitting.add(deps.store);
   let created: SessionInfo;
   try {
-    created = await deps.createSession(projectSessionParams(project));
+    // The name of the project, or `<name> 2` … when a session has it already.
+    const name = state.sessions.some((each) => each.name === project.name)
+      ? nextName(project.name, state.sessions)
+      : project.name;
+    created = await deps.createSession(projectSessionParams(project, name));
   } finally {
     splitting.delete(deps.store);
   }

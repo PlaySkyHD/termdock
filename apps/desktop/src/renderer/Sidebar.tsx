@@ -23,6 +23,7 @@ import {
   focusReady,
   isDraggable,
   NEW_WORKSPACE_FOCUS,
+  openModeOf,
   parseTarget,
   projectFocus,
   projectMenu,
@@ -424,9 +425,7 @@ export function Sidebar(props: SidebarProps) {
                       data-project-id={project.id}
                       aria-haspopup="menu"
                       title={`${project.name} · ${project.path}\nKlick: neue Session im Projekt\nStrg+Klick: in neuem Tab\nUmschalt+Klick: neben dem aktiven Pane\nRechtsklick oder Menütaste: Aktionen`}
-                      onClick={(event) =>
-                        startInProject(project, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")
-                      }
+                      onClick={(event) => startInProject(project, openModeOf(event))}
                       onContextMenu={(event) =>
                         openMenu(event, `Aktionen für ${project.name}`, projectEntries(project))
                       }
@@ -585,7 +584,7 @@ function SessionRow({
         aria-haspopup="menu"
         title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace, das Archiv oder ein Pane, Rechtsklick oder Menütaste für Aktionen`}
         {...sourceProps}
-        onClick={(event) => onOpen(session.id, event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab")}
+        onClick={(event) => onOpen(session.id, openModeOf(event))}
         onContextMenu={onMenu}
       >
         <StateIcon session={session} />

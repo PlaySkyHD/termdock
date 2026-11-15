@@ -1211,7 +1211,7 @@ Im Suchdialog SHALL Pfeil runter und hoch den nächsten und vorigen Treffer übe
 
 ### Requirement: Session im Projekt starten
 
-Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue Session hier“ SHALL eine neue Session im Projekt starten: `session.create` mit Namen und Workspace des Projekts und `launch` aus Backend, Distro (falls gesetzt) und Pfad als `cwd`, ohne Shell, Befehl und Umgebung. Sie öffnet sich wie jede neue Session (Strg+Klick neuer Tab, Umschalt+Klick Split). Lehnt der Core ab, zeigt die Statusleiste den Grund. Ein zweiter Start während des ersten SHALL abgewiesen werden.
+Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue Session hier“ SHALL eine neue Session im Projekt starten: `session.create` mit Workspace des Projekts, seinem Namen (bei Namensgleichheit „api 2“ …) und `launch` aus Backend, Distro (falls gesetzt) und Pfad als `cwd`, ohne Shell, Befehl und Umgebung. Sie öffnet sich wie jede neue Session (Strg+Klick neuer Tab, Umschalt+Klick Split, bei vollem Tab ohne Start abgewiesen). Lehnt der Core ab, zeigt die Statusleiste den Grund. Ein zweiter Start während des ersten wird abgewiesen.
 
 #### Scenario: Klick startet im Projektpfad
 
@@ -1230,6 +1230,18 @@ Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue
 - **GIVEN** ein Projekt, dessen Start der Core mit einem Fehler ablehnt
 - **WHEN** der Benutzer es anklickt
 - **THEN** steht der Grund des Core in der Statusleiste, es entsteht weder Tab noch Session, und die Projektzeile hat den Fokus
+
+#### Scenario: Weiterer Klick
+
+- **GIVEN** eine Session „api“ aus einem früheren Klick auf das Projekt „api“
+- **WHEN** der Benutzer das Projekt erneut anklickt
+- **THEN** sendet der Main `session.create` mit Name „api 2“
+
+#### Scenario: Split bei vollem Tab
+
+- **GIVEN** der aktive Tab hat 4 Panes
+- **WHEN** der Benutzer ein Projekt mit Umschalt+Klick anklickt
+- **THEN** sendet das Fenster kein `session.create`, und die Statusleiste meldet „Höchstens 4 Panes je Tab“
 
 #### Scenario: Doppelklick
 

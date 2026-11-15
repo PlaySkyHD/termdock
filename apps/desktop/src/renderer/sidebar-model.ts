@@ -182,14 +182,19 @@ export function workspaceMenu(): MenuEntry<WorkspaceAction>[] {
 /** `tab`: open or focus the tab; `newTab`: always a new tab; `split`: next to the active pane. */
 export type OpenMode = "tab" | "newTab" | "split";
 
+/** Click with modifiers to the way a session opens: Ctrl a new tab, Shift next to the active pane, else the tab. */
+export function openModeOf(event: { ctrlKey: boolean; shiftKey: boolean }): OpenMode {
+  return event.ctrlKey ? "newTab" : event.shiftKey ? "split" : "tab";
+}
+
 /**
- * `session.create` for a session in the project (#104): its name and workspace, a shell in the project directory
+ * `session.create` for a session in the project (#104): `name` (the project's by default) and its workspace, a shell in the project directory
  * (backend and distro of the project; no command, environment or profile: those are the profile editor's, #64).
  * The protocol has no `projectId` on a session, so the project is not recorded on it.
  */
-export function projectSessionParams(project: Project): SessionCreateParams {
+export function projectSessionParams(project: Project, name: string = project.name): SessionCreateParams {
   return {
-    name: project.name,
+    name,
     workspaceId: project.workspaceId,
     launch: {
       backend: project.backend,

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { InMemorySessionRepository } from "../storage/session-repository.js";
@@ -651,6 +651,210 @@ describe("SessionRegistry: output", () => {
 
       expect(backend.redraws).toEqual([id, id]);
       expect(outputs).toEqual([{ text: "after", fromRedraw: false, viewIds: ["view-a"] }]);
+    });
+
+    it("flags the repaint of tmux after a resize until the requested redraw ends (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitData("before");
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+      // Like tmux after the client got SIGWINCH: the repaint follows the resize through the PTY.
+      backend.pty(id).emitData("resize-repaint");
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id]);
+      expect(backend.pty(id).resizes).toEqual([{ cols: 120, rows: 40 }]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "before:false",
+        "repaint:true",
+        "resize-repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("merges resizes while a redraw runs into one follow-up and flags them all (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      let release = () => {};
+      backend.redrawGate = new Promise<void>((resolve) => (release = resolve));
+
+      // Like dragging the window edge: one resize after the other.
+      for (const cols of [100, 101, 102]) {
+        registry.resize(id, "view-a", { cols, rows: 30 });
+        backend.pty(id).emitData(`resize-${cols}`);
+      }
+      backend.redrawGate = undefined;
+      release();
+      await settle();
+      backend.pty(id).emitData("after");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+        "repaint:true",
+        "resize-100:true",
+        "resize-101:true",
+        "resize-102:true",
+        "repaint:true",
+        "after:false",
+      ]);
+    });
+
+    it("requests no redraw for a resize to the current size (issue #99)", async () => {
+      const { registry, backend, id, outputs } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      const { size } = registry.get(id);
+
+      registry.resize(id, "view-a", { ...size });
+      backend.pty(id).emitData("live");
+
+      expect(backend.redraws).toEqual([]);
+      expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual(["live:false"]);
+    });
+
+    describe("bounds the flag of a resize chain (issue #99)", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** Like the WSL backend: a redraw call takes about 270 ms and repaints right before it ends. */
+      async function slowRedraws(options: Partial<SessionRegistryOptions> = {}) {
+        vi.useFakeTimers();
+        // The fake clock drives the monotonic clock of the chain as well.
+        const setup = await redrawing({ monotonicNow: () => Date.now(), ...options }, false);
+        const { backend } = setup;
+        backend.onRedraw = (sessionId) => {
+          backend.redrawGate = new Promise<void>((resolve) =>
+            setTimeout(() => {
+              if (!backend.pty(sessionId).ended) backend.pty(sessionId).emitData("repaint");
+              resolve();
+            }, 270),
+          );
+        };
+        await setup.registry.attachView(setup.id, "view-a");
+        return setup;
+      }
+
+      it("stores program output once the window was dragged for longer than the limit", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        // The renderer sends a resize every 70 ms while the edge is dragged, for 2.1 s.
+        for (let step = 0; step < 30; step += 1) {
+          registry.resize(id, "view-a", { cols: 100 + step, rows: 30 });
+          backend.pty(id).emitData(`program-${step * 70}`);
+          await vi.advanceTimersByTimeAsync(70);
+        }
+        await vi.advanceTimersByTimeAsync(2_000);
+        backend.pty(id).emitData("after");
+
+        const program = outputs.filter(({ text }) => text.startsWith("program-"));
+        const flagged = program.filter(({ fromRedraw }) => fromRedraw).map(({ text }) => text);
+        const stored = program.filter(({ fromRedraw }) => !fromRedraw).map(({ text }) => text);
+        // Within RESIZE_REDRAW_MAX_MS the output is flagged, afterwards it is stored again.
+        expect(flagged.at(-1)).toBe("program-980");
+        expect(stored[0]).toBe("program-1050");
+        expect(stored.at(-1)).toBe("program-2030");
+        // No flagged follow-up after the limit; the bounded chain also bounds the backend calls.
+        expect(backend.redraws.length).toBeLessThanOrEqual(5);
+        expect(outputs.at(-1)).toEqual({ text: "after", fromRedraw: false, viewIds: ["view-a"] });
+      });
+
+      it("keeps the follow-up an attach asked for during a resize call flagged past the limit", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        registry.resize(id, "view-a", { cols: 100, rows: 30 });
+        await vi.advanceTimersByTimeAsync(800);
+        // A second resize of the chain: its call runs from 800 to 1070 ms.
+        registry.resize(id, "view-a", { cols: 101, rows: 30 });
+        await vi.advanceTimersByTimeAsync(100);
+        backend.setSnapshot(id, "screen");
+        await registry.attachView(id, "view-b");
+        // The limit passes at 1000 ms; the follow-up for the attach runs from 1070 to 1340 ms.
+        await vi.advanceTimersByTimeAsync(300);
+        backend.pty(id).emitData("during-attach-redraw");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(backend.redraws).toEqual([id, id, id]);
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "repaint:true",
+          // The resize call ends after the limit: its repaint is stored.
+          "repaint:false",
+          "during-attach-redraw:true",
+          "repaint:true",
+          "after:false",
+        ]);
+      });
+
+      it("keeps an attach redraw that runs past the limit of a resize chain flagged", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        registry.resize(id, "view-a", { cols: 100, rows: 30 });
+        await vi.advanceTimersByTimeAsync(850);
+        backend.setSnapshot(id, "screen");
+        // Its call runs from 850 to 1120 ms, across the limit of the chain at 1000 ms.
+        await registry.attachView(id, "view-b");
+        await vi.advanceTimersByTimeAsync(200);
+        backend.pty(id).emitData("during-attach-redraw");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "repaint:true",
+          "during-attach-redraw:true",
+          "repaint:true",
+          "after:false",
+        ]);
+      });
+
+      it("flags a single resize after a quiet pause again", async () => {
+        const { registry, backend, id, outputs } = await slowRedraws();
+        for (let step = 0; step < 20; step += 1) {
+          registry.resize(id, "view-a", { cols: 100 + step, rows: 30 });
+          await vi.advanceTimersByTimeAsync(70);
+        }
+        await vi.advanceTimersByTimeAsync(2_000);
+        outputs.length = 0;
+
+        registry.resize(id, "view-a", { cols: 80, rows: 24 });
+        backend.pty(id).emitData("resize-repaint");
+        await vi.advanceTimersByTimeAsync(1_000);
+        backend.pty(id).emitData("after");
+
+        expect(outputs.map(({ text, fromRedraw }) => `${text}:${fromRedraw}`)).toEqual([
+          "resize-repaint:true",
+          "repaint:true",
+          "after:false",
+        ]);
+      });
+    });
+
+    it("requests no redraw for a resize of a session without PTY and keeps the size (issue #99)", async () => {
+      const { registry, backend, id } = await redrawing({}, false);
+      await registry.attachView(id, "view-a");
+      backend.pty(id).emitExit(0);
+      expect(registry.get(id).state).toBe("Exited");
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+
+      expect(backend.redraws).toEqual([]);
+      expect(registry.get(id).size).toEqual({ cols: 120, rows: 40 });
+    });
+
+    it("stops flagging after the redraw of a resize failed twice (issue #99)", async () => {
+      const failure = new Error("refresh-client failed");
+      const { registry, backend, id, outputs } = await redrawing({ onRedrawError: () => {} }, false);
+      await registry.attachView(id, "view-a");
+      backend.failNextRedraw = failure;
+      backend.onRedraw = () => (backend.failNextRedraw ??= failure);
+
+      registry.resize(id, "view-a", { cols: 120, rows: 40 });
+      await settle();
+      backend.pty(id).emitData("late-repaint");
+
+      expect(backend.redraws).toEqual([id, id]);
+      expect(outputs).toEqual([{ text: "late-repaint", fromRedraw: false, viewIds: ["view-a"] }]);
     });
 
     it("does not flag output when no redraw was requested", async () => {

@@ -1,6 +1,7 @@
 // Search over the stored history of sessions (spec history, ADR 0004, issue #62). Terminal output is data: the
-// escape sequences are removed while reading, never interpreted or executed, and the plain text is matched
-// case-insensitively. Every resource is bounded: hits (MAX_HISTORY_HITS), characters of a hit line, the line
+// escape sequences are removed while reading, never interpreted or executed, lines are put together as the
+// terminal showed them (backspace, erase to end of line and carriage return edit the line, issue #102) and the
+// plain text is matched case-insensitively. Every resource is bounded: hits (MAX_HISTORY_HITS), characters of a hit line, the line
 // buffer while reading and the running time (partial result with `truncated`).
 import { MAX_HISTORY_HITS, MAX_HISTORY_LINE_LENGTH } from "@termdock/protocol";
 import type { HistoryHit, HistorySearchResult, SessionId } from "@termdock/protocol";
@@ -51,14 +52,21 @@ export interface HistorySearchOptions {
 
 type Mode = "text" | "escape" | "csi" | "str" | "strEscape" | "escapeIntermediate";
 
+/** Stands for "erase from the cursor to the end of the line" in the stripped text; NUL never occurs in it. */
+export const ERASE_TO_EOL = "\0";
+
 /**
  * Removes escape sequences from decoded terminal text, across chunk boundaries: CSI, OSC/DCS/SOS/PM/APC strings
- * (up to BEL or ST), two-character escapes and the C1 forms, plus control characters other than tab and line
- * breaks. It only drops characters; nothing is ever interpreted.
+ * (up to BEL or ST), two-character escapes and the C1 forms, plus control characters other than tab, backspace
+ * and line breaks. Nothing is ever interpreted or executed: backspace and carriage return stay in the text for
+ * the line model of the scanner, and the one CSI it needs (`ESC [ K` or `ESC [ 0 K`, erase to the end of the
+ * line) becomes ERASE_TO_EOL; every other sequence is only dropped.
  */
 export class AnsiStripper {
   private mode: Mode = "text";
   private run = 0;
+  /** Parameter and intermediate characters of the CSI being read (kept only as far as `K` needs them). */
+  private csiParams = "";
 
   push(text: string): string {
     let out = "";
@@ -74,6 +82,7 @@ export class AnsiStripper {
             code === 0x0a ||
             code === 0x0d ||
             code === 0x09 ||
+            code === 0x08 ||
             (code >= 0x20 && code < 0x7f) ||
             code > 0x9f
           )
@@ -95,10 +104,16 @@ export class AnsiStripper {
           if (code < 0x20 || code > 0x2f) this.mode = "text";
           break;
         case "csi":
-          if (code >= 0x40 && code <= 0x7e) this.mode = "text";
-          else if (code === 0x1b) this.enter("escape");
+          if (code >= 0x40 && code <= 0x7e) {
+            // Only "erase from the cursor" (no parameter or 0) is kept; all other sequences just end here.
+            if (code === 0x4b && (this.csiParams === "" || this.csiParams === "0")) out += ERASE_TO_EOL;
+            this.mode = "text";
+          } else if (code === 0x1b) this.enter("escape");
           else if (code === 0x18 || code === 0x1a) this.mode = "text";
-          else this.grow();
+          else {
+            if (this.csiParams.length < 8) this.csiParams += text[i];
+            this.grow();
+          }
           break;
         case "str":
           if (code === 0x07 || code === 0x9c) this.mode = "text";
@@ -121,6 +136,7 @@ export class AnsiStripper {
   private enter(mode: Mode): void {
     this.mode = mode;
     this.run = 0;
+    this.csiParams = "";
   }
 
   /** An unterminated sequence must not swallow the rest of the history. */
@@ -187,6 +203,8 @@ class LineScanner {
   private readonly decoder = new TextDecoder();
   private readonly stripper = new AnsiStripper();
   private line = "";
+  /** Where the next character is written (0 to line.length). */
+  private cursor = 0;
   private timestamp = 0;
   private lineTimestamp = 0;
   /** The open line has a hit already. */
@@ -201,41 +219,60 @@ class LineScanner {
 
   feed(entry: HistoryEntry): void {
     this.timestamp = entry.timestamp;
-    let text = this.stripper.push(this.decoder.decode(entry.data, { stream: true }));
-    for (;;) {
-      const end = text.search(/[\r\n]/);
-      if (end < 0) {
-        this.append(text);
-        return;
-      }
-      this.append(text.slice(0, end));
-      this.endLine();
-      text = text.slice(end + 1);
-    }
+    this.apply(this.stripper.push(this.decoder.decode(entry.data, { stream: true })));
   }
 
   /** The last line of the history may still be open. */
   finish(): void {
-    this.append(this.stripper.push(this.decoder.decode()));
+    this.apply(this.stripper.push(this.decoder.decode()));
     this.endLine();
   }
 
-  private append(text: string): void {
+  /**
+   * Builds the lines like a terminal would show them, in one row with a cursor: text overwrites at the cursor
+   * (or extends the line), backspace moves the cursor back (not before the start), carriage return moves it to
+   * the start, ERASE_TO_EOL cuts the line at the cursor and a line feed ends the line.
+   */
+  private apply(text: string): void {
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i]!;
+      if (char >= " " || char === "\t") continue;
+      this.write(text.slice(start, i));
+      start = i + 1;
+      if (char === "\n") this.endLine();
+      else if (char === "\r") this.cursor = 0;
+      else if (char === "\b") this.cursor = Math.max(0, this.cursor - 1);
+      else if (char === ERASE_TO_EOL) this.line = this.line.slice(0, this.cursor);
+    }
+    this.write(text.slice(start));
+  }
+
+  private write(text: string): void {
+    if (text.length === 0) return;
     // The time of a hit is when its line began, not when the line ended.
-    if (this.line.length === 0 && text.length > 0) this.lineTimestamp = this.timestamp;
-    this.line += text;
+    if (this.line.length === 0) this.lineTimestamp = this.timestamp;
+    const end = this.cursor + text.length;
+    if (this.cursor === this.line.length) this.line += text;
+    else
+      this.line =
+        this.line.slice(0, this.cursor) + text + (end < this.line.length ? this.line.slice(end) : "");
+    this.cursor += text.length;
     while (this.line.length > MAX_SEARCH_LINE_BUFFER) {
       const head = this.line.slice(0, MAX_SEARCH_LINE_BUFFER);
       this.scan(head);
       // A match across the cut stays findable: the tail that is one character shorter than the query is kept.
       const keep = Math.min(this.queryLength - 1, MAX_SEARCH_LINE_BUFFER / 2);
       this.line = head.slice(head.length - keep) + this.line.slice(MAX_SEARCH_LINE_BUFFER);
+      // The cursor keeps its place in the text that is left; one that was in the scanned part starts over.
+      this.cursor = Math.max(0, this.cursor - (MAX_SEARCH_LINE_BUFFER - keep));
     }
   }
 
   private endLine(): void {
     if (this.line.length > 0) this.scan(this.line);
     this.line = "";
+    this.cursor = 0;
     this.reported = false;
   }
 

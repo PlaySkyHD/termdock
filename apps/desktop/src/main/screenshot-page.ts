@@ -5,10 +5,31 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BrowserWindow } from "electron";
+import { assertVisible } from "./screenshot-visible.js";
+import type { CaptureOptions } from "./screenshot-visible.js";
 
 export interface Point {
   x: number;
   y: number;
+}
+
+/** Writes a PNG of the window; with `visible` the run fails first when that element is not fully visible (#116). */
+export async function captureWindow(
+  win: BrowserWindow,
+  dir: string,
+  name: string,
+  options: CaptureOptions = {},
+): Promise<void> {
+  await sleep(300); // one more frame
+  if (options.visible !== undefined)
+    await assertVisible(
+      <T>(expression: string) => win.webContents.executeJavaScript(expression, true) as Promise<T>,
+      name,
+      options.visible,
+    );
+  const file = path.join(dir, name);
+  writeFileSync(file, (await win.webContents.capturePage()).toPNG());
+  console.log(file);
 }
 
 export function pageDriver(win: BrowserWindow, dir: string) {
@@ -21,12 +42,8 @@ export function pageDriver(win: BrowserWindow, dir: string) {
       await sleep(100);
     }
   };
-  const capture = async (name: string): Promise<void> => {
-    await sleep(300);
-    const file = path.join(dir, name);
-    writeFileSync(file, (await win.webContents.capturePage()).toPNG());
-    console.log(file);
-  };
+  const capture = (name: string, options?: CaptureOptions): Promise<void> =>
+    captureWindow(win, dir, name, options);
   const click = async (selector: string): Promise<void> => {
     await waitFor(`document.querySelector(${JSON.stringify(selector)})`, selector);
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);

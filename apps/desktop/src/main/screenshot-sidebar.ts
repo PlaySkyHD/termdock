@@ -95,7 +95,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     "Lost under Daten",
   );
   log("sidebar: workspaces and sessions shown");
-  await capture("30-sidebar-workspaces.png");
+  await capture("80-sidebar-workspaces.png");
 
   // --- Archive: collapsed with a count, expanded with "Löschen" ---------------------------------------
   // An own session: later scenes still need the ones of the earlier scenes. It runs, so archiving ends a process.
@@ -122,7 +122,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     `document.querySelector('[data-archive-list] ${sessionSelector(archivedName)}')`,
     "the archived session",
   );
-  await capture("31-sidebar-archive-open.png");
+  await capture("81-sidebar-archive-open.png");
 
   // --- Drag and drop with the real mouse --------------------------------------------------------------
   const notes = await session("Notes");
@@ -164,7 +164,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     lit.valid.includes("ungrouped") === false && lit.valid.includes("archive") && lit.valid.length === 3,
     "the valid targets are both workspaces and the archive (not Notes' own group)",
   );
-  await capture("32-drag-drop-highlight.png");
+  await capture("82-drag-drop-highlight.png");
   mouse("mouseUp", over.x, over.y);
   await waitForCore(async () => (await session("Notes")).workspaceId === daten.id, "Notes in Daten");
   await waitFor(
@@ -178,14 +178,14 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     )) === true,
     "the drop opened a tab or left the highlight",
   );
-  await capture("33-drag-drop-done.png");
+  await capture("83-drag-drop-done.png");
 
   // --- Context menu with the real right mouse button, and by keyboard ---------------------------------
   const target = await center(sessionSelector("Notes"));
   mouse("mouseDown", target.x, target.y, "right");
   mouse("mouseUp", target.x, target.y, "right");
   await waitFor(`document.querySelector('[role="menu"]')`, "the context menu");
-  await capture("34-context-menu.png");
+  await capture("84-context-menu.png");
   await key("Escape");
   await waitFor(`!document.querySelector('[role="menu"]')`, "the menu to close on Escape");
   expect(
@@ -227,7 +227,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     (await evaluate<boolean>(`document.activeElement?.dataset?.confirm === 'cancel'`)) === true,
     "the default of the confirmation is not Abbrechen",
   );
-  await capture("35-delete-confirm.png");
+  await capture("85-delete-confirm.png");
   // Escape cancels and changes nothing.
   await key("Escape");
   await waitFor(`!document.querySelector('[data-dialog="confirm"]')`, "the confirmation to close on Escape");
@@ -254,7 +254,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     `[...document.querySelectorAll('.pane[data-tab-active="true"]')].some((pane) => pane.textContent.includes('Session nicht gefunden'))`,
     "the placeholder in the open tab",
   );
-  await capture("36-deleted-session-placeholder.png");
+  await capture("86-deleted-session-placeholder.png");
 
   // --- Archiving by keyboard (#97): the focus follows the row into the archive, which opens for it -------
   await click("[data-archive-toggle]"); // collapse, so the scene shows that the archive opens by itself
@@ -283,7 +283,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     `document.activeElement?.dataset?.sessionName === ${JSON.stringify(victim)} &&document.activeElement.closest('[data-archive-list]') !== null`,
     "the focus on the archived row in the open archive",
   );
-  await capture("39-archived-row-focus.png");
+  await capture("89-archived-row-focus.png");
   log("sidebar: the focus follows an archived session into the archive");
 
   // --- A session in a project (#104): the menu offers it first, a click starts it in the project directory ---
@@ -316,7 +316,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     (await evaluate<boolean>(`document.activeElement?.dataset?.menuItem === 'start'`)) === true,
     "the focus is not on Neue Session hier",
   );
-  await capture("37-project-menu.png");
+  await capture("87-project-menu.png");
   await key("Escape");
   await waitFor(`!document.querySelector('[role="menu"]')`, "the project menu to close on Escape");
   expect(!(await sessions()).some((each) => each.name === projectName), "closing the menu started a session");
@@ -341,7 +341,7 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
     `[...document.querySelectorAll('.pane[data-tab-active="true"] .xterm-rows > div')].some((row) => (row.textContent ?? '').includes(${JSON.stringify(projectPath)}))`,
     "the project directory in the terminal",
   );
-  await capture("38-project-session.png");
+  await capture("88-project-session.png");
   expect(
     (await sessions()).filter((each) => each.name === projectName).length === 1,
     "one click, one session",

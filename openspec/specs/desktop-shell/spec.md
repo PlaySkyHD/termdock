@@ -1211,7 +1211,7 @@ Im Suchdialog SHALL Pfeil runter und hoch den nächsten und vorigen Treffer übe
 
 ### Requirement: Session im Projekt starten
 
-Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue Session hier“ SHALL eine neue Session im Projekt starten: `session.create` mit Workspace des Projekts, seinem Namen (bei Namensgleichheit „api 2“ …) und `launch` aus Backend, Distro (falls gesetzt) und Pfad als `cwd`, ohne Shell, Befehl und Umgebung. Sie öffnet sich wie jede neue Session (Strg+Klick neuer Tab, Umschalt+Klick Split, bei vollem Tab ohne Start abgewiesen). Lehnt der Core ab, zeigt die Statusleiste den Grund. Ein zweiter Start während des ersten wird abgewiesen.
+Klick und Enter auf eine Projektzeile der Sidebar sowie der Menüeintrag „Neue Session hier“ SHALL eine neue Session im Projekt starten: `session.create` mit Workspace des Projekts, seinem Namen (bei Namensgleichheit „api 2“ …) und `launch` aus Backend, Distro (falls da), Pfad als `cwd`, ohne Shell, Befehl, Umgebung. Sie öffnet sich wie jede neue Session (Strg+Klick Tab, Umschalt+Klick Split; Tab voll: abgewiesen). Fehler und ein gleichzeitiger zweiter Start melden sich in der Statusleiste.
 
 #### Scenario: Klick startet im Projektpfad
 

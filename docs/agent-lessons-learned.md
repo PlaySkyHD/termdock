@@ -52,6 +52,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - CI läuft auf `windows-latest` (Typecheck, Lint, Format, Unit-Tests) und prüft OpenSpec.
 - **Merge:** erst den Worktree entfernen, dann mergen. Die genaue Befehlsfolge steht im Skill `orchestrate-issues`, Abschnitt 5.
 - **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Mit `--scenes <gruppe,…>` läuft nur eine Szenengruppe (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`; jede bringt ihren Aufbau mit, ein unbekannter Name beendet den Lauf mit Code 1); die Arbeit an einer Szene prüft die Gruppe, vor dem PR läuft einmal alles. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar.
+- **`UnknownVizError` aus `capturePage()`** in einer Szene, die der Diff nicht berührt, deutet auf GPU-Konkurrenz (Spiele, Videoexport) hin, nicht auf einen Fehler im Code (PR #114, #115). Den Nutzer fragen, ob GPU-lastige Programme laufen, danach den Lauf wiederholen; den Code nicht ändern. Screenshot-Läufe holen Fenster in den Vordergrund: Läuft beim Nutzer etwas im Vollbild, vorher fragen.
 - Verbotene Befehle (u. a. `git restore`, `git stash`, `git reset --hard`): siehe Abschnitt 5.
 
 ## 5. Agent-Konfiguration
@@ -64,9 +65,10 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
   - `git restore`, `git stash`, `git reset --hard` (auch mit `-C <pfad>` oder `-c k=v` davor);
   - tmux `kill-server` auf dem Socket `termdock` oder ohne `-L` (`-L termdock-test…` ist erlaubt, siehe Abschnitt 2);
   - `wsl --shutdown`, `wsl --terminate`, `wsl -t` (siehe Abschnitt 2);
-  - schreibende Shell-Befehle auf Dateien im Repo-Checkout oder einem Worktree (`P:/GitHub/termdock…` und relative Pfade): `sed -i`, `perl -i`, `node -e`/`-p` mit `writeFileSync` und Co., Umleitungen `>`/`>>`, `tee`, Heredocs in Dateien, `Set-Content`/`Out-File`/`Add-Content`.
+  - schreibende Shell-Befehle auf Dateien im Repo-Checkout oder einem Worktree (`P:/GitHub/termdock…` und relative Pfade): `sed -i`, `perl -i`, `node -e`/`-p` mit `writeFileSync` und Co., Umleitungen `>`/`>>`, `tee`, Heredocs in Dateien, `Set-Content`/`Out-File`/`Add-Content`;
+  - `cp`, `mv`, `install` (und `Copy-Item`/`Move-Item`), wenn das Ziel (letztes Nicht-Options-Argument, `-t <dir>`, `--target-directory`, `-Destination`) im Repo-Checkout oder einem Worktree liegt. Kopien aus dem Repo nach `P:/Temp/` bleiben erlaubt.
   - Erlaubt bleiben Umleitungen nach `/dev/null`, `$null` und `P:/Temp/`, `git commit -F <datei>`, Formatter, Generatoren und `gh … --body-file`. Dateien ändern Agents mit Read, Edit und Write.
-  - Der Hook prüft nur das Kommandowort jedes Teilbefehls und übersieht lieber etwas, als fälschlich zu blockieren. Bekannte Lücken stehen im Kopf des Skripts. Er wirkt erst, wenn er im Haupt-Checkout liegt; Tests: `npm run test:hooks`.
+  - Der Hook prüft nur das Kommandowort jedes Teilbefehls und übersieht lieber etwas, als fälschlich zu blockieren. Bekannte Lücken stehen im Kopf des Skripts, u. a. Skriptdateien (`node x.mjs`, `bash x.sh`): Ihr Inhalt ist unbekannt, auch sie zählen als Schreiben per Shell und sind verboten. Er wirkt erst, wenn er im Haupt-Checkout liegt; Tests: `npm run test:hooks`.
 
 ## 6. Arbeitsweise
 

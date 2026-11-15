@@ -56,7 +56,7 @@ describe("screenshotScenes", () => {
     expect(() => screenshotScenes([...base, "--scenes=search"])).toThrow(/space/);
   });
 
-  it.each([[[]],[[""]], [[","]], [["--other"]]])("refuses an empty list (%j)", (rest) => {
+  it.each([[[]], [[""]], [[","]], [["--other"]]])("refuses an empty list (%j)", (rest) => {
     expect(() => screenshotScenes([...base, "--scenes", ...rest])).toThrow(/at least one/);
   });
 });

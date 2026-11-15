@@ -7,6 +7,8 @@ import { neighborPane } from "./pane-focus.js";
 import type { FocusDirection } from "./pane-focus.js";
 import { findPane, insertAt, MAX_PANES, MAX_TABS, paneCount, removePane } from "./pane-tree.js";
 import type { PaneZone } from "./pane-tree.js";
+import { applySnap } from "./snap-layouts.js";
+import type { SnapPatternId } from "./snap-layouts.js";
 
 /** What is moved: a whole tab (its pane tree), one pane (its view) or a session (a new view of it). */
 export type MoveSource =
@@ -19,7 +21,9 @@ export type MoveTarget =
   | { kind: "pane"; paneId: string; zone: PaneZone }
   | { kind: "tabBar"; beforeTabId?: string }
   /** Change places with another pane of the same tab (the menu's step in a direction). */
-  | { kind: "swap"; paneId: string };
+  | { kind: "swap"; paneId: string }
+  /** A field of a layout pattern (#78): the active tab is arranged after it (`snap-layouts.ts`). */
+  | { kind: "snap"; pattern: SnapPatternId; slot: number };
 
 /**
  * The window after the move, or undefined when the move is not allowed or changes nothing. The tab that gets the
@@ -33,6 +37,7 @@ export function applyMove(
   newId: () => string,
 ): LayoutWindow | undefined {
   if (target.kind === "swap") return swap(window, source, target.paneId);
+  if (target.kind === "snap") return applySnap(window, source, target.pattern, target.slot, newId);
   return target.kind === "tabBar"
     ? toTabBar(window, source, target.beforeTabId, newId)
     : toPane(window, source, target, newId);

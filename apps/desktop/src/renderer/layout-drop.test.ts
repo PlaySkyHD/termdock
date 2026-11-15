@@ -1,6 +1,6 @@
 import type { LayoutWindow } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { dropSource, dropTarget } from "./layout-drop.js";
+import { dropSource, dropTarget, snapTarget } from "./layout-drop.js";
 
 const window: LayoutWindow = {
   id: "w",
@@ -31,6 +31,14 @@ describe("dropTarget", () => {
     expect(dropTarget(window, "tab:A:after")).toEqual({ kind: "tabBar", beforeTabId: "B" });
     expect(dropTarget(window, "tab:B:after")).toEqual({ kind: "tabBar" });
     expect(dropTarget(window, "tab:X:after")).toBeUndefined();
+  });
+
+  it("translates a field of a layout pattern (#78) and refuses unknown patterns and fields", () => {
+    expect(snapTarget("mainLeft", 2)).toBe("snap:mainLeft:2");
+    expect(dropTarget(window, "snap:mainLeft:2")).toEqual({ kind: "snap", pattern: "mainLeft", slot: 2 });
+    expect(dropTarget(window, "snap:columns:2")).toBeUndefined();
+    expect(dropTarget(window, "snap:columns:x")).toBeUndefined();
+    expect(dropTarget(window, "snap:circle:0")).toBeUndefined();
   });
 
   it("translates the free tab bar into the end and ignores the sidebar's targets", () => {

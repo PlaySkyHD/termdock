@@ -21,6 +21,7 @@ import {
   rebaseGeneral,
   rebaseHistory,
   firstErrorField,
+  focusField,
   PROFILE_FIELDS,
   reveal,
 } from "./settings-form.js";
@@ -276,7 +277,7 @@ function useFocusFirstError<F extends string>(
   useEffect(() => {
     const field = firstErrorField(errors, order);
     if (field === undefined) return;
-    root.current?.querySelector<HTMLElement>(`[data-field="${field}"]`)?.focus();
+    focusField(root.current, field);
   }, [root, errors, order]);
 }
 
@@ -490,17 +491,18 @@ function HistorySection({
     setForm(rebaseHistory(form, base, settings));
     setBase(settings);
   }
-  const [error, setError] = useState<string>();
+  // An object per failed check: the same message twice is a new check and takes the focus again.
+  const [error, setError] = useState<{ text: string }>();
   const root = useRef<HTMLFormElement>(null);
   useEffect(() => {
     // The limit with its message takes the focus, like the first wrong field of the other forms.
-    if (error !== undefined) root.current?.querySelector<HTMLElement>('[data-field="limit"]')?.focus();
+    if (error !== undefined) focusField(root.current, "limit");
   }, [error]);
   const save = useSave();
   const submit = (): void => {
     const result = historyPatch(base, form);
     if (!result.ok) {
-      setError(result.errors.limit);
+      setError({ text: result.errors.limit ?? "Ungültiges Limit" });
       return;
     }
     setError(undefined);
@@ -523,7 +525,7 @@ function HistorySection({
         submit();
       }}
     >
-      <Field label="Limit je Session (MiB)" error={error} note="Von 0,0625 (64 KiB) bis 1024 MiB.">
+      <Field label="Limit je Session (MiB)" error={error?.text} note="Von 0,0625 (64 KiB) bis 1024 MiB.">
         <input
           value={form.limitMiB}
           data-field="limit"

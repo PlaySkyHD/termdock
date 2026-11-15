@@ -118,8 +118,32 @@ export function firstErrorField<F extends string>(
  * Brings a new message into the visible part of its scrolling panel, scrolling no more than needed (a refusal of
  * the core under the fields of the editor went unseen, PR #115).
  */
-export function reveal(element: { scrollIntoView(options: { block: "nearest" }): void } | null): void {
+export function reveal(element: Revealable | null): void {
   element?.scrollIntoView({ block: "nearest" });
+}
+
+interface Revealable {
+  scrollIntoView(options: { block: "nearest" }): void;
+}
+
+/** The part of a form element `focusField` uses (an `HTMLElement` fits). */
+export interface FieldElement {
+  focus(): void;
+  closest(selector: string): Revealable | null;
+}
+
+/**
+ * Focuses `[data-field=<field>]` in `root` and brings its `.settings__field` with the message into view: `focus()`
+ * alone scrolls only the input to the edge of the panel, and the message under it stayed hidden (PR #115).
+ */
+export function focusField(
+  root: { querySelector(selector: string): FieldElement | null } | null,
+  field: string,
+): void {
+  const input = root?.querySelector(`[data-field="${field}"]`);
+  if (!input) return;
+  input.focus();
+  reveal(input.closest(".settings__field"));
 }
 
 export function emptyProfileForm(loggingEnabled: boolean): ProfileForm {

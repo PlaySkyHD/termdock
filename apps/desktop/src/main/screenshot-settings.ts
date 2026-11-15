@@ -139,6 +139,25 @@ export async function settingsScenes(deps: ScenarioDeps): Promise<void> {
   await waitFor(exists(EDITOR), "the profile editor again");
   await fill(`${EDITOR} [data-field="name"]`, "Deploy");
   await setValue(`${EDITOR} [data-field="command"]`, "deploy");
+  // Only the environment, far down, is wrong; the panel stands at the top. The field takes the focus and comes into
+  // view together with its message (PR #115 review).
+  await setValue(`${EDITOR} [data-field="env"]`, "=ohne-name");
+  await evaluate(`document.querySelector('.settings__panel').scrollTop = 0`);
+  await click(`${EDITOR} [data-settings-action="save"]`);
+  await waitFor(
+    `(() => {
+      const input = ${exists(`${EDITOR} [data-field="env"]`)};
+      const field = input.closest('.settings__field');
+      if (document.activeElement !== input || !field.querySelector('[data-field-error]')) return false;
+      const box = field.getBoundingClientRect();
+      const panel = document.querySelector('.settings__panel').getBoundingClientRect();
+      return box.top >= panel.top && box.bottom <= panel.bottom;
+    })()`,
+    "the wrong environment field with its message in view and focused",
+    5_000,
+  );
+  if ((await profiles()).length !== before + 2) throw new Error("A profile with a wrong env line was sent");
+  log("settings: the first wrong field is focused and shown with its message");
   await setValue(`${EDITOR} [data-field="env"]`, "API_TOKEN=beispiel");
   await click(`${EDITOR} [data-settings-action="save"]`);
   await waitFor(exists(`${EDITOR} [data-settings="error"]`), "the refusal of the core");

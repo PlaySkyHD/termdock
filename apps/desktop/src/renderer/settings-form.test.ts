@@ -20,6 +20,7 @@ import {
   rebaseGeneral,
   rebaseHistory,
   firstErrorField,
+  focusField,
   PROFILE_FIELDS,
   reveal,
 } from "./settings-form.js";
@@ -324,5 +325,24 @@ describe("showing a new error", () => {
     reveal({ scrollIntoView: (options) => calls.push(options) });
     reveal(null);
     expect(calls).toEqual([{ block: "nearest" }]);
+  });
+
+  it("focuses the field and then brings the field with its message into view (PR #115 review)", () => {
+    const steps: string[] = [];
+    const box = { scrollIntoView: () => steps.push("reveal field with message") };
+    const input = {
+      focus: () => steps.push("focus input"),
+      closest: (selector: string) => (steps.push(`closest ${selector}`), box),
+    };
+    const root = { querySelector: (selector: string) => (steps.push(selector), input) };
+    focusField(root, "env");
+    expect(steps).toEqual([
+      '[data-field="env"]',
+      "focus input",
+      "closest .settings__field",
+      "reveal field with message",
+    ]);
+    focusField({ querySelector: () => null }, "env");
+    focusField(null, "env");
   });
 });

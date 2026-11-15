@@ -10,12 +10,15 @@
 // commit messages, heredoc bodies and comments does not match. `bash -c`, `powershell -Command` and
 // `wsl.exe [-- | --exec]` are checked recursively. Relative paths count as repository paths if the
 // working directory (`cwd` of the event, after any `cd` in the command; a `cd` inside `( … )` stays
-// inside) is in the repository, or if the event has no `cwd`. A command the lexer cannot split cleanly
+// inside) is in the repository, or if the event has no `cwd`. Worktrees (`P:/GitHub/termdock-wt/…`) match
+// the same prefix as the checkout (`isRepoAbsolute`). `cp`, `mv` and `install` are checked by their
+// destination only (last non-option word, `-t <dir>`, `--target-directory`). A command the lexer cannot split cleanly
 // (unbalanced `$(`) is allowed. The guard prefers missing a case over a false alarm.
 //
 // Known gaps (not detected):
-// - writes through other programs: `cp`, `mv`, `dd`, `truncate`, `git apply`, `git checkout -- <file>`,
-//   `git clean`, `awk -i inplace`, `py`, script files (`node x.mjs`, `bash x.sh`), `cmd /c`;
+// - `cp`/`mv`/`install` with a destination outside the repository, even if `mv` removes a source inside it;
+// - writes through other programs: `rsync`, `ln`, `xcopy`, `robocopy`, `Rename-Item`, `dd`, `truncate`, `git apply`, `git checkout -- <file>`, `git clean`,
+//   `awk -i inplace`, `py`, script files (`node x.mjs`, `bash x.sh`: the content is unknown), `cmd /c`;
 // - commands that are not the command word: `xargs sed -i`, `find -exec sed -i`, `Start-Process wsl`,
 //   `powershell -EncodedCommand`, git aliases, tmux command aliases, `pkill tmux`;
 // - paths from variables or command substitution (`> "$f"`, `$(...)`, backticks): a path that starts
@@ -23,11 +26,14 @@
 // - `node -e` and `[IO.File]::Write*` look only at string literals: one absolute path outside the
 //   repository allows the command even if it also writes a relative path.
 
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EDIT_HINT =
   "Dateien mit Read/Edit/Write ändern; Formatter (`npm run format`) und Generatoren dürfen schreiben, temporäre Dateien gehören nach P:/Temp/.";
+
+const COPY_HINT =
+  "Repo-Dateien nur mit Read/Edit/Write ändern (lessons Abschnitt 5); temporäre Kopien gehören nach P:/Temp/.";
 
 function block(reason, alternative) {
   return { reason, alternative };
@@ -47,8 +53,20 @@ function normalize(path) {
     .toLowerCase();
 }
 
+// `termdock` and `termdock-wt/<dir>/<something>` as whole path segments; `..` segments are resolved
+// first. The `termdock-wt` directory itself and its direct children are not repository files.
 function isRepoAbsolute(path) {
-  return /^(?:p:|\/p|\/mnt\/p)\/github\/termdock/.test(normalize(path));
+  return /^(?:p:|\/p|\/mnt\/p)\/github\/(?:termdock(?:\/|$)|termdock-wt\/[^/]+\/[^/])/.test(
+    posix.normalize(normalize(path)),
+  );
+}
+
+// A working directory inside the checkout or any worktree (also a worktree root directly below `termdock-wt`).
+function isRepoDir(path) {
+  return (
+    isRepoAbsolute(path) ||
+    /^(?:p:|\/p|\/mnt\/p)\/github\/termdock-wt\/[^/]/.test(posix.normalize(normalize(path)))
+  );
 }
 
 function isAbsolute(path) {
@@ -63,7 +81,18 @@ function isNullDevice(path) {
 function isRepoPath(path, ctx) {
   if (isRepoAbsolute(path)) return true;
   if (isNullDevice(path) || isAbsolute(path)) return false;
+  // A relative path is resolved against the working directory (`../../Temp/x` leaves the repository).
+  if (ctx.cwd) return isRepoAbsolute(posix.join(ctx.cwd, normalize(path)));
   return ctx.cwdInRepo;
+}
+
+// Applies a `cd` to the context. An unknown or variable target leaves the working directory unknown.
+function changeDir(dir, ctx) {
+  const inRepo = isRepoPath(dir, ctx);
+  if (isNullDevice(dir) || /^[$%~]/.test(dir)) ctx.cwd = null;
+  else if (isAbsolute(dir)) ctx.cwd = posix.normalize(normalize(dir));
+  else ctx.cwd = ctx.cwd ? posix.join(ctx.cwd, normalize(dir)) : null;
+  ctx.cwdInRepo = ctx.cwd ? isRepoDir(ctx.cwd) : inRepo;
 }
 
 // For inline code (`node -e`, `[IO.File]::WriteAllText`): look at the string literals.
@@ -568,6 +597,69 @@ function checkNode(args, heredocs, ctx) {
   return null;
 }
 
+// Options that take a value as the next word (`-m 644`). `-t` is handled separately: it names the target.
+const COPY_VALUE_OPTIONS = {
+  // `--sparse` and `--reflink` only take `=VALUE`, so they never consume the next word.
+  cp: { short: "S", long: ["--suffix"] },
+  mv: { short: "S", long: ["--suffix"] },
+  install: { short: "mogS", long: ["--mode", "--owner", "--group", "--suffix", "--strip-program"] },
+};
+
+// cp, mv, install (and the PowerShell Copy-Item/Move-Item): the destination is the last non-option word
+// or the directory of `-t`/`--target-directory`/`-Destination`. Only the destination is inspected, so
+// copying out of the repository is allowed.
+function checkCopyMove(name, args, ctx, dialect) {
+  const opts = COPY_VALUE_OPTIONS[name] ?? COPY_VALUE_OPTIONS.cp;
+  const positional = [];
+  let target = null;
+  let dirMode = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      positional.push(...args.slice(i + 1));
+      break;
+    }
+    if (dialect === "ps" && /^-[a-z]{2,}(?::.*)?$/i.test(a)) {
+      const m = /^(-[a-z]+)(?::(.*))?$/i.exec(a);
+      // PowerShell accepts unambiguous parameter abbreviations (`-Dest`).
+      if (m && m[1].length >= 3 && "-destination".startsWith(m[1].toLowerCase()))
+        target = m[2] ?? args[++i] ?? null;
+      else if (/^-(?:path|literalpath|filter|include|exclude|credential|stream)$/i.test(a)) {
+        const value = args[++i];
+        if (/^-(?:path|literalpath)$/i.test(a) && value !== undefined) positional.push(value);
+      }
+      continue;
+    }
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const option = eq === -1 ? a : a.slice(0, eq);
+      // GNU getopt accepts unambiguous abbreviations (`--target=…`).
+      if (option.length >= 4 && "--target-directory".startsWith(option))
+        target = eq === -1 ? (args[++i] ?? null) : a.slice(eq + 1);
+      else if (eq === -1 && opts.long.includes(option)) i++;
+      else if (option.length >= 4 && "--directory".startsWith(option) && name === "install") dirMode = true;
+    } else if (/^-[^-]/.test(a)) {
+      for (let j = 1; j < a.length; j++) {
+        const c = a[j];
+        if (c === "t") {
+          target = j < a.length - 1 ? a.slice(j + 1) : (args[++i] ?? null);
+          break;
+        }
+        if (name === "install" && c === "d") dirMode = true; // only creates directories
+        if (opts.short.includes(c)) {
+          if (j === a.length - 1) i++;
+          break;
+        }
+      }
+    } else positional.push(a);
+  }
+  // Without `-t` the last word is the destination; a lone word is not a valid call.
+  if (dirMode && target === null) return null;
+  const dest = target ?? (positional.length >= 2 ? positional[positional.length - 1] : null);
+  if (!dest || !isRepoPath(dest, ctx)) return null;
+  return block(`\`${name}\` schreibt in den Repo-Checkout (${dest}).`, COPY_HINT);
+}
+
 function checkTee(args, ctx) {
   const target = args.find((a) => !a.startsWith("-") && isRepoPath(a, ctx));
   return target === undefined ? null : writeBlock("`tee`", target);
@@ -614,7 +706,10 @@ function checkWords(words, ctx, dialect, heredocs) {
     case "set-location":
     case "sl": {
       const dir = args.find((a) => !a.startsWith("-"));
-      ctx.cwdInRepo = dir === undefined ? false : isRepoPath(dir, ctx);
+      if (dir === undefined) {
+        ctx.cwd = null;
+        ctx.cwdInRepo = false;
+      } else changeDir(dir, ctx);
       return null;
     }
     case "git":
@@ -638,6 +733,18 @@ function checkWords(words, ctx, dialect, heredocs) {
       return checkNode(args, heredocs, ctx);
     case "tee":
       return checkTee(args, ctx);
+    case "cp":
+    case "mv":
+    case "install":
+      return checkCopyMove(name, args, ctx, dialect);
+    case "copy-item":
+    case "move-item":
+    case "copy":
+    case "move":
+    case "cpi":
+    case "mi":
+      // Copy-Item/Move-Item and their aliases exist only in PowerShell.
+      return dialect === "ps" ? checkCopyMove("cp", args, ctx, dialect) : null;
     default:
       if (PS_WRITERS.has(name) || (dialect === "ps" && PS_WRITER_ALIASES.has(w[0].toLowerCase())))
         return checkPsWriter(w[0], args, ctx);
@@ -654,8 +761,8 @@ function checkSource(src, dialect, ctx) {
     return block("`[IO.File]::Write…`/`Append…` schreibt eine Datei im Repo-Checkout.", EDIT_HINT);
   const outer = [];
   for (const seg of parse(src, dialect)) {
-    if (seg.scope === "open") outer.push(ctx.cwdInRepo);
-    if (seg.scope === "close" && outer.length) ctx.cwdInRepo = outer.pop();
+    if (seg.scope === "open") outer.push({ cwd: ctx.cwd, cwdInRepo: ctx.cwdInRepo });
+    if (seg.scope === "close" && outer.length) Object.assign(ctx, outer.pop());
     if (seg.scope) continue;
     const target = seg.redirects.find((t) => isRepoPath(t, ctx));
     if (target !== undefined) return writeBlock("Die Umleitung `>`/`>>`", target);
@@ -672,9 +779,11 @@ function checkSource(src, dialect, ctx) {
  * @param {string} [cwd] working directory from the hook event; without it the repository is assumed
  */
 export function checkCommand(command, toolName, cwd) {
-  const cwdInRepo = typeof cwd === "string" && cwd !== "" ? isRepoAbsolute(cwd) : true;
+  const known = typeof cwd === "string" && cwd !== "";
+  const cwdInRepo = known ? isRepoDir(cwd) : true;
+  const ctx = { cwdInRepo, cwd: known ? posix.normalize(normalize(cwd)) : null };
   try {
-    return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", { cwdInRepo });
+    return checkSource(String(command), toolName === "PowerShell" ? "ps" : "bash", ctx);
   } catch (error) {
     if (error instanceof Unparseable) return null;
     throw error;

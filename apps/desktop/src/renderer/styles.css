@@ -250,7 +250,7 @@ input {
 
 /*
  * Warnings of a session's run at the bottom edge of its pane (#113), where a new session has no prompt yet; one line
- * each, the path shortened. The mouse goes through to the terminal except on the path (tooltip) and the button.
+ * each, the path shortened. The mouse goes through to the terminal everywhere except on the close button.
  */
 .pane-warning {
   position: absolute;
@@ -308,7 +308,6 @@ input {
   min-width: 3em;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: auto;
 }
 
 .pane-warning__close {

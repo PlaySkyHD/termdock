@@ -1542,7 +1542,7 @@ Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szeneng
 
 ### Requirement: Hinweis bei fehlendem Arbeitsverzeichnis
 
-Hat eine laufende Session die Warnung `cwd_missing`, SHALL ihr Pane unten einen einzeiligen Hinweis zeigen: „Verzeichnis <path> fehlt in <distro> – die Session läuft im Wurzelverzeichnis /.“ (langer Pfad gekürzt, voller Text als Tooltip). Er MUST keine Eingabe blockieren (Maus geht außer am Schließknopf zum Terminal) und sich mit „Hinweis schließen“ schließen lassen; geschlossen bleibt er bis zum nächsten Start. Unbekannte Codes zeigt das Pane nicht.
+Hat eine laufende Session die Warnung `cwd_missing`, SHALL ihr Pane unten einen einzeiligen Hinweis zeigen: „Verzeichnis <path> fehlt in <distro> – die Session läuft im Wurzelverzeichnis /.“ (langer Pfad gekürzt, voller Text als `aria-label`). Er MUST keine Eingabe blockieren (Maus geht außer am Schließknopf zum Terminal) und sich mit „Hinweis schließen“ schließen lassen; geschlossen bleibt er bis zum nächsten Start. Unbekannte Codes zeigt das Pane nicht.
 
 #### Scenario: Hinweis im Pane
 

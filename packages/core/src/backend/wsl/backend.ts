@@ -1,14 +1,18 @@
 // WSL backend: sessions are tmux sessions on an own socket, driven through wsl.exe (ADR 0003).
-import type { BackendKind, LaunchSpec, SessionId, TerminalSize } from "@termdock/protocol";
+import { MAX_NAME_LENGTH } from "@termdock/protocol";
+import type { BackendKind, LaunchSpec, SessionId, SessionWarning, TerminalSize } from "@termdock/protocol";
 import type { Backend, PtyHandle, TerminalSnapshot } from "../types.js";
 import {
   attachArgs,
+  checksCwd,
+  cwdCheckArgs,
   hasSessionArgs,
   isMissingSession,
   killSessionArgs,
   listClientsArgs,
   listDistrosArgs,
   parseClientTtys,
+  parseCwdCheck,
   parseDistroList,
   parsePaneStatus,
   parseSnapshot,
@@ -43,6 +47,8 @@ export interface WslBackendOptions {
   killTimeoutMs?: number;
   /** Delay before a dead keepalive is restarted. */
   keepaliveRestartDelayMs?: number;
+  /** Longest wait for the check of the working directory at the start; a slower check gives no warning. */
+  cwdCheckTimeoutMs?: number;
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
@@ -59,6 +65,7 @@ export class WslBackend implements Backend {
   private readonly distro: string | undefined;
   private readonly commandTimeoutMs: number;
   private readonly killTimeoutMs: number;
+  private readonly cwdCheckTimeoutMs: number;
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
@@ -69,6 +76,7 @@ export class WslBackend implements Backend {
     this.distro = options.distro;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 15_000;
     this.killTimeoutMs = options.killTimeoutMs ?? 5_000;
+    this.cwdCheckTimeoutMs = options.cwdCheckTimeoutMs ?? 5_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
     this.keepalive = new DistroKeepalive(
@@ -110,11 +118,36 @@ export class WslBackend implements Backend {
   async start(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
     const target = await this.target(spec);
     const args = startArgs(target, id, spec);
-    const before = await this.status(target, id);
+    // The directory check runs alongside the status call the start needs anyway, so it costs no extra round trip.
+    const [before, warnings] = await Promise.all([
+      this.status(target, id),
+      this.cwdWarnings(target.distro, spec.cwd),
+    ]);
     // `new-session -A` would join a leftover whose program already ended (remain-on-exit).
     if (before !== "missing" && before.dead) await this.exec(killSessionArgs(target, id));
     const alive = before !== "missing" && !before.dead;
-    return this.open(target, id, args, size, !alive);
+    // Joining a session that still runs uses its directory, not `cwd`.
+    const pty = await this.open(target, id, args, size, !alive);
+    if (!alive && warnings.length > 0) pty.warnings = warnings;
+    return pty;
+  }
+
+  /**
+   * `cwd_missing` when `cwd` is an absolute path that is no directory in `distro` (issue #113). wsl.exe then
+   * reports `chdir(...) failed` and runs the program in `/`. Never rejects: a failed or slow check (WSL not
+   * reachable) gives no warning, and the start goes on as before.
+   */
+  private async cwdWarnings(distro: string, cwd: string): Promise<SessionWarning[]> {
+    if (!checksCwd(cwd)) return [];
+    try {
+      const result = await this.run(cwdCheckArgs(distro, cwd), { timeoutMs: this.cwdCheckTimeoutMs });
+      if (parseCwdCheck(result) !== false) return [];
+    } catch {
+      return [];
+    }
+    const warning: SessionWarning = { code: "cwd_missing", path: cwd };
+    if (isDistroName(distro)) warning.distro = distro;
+    return [warning];
   }
 
   async attach(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle> {
@@ -182,7 +215,7 @@ export class WslBackend implements Backend {
     args: string[],
     size: TerminalSize,
     releaseOnFailure: boolean,
-  ): Promise<PtyHandle> {
+  ): Promise<WslPty> {
     const name = sessionName(id);
     this.keepalive.retain(target.distro, name);
     let process: PtyProcess;
@@ -256,6 +289,11 @@ function wslError(what: string, result: RunResult): Error {
   // wsl.exe without WSL ignores WSL_UTF8 and writes UTF-16: the NUL bytes would end up in logs and answers.
   const detail = (result.stderr.trim() || result.stdout.trim()).replace(/\0/g, "");
   return new Error(`${what} failed (${reason})${detail ? `: ${detail}` : ""}`);
+}
+
+/** A distro name the protocol accepts in a warning (like other names: 1 to 128 characters, not only spaces). */
+function isDistroName(distro: string): boolean {
+  return distro.trim() !== "" && distro.length <= MAX_NAME_LENGTH;
 }
 
 function delay(ms: number): Promise<void> {

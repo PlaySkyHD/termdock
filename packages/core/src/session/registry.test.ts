@@ -1245,3 +1245,89 @@ describe("SessionRegistry: clearWorkspace (issue #56)", () => {
     expect(registry.get(a.id).workspaceId).toBe("w1");
   });
 });
+
+// Issue #113 (openspec change missing-cwd-warning): a missing working directory starts the session with a warning.
+describe("SessionRegistry: start warnings", () => {
+  const missing = { code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" };
+  const missingSpec: LaunchSpec = { backend: "wsl", distro: "Ubuntu", cwd: "/srv/api" };
+
+  function warned() {
+    const backend = new FakeBackend();
+    backend.missingCwds.add("/srv/api");
+    const context = setup({}, backend);
+    const changes: Array<{ to: SessionState; warnings: unknown }> = [];
+    context.registry.onStateChange(({ to, session }) => changes.push({ to, warnings: session.warnings }));
+    return { ...context, changes };
+  }
+
+  it("starts the session and reports the warning in the answer, the list and the state changes", async () => {
+    const { registry, changes } = warned();
+
+    const session = await registry.create({ name: "api", launch: missingSpec });
+
+    expect(session.state).toBe("Detached");
+    expect(session.warnings).toEqual([missing]);
+    expect(registry.get(session.id).warnings).toEqual([missing]);
+    expect(changes).toEqual([
+      { to: "Running", warnings: [missing] },
+      { to: "Detached", warnings: [missing] },
+    ]);
+  });
+
+  it("keeps the warning while views come and go and drops it when the process ends", async () => {
+    const { registry, backend, changes } = warned();
+    const { id } = await registry.create({ name: "api", launch: missingSpec });
+    await registry.attachView(id, "view-a");
+    registry.detachView(id, "view-a");
+    expect(registry.get(id).warnings).toEqual([missing]);
+
+    backend.pty(id).emitExit(0);
+
+    expect(registry.get(id).state).toBe("Exited");
+    expect(registry.get(id).warnings).toBeUndefined();
+    expect(changes.at(-1)).toEqual({ to: "Exited", warnings: undefined });
+  });
+
+  it("checks again on a restart: no warning once the directory exists", async () => {
+    const { registry, backend, changes } = warned();
+    const { id } = await registry.create({ name: "api", launch: missingSpec });
+    backend.pty(id).emitExit(0);
+    backend.missingCwds.clear();
+    changes.length = 0;
+
+    const session = await registry.restart(id);
+
+    expect(session.warnings).toBeUndefined();
+    expect(changes.map((change) => change.warnings)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("reports no warning when the restart re-attaches to a backend session that still runs", async () => {
+    const { registry, backend } = warned();
+    const { id } = await registry.create({ name: "api", launch: missingSpec });
+    backend.pty(id).emitExit();
+    await settle();
+    backend.setExists(id, true);
+
+    const session = await registry.restart(id);
+
+    expect(backend.attaches.map((a) => a.id)).toEqual([id]);
+    expect(session.warnings).toBeUndefined();
+  });
+
+  it("has no warning for a directory that exists", async () => {
+    const { registry } = warned();
+    const session = await registry.create({ name: "api", launch: { ...missingSpec, cwd: "/srv" } });
+    expect(session.warnings).toBeUndefined();
+    expect("warnings" in session).toBe(false);
+  });
+
+  it("does not store the warning (runtime state of the run)", async () => {
+    const repository = new InMemorySessionRepository();
+    const backend = new FakeBackend();
+    backend.missingCwds.add("/srv/api");
+    const { registry } = setup({ repository }, backend);
+    const { id } = await registry.create({ name: "api", launch: missingSpec });
+    expect(registry.get(id).warnings).toEqual([missing]);
+    expect(repository.list().find((each) => each.id === id)?.warnings).toBeUndefined();
+  });
+});

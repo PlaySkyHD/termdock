@@ -1,6 +1,6 @@
 // Connects the bridge to the UI store of a window (ADR 0006): lists the sessions, asks for the core status and
 // keeps the store current from `stateChanged` and `sessionCreated` events. Free of React and Electron.
-import type { SessionId, SessionInfo, SessionState } from "@termdock/protocol";
+import type { SessionId, SessionInfo, SessionState, SessionWarning } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import type { UiStore } from "./ui-store.js";
 
@@ -10,6 +10,7 @@ interface StateChange {
   sessionId: SessionId;
   state: SessionState;
   lastExitCode?: number;
+  warnings?: SessionWarning[];
 }
 
 export interface StoreConnection {
@@ -50,6 +51,8 @@ export function connectStore(
    * after it, so a later answer of `listWorkspaces` (possibly computed before it) must not replace it.
    */
   let workspaceEventSeen = false;
+  const applyChange = (change: StateChange): void =>
+    store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode, change.warnings);
 
   const off = api.onEvent((event: BridgeEvent) => {
     switch (event.kind) {
@@ -71,7 +74,7 @@ export function connectStore(
         return;
       case "stateChanged": {
         const { kind: _kind, ...change } = event;
-        if (listed) store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode);
+        if (listed) applyChange(change);
         else changes.push(change);
         return;
       }
@@ -99,7 +102,7 @@ export function connectStore(
         if (disposed) return;
         for (const session of sessions) {
           if (store.getState().sessions.some((known) => known.id === session.id))
-            store.sessionStateChanged(session.id, session.state, session.lastExitCode);
+            store.sessionStateChanged(session.id, session.state, session.lastExitCode, session.warnings);
           else store.sessionCreated(session);
         }
         store.setSessions(store.getState().sessions, true);
@@ -144,8 +147,7 @@ export function connectStore(
     store.setSessions(sessions, loaded);
     const known = new Set(sessions.map((session) => session.id));
     for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
-    for (const change of changes)
-      store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode);
+    for (const change of changes) applyChange(change);
     for (const edit of edits) {
       if ("update" in edit) store.sessionUpdated(edit.update);
       else store.sessionRemoved(edit.removed);

@@ -1,5 +1,5 @@
 // PtyHandle around the node-pty process that runs the tmux client (ADR 0003).
-import type { TerminalSize } from "@termdock/protocol";
+import type { SessionWarning, TerminalSize } from "@termdock/protocol";
 import type { Disposable, PtyHandle } from "../types.js";
 
 /** The part of node-pty's `IPty` the backend uses. */
@@ -30,6 +30,8 @@ const encoder = new TextEncoder();
  * (exit code) or only the client was lost (no exit code).
  */
 export class WslPty implements PtyHandle {
+  /** Set by `WslBackend.start` (issue #113). */
+  warnings: readonly SessionWarning[] | undefined;
   private readonly dataListeners = new Set<(data: Uint8Array) => void>();
   private readonly exitListeners = new Set<(event: ExitEvent) => void>();
   private readonly subscriptions: Disposable[];

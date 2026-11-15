@@ -243,6 +243,8 @@ export class CoreServer {
         const listers = this.listers();
         const data: EventMap["session.stateChanged"] = { sessionId, state: session.state };
         if (session.lastExitCode !== undefined) data.lastExitCode = session.lastExitCode;
+        // Protocol 1.5 (#113): the run's warnings with each change that has some; older clients ignore the field.
+        if (session.warnings !== undefined) data.warnings = session.warnings;
         this.route(viewIds, listers, eventFrame("session.stateChanged", data));
       }),
     ];

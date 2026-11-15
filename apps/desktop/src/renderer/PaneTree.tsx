@@ -20,7 +20,7 @@ import { layoutWindow } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
 import { paneCount } from "./pane-tree.js";
-import { isAttachable } from "./session-display.js";
+import { isAttachable, warningTexts } from "./session-display.js";
 import type { TerminalController, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
 import { MIN_SHARE } from "./ui-store.js";
@@ -49,6 +49,10 @@ export interface PaneTreeProps {
   onMoveDivider: (tabId: string, splitId: string, index: number, delta: number, minShare: number) => void;
   /** Click, menu key or right click on a pane's grip: its menu (#67). */
   onPaneMenu: (paneId: string, event: ReactMouseEvent<HTMLElement>) => void;
+  /** Sessions whose warning hint this window has closed (#113). */
+  dismissedWarnings: readonly SessionId[];
+  /** "Hinweis schließen" of a pane's warning hint (#113). */
+  onDismissWarnings: (sessionId: SessionId) => void;
 }
 
 export function PaneTree({
@@ -66,6 +70,8 @@ export function PaneTree({
   onPanePaste,
   onMoveDivider,
   onPaneMenu,
+  dismissedWarnings,
+  onDismissWarnings,
 }: PaneTreeProps) {
   const area = useRef<HTMLDivElement>(null);
   const { panes, dividers } = layoutWindow(tabs, activeTabId);
@@ -107,6 +113,10 @@ export function PaneTree({
               commands={commands}
               onContextPaste={() => onPanePaste(paneId)}
             />
+            <WarningHint
+              texts={warningTexts(session, dismissedWarnings)}
+              onDismiss={() => onDismissWarnings(sessionId)}
+            />
             {tabActive && <PaneGrip paneId={paneId} label={session?.name ?? "Pane"} onMenu={onPaneMenu} />}
             {tabActive && <ZoneOverlay paneId={paneId} />}
           </div>
@@ -124,6 +134,37 @@ export function PaneTree({
             }
           />
         ))}
+    </div>
+  );
+}
+
+/**
+ * Warnings of the pane's session run (#113), at the top edge of the pane. Only the hint takes clicks; the terminal
+ * keeps its input and focus. Closing it hides it in this window until the session's next start.
+ */
+function WarningHint({ texts, onDismiss }: { texts: readonly string[]; onDismiss: () => void }) {
+  if (texts.length === 0) return null;
+  return (
+    <div className="pane-warning" role="status" data-hint="session-warnings">
+      <div className="pane-warning__texts">
+        {texts.map((text) => (
+          <p key={text} className="pane-warning__text">
+            {text}
+          </p>
+        ))}
+      </div>
+      <button
+        className="pane-warning__close"
+        type="button"
+        data-action="dismiss-warnings"
+        aria-label="Hinweis schließen"
+        title="Hinweis schließen"
+        // The press must not move the focus out of the terminal (the pane becomes active on it anyway).
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onDismiss}
+      >
+        ×
+      </button>
     </div>
   );
 }

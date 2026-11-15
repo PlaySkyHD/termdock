@@ -72,3 +72,18 @@ export function stateText(session: SessionInfo): string {
     ? `Exited (Code ${session.lastExitCode})`
     : session.state;
 }
+
+/**
+ * Texts of the warnings of a session's run that the window has not dismissed (#113), one per known code; codes of a
+ * newer core are left out. `cwd_missing`: wsl.exe cannot change into the directory and starts the shell in `/`.
+ */
+export function warningTexts(session: SessionInfo | undefined, dismissed: readonly string[]): string[] {
+  if (!session?.warnings || dismissed.includes(session.id) || !isAttachable(session.state)) return [];
+  const texts: string[] = [];
+  for (const warning of session.warnings) {
+    if (warning.code !== "cwd_missing" || warning.path === undefined) continue;
+    const distro = warning.distro ?? session.launch.distro ?? "der WSL-Distribution";
+    texts.push(`Verzeichnis ${warning.path} fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`);
+  }
+  return texts;
+}

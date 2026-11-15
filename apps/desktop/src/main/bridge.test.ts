@@ -423,6 +423,17 @@ describe("DesktopBridge events", () => {
     expect(b.events).toEqual([expected]);
   });
 
+  it("passes the warnings of a state change on to every window (issue #113)", async () => {
+    const { core, a, b } = setup();
+    const warnings = [{ code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" }];
+
+    core.emit("session.stateChanged", { sessionId: "s1", state: "Running", warnings });
+
+    const expected = { kind: "stateChanged", sessionId: "s1", state: "Running", warnings };
+    expect(a.events).toEqual([expected]);
+    expect(b.events).toEqual([expected]);
+  });
+
   it("stops sending to a removed window and tells the others when the core connection ends", async () => {
     const { core, bridge, a, b } = setup();
     await bridge.removeWindow(a.id);

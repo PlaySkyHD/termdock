@@ -427,6 +427,11 @@ export function App({ api }: { api: TermdockApi }) {
               onPaneMenu={(paneId, event) =>
                 openLayoutMenu(event, "Aktionen für das Pane", paneMenu(store.getState().window, paneId))
               }
+              dismissedWarnings={state.dismissedWarnings}
+              onDismissWarnings={(sessionId) => {
+                store.dismissWarnings(sessionId);
+                refocus();
+              }}
             />
           </div>
         </main>

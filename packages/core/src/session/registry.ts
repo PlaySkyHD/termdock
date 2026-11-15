@@ -1,6 +1,6 @@
 // Session Registry: identities, lifecycle, views and input lock of all sessions in the Core (ADR 0003, ADR 0005).
 import { randomUUID } from "node:crypto";
-import { MAX_NAME_LENGTH } from "@termdock/protocol";
+import { MAX_NAME_LENGTH, MAX_SESSION_WARNINGS } from "@termdock/protocol";
 import type {
   BackendKind,
   LaunchProfileId,
@@ -169,6 +169,8 @@ export interface RestoreResult {
 
 /** Stored states whose process may still be alive and must be checked on start. */
 const LIVE_STATES: ReadonlySet<SessionState> = new Set(["Starting", "Running", "Detached"]);
+/** States with a started run; only they carry the run's `warnings` (issue #113). */
+const RUN_STATES: ReadonlySet<SessionState> = new Set(["Running", "Detached"]);
 
 type Listener<T> = (event: T) => void;
 
@@ -916,6 +918,11 @@ export class SessionRegistry {
       entry.output.clear();
       entry.modes.reset();
     }
+    // Warnings of this run (issue #113); a re-attached PTY started nothing, so it has none. `setState` drops them
+    // again once the session leaves Running and Detached.
+    const warnings = pty.warnings?.slice(0, MAX_SESSION_WARNINGS).map((warning) => ({ ...warning }));
+    if (warnings && warnings.length > 0) info.warnings = warnings;
+    else delete info.warnings;
     this.setState(entry, "Running");
     // ADR 0005 has no Starting → Detached; without a view the session passes through Running.
     if (entry.views.size === 0) this.setState(entry, "Detached");
@@ -1133,6 +1140,8 @@ export class SessionRegistry {
   private setState(entry: SessionEntry, to: SessionState): void {
     const from = entry.info.state;
     entry.info.state = transition(from, to);
+    // Warnings belong to the run that is alive in Running and Detached (issue #113).
+    if (!RUN_STATES.has(to)) delete entry.info.warnings;
     entry.info.updatedAt = this.now().toISOString();
     this.persist(entry);
     this.stateListeners.emit({ sessionId: entry.info.id, from, to, session: snapshotInfo(entry.info) });
@@ -1240,5 +1249,7 @@ function assertSize(size: TerminalSize): void {
 }
 
 function snapshotInfo(info: SessionInfo): SessionInfo {
-  return { ...info, size: { ...info.size } };
+  const copy: SessionInfo = { ...info, size: { ...info.size } };
+  if (info.warnings) copy.warnings = info.warnings.map((warning) => ({ ...warning }));
+  return copy;
 }

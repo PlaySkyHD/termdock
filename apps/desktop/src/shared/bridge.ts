@@ -15,6 +15,7 @@ import type {
   SessionId,
   SessionInfo,
   SessionState,
+  SessionWarning,
   Settings,
   SettingsPatch,
   TerminalSize,
@@ -139,7 +140,14 @@ export type BridgeEvent =
   | { kind: "output"; sessionId: SessionId; seq: number; data: Uint8Array }
   | { kind: "resized"; sessionId: SessionId; size: TerminalSize }
   | { kind: "writerChanged"; sessionId: SessionId; writerViewId?: ViewId }
-  | { kind: "stateChanged"; sessionId: SessionId; state: SessionState; lastExitCode?: number }
+  /** `warnings`: those of the session's current run (protocol 1.5, #113); none means the session has none. */
+  | {
+      kind: "stateChanged";
+      sessionId: SessionId;
+      state: SessionState;
+      lastExitCode?: number;
+      warnings?: SessionWarning[];
+    }
   /** The core's `session.created`: a session came into the registry, from any client (ADR 0002, 0006). */
   | { kind: "sessionCreated"; session: SessionInfo }
   /** Name, workspace or logging of a session changed (`session.updated`), from any client (#63). */

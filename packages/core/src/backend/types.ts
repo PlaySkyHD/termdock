@@ -1,5 +1,5 @@
 // Backend abstraction (ADR 0003). Shared building block: only the orchestrator or an explicitly briefed agent edits this file.
-import type { BackendKind, LaunchSpec, SessionId, TerminalSize } from "@termdock/protocol";
+import type { BackendKind, LaunchSpec, SessionId, SessionWarning, TerminalSize } from "@termdock/protocol";
 
 export interface Disposable {
   dispose(): void;
@@ -18,6 +18,11 @@ export interface PtyHandle {
   onExit(listener: (event: { exitCode?: number }) => void): Disposable;
   /** Closes the PTY without ending the backend session (WSL: detaches from tmux; Windows: ends the shell). */
   dispose(): void;
+  /**
+   * Problems `start` found that did not stop it (WSL: the working directory is missing, issue #113). Only on a PTY
+   * from `start`; undefined or empty when there are none or the backend could not tell.
+   */
+  readonly warnings?: readonly SessionWarning[] | undefined;
 }
 
 /** Content a newly attached view shows before live output (ADR 0003). */

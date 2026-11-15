@@ -13,6 +13,7 @@ import type { BrowserWindow } from "electron";
 import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
 import type { QuietWatch } from "./screenshot.js";
+import { cwdScenes } from "./screenshot-cwd.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
@@ -216,6 +217,7 @@ export async function runScenario(deps: ScenarioDeps): Promise<void> {
   await quitScenes(deps, capture);
   await searchScenes(deps);
   await settingsScenes(deps);
+  await cwdScenes(deps);
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------

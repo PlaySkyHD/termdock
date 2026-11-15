@@ -248,6 +248,54 @@ input {
   pointer-events: none;
 }
 
+/* Warnings of a session's run at the top edge of its pane (#113); left of the grip, above the terminal. */
+.pane-warning {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  right: 44px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 4px 4px 10px;
+  border-radius: 3px;
+  background: var(--td-status-warning);
+  color: #1e1e1e;
+  font-family: var(--td-font-ui);
+  font-size: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.pane-warning__texts {
+  flex: 1;
+  min-width: 0;
+}
+
+.pane-warning__text {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.pane-warning__close {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #1e1e1e;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-warning__close:hover,
+.pane-warning__close:focus-visible {
+  border-color: #1e1e1e;
+  outline: none;
+}
+
 .reader-bar__button {
   height: 20px;
   padding: 0 8px;

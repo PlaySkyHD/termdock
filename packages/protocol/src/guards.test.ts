@@ -257,8 +257,8 @@ describe("parseResponse", () => {
     expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
   });
 
-  it("speaks protocol 1.4 (issue #64: wsl.distros)", () => {
-    expect(PROTOCOL_VERSION).toBe("1.4");
+  it("speaks protocol 1.5 (issue #113: session warnings)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.5");
   });
 
   it("allows an empty snapshot and no writer", () => {
@@ -415,6 +415,66 @@ describe("parseEvent", () => {
         ),
       ).code,
     ).toBe("bad_request");
+  });
+
+  // Issue #113 (openspec change missing-cwd-warning): warnings of a session's run, protocol 1.5.
+  it("accepts warnings in a session and a state change, also with a code it does not know", () => {
+    const warning = { code: "cwd_missing", path: "/srv/api", distro: "Ubuntu" };
+    const stateChanged = (data: unknown) =>
+      parseEvent(frame({ kind: "event", event: "session.stateChanged", data }));
+    const parsed = stateChanged({ sessionId: "s1", state: "Running", warnings: [warning] });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok)
+      expect(parsed.value.data).toEqual({ sessionId: "s1", state: "Running", warnings: [warning] });
+    expect(stateChanged({ sessionId: "s1", state: "Running", warnings: [{ code: "later_code_9" }] }).ok).toBe(
+      true,
+    );
+    const created = parseEvent(
+      frame({
+        kind: "event",
+        event: "session.created",
+        data: { session: { ...sessionInfo, warnings: [warning] } },
+      }),
+    );
+    expect(created.ok).toBe(true);
+    const listed = parseResponse(
+      frame({ kind: "response", id: "r1", result: { sessions: [{ ...sessionInfo, warnings: [warning] }] } }),
+      "session.list",
+    );
+    expect(listed.ok).toBe(true);
+  });
+
+  it("rejects malformed warnings", () => {
+    const stateChanged = (warnings: unknown) =>
+      parseEvent(
+        frame({
+          kind: "event",
+          event: "session.stateChanged",
+          data: { sessionId: "s1", state: "Running", warnings },
+        }),
+      );
+    const nine = Array.from({ length: 9 }, () => ({ code: "cwd_missing" }));
+    for (const [bad, where] of [
+      [[], "data.warnings"],
+      [nine, "data.warnings"],
+      [{ code: "cwd_missing" }, "data.warnings"],
+      [[{}], "data.warnings[0].code"],
+      [[{ code: "Cwd-Missing" }], "data.warnings[0].code"],
+      [[{ code: "c".repeat(65) }], "data.warnings[0].code"],
+      [[{ code: "cwd_missing", path: "" }], "data.warnings[0].path"],
+      [[{ code: "cwd_missing", path: "/a\u0000b" }], "data.warnings[0].path"],
+      [[{ code: "cwd_missing", path: "/".repeat(513) }], "data.warnings[0].path"],
+      [[{ code: "cwd_missing", distro: " " }], "data.warnings[0].distro"],
+    ] as const) {
+      const result = failure(stateChanged(bad));
+      expect(result.code).toBe("bad_request");
+      expect(result.message, JSON.stringify(bad)).toContain(where);
+    }
+    const session = parseResponse(
+      frame({ kind: "response", id: "r1", result: { session: { ...sessionInfo, warnings: [{ code: 7 }] } } }),
+      "session.create",
+    );
+    expect(failure(session).message).toContain("result.session.warnings[0].code");
   });
 
   it("accepts output of the maximum size", () => {

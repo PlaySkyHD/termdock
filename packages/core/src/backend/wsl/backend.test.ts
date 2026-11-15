@@ -130,7 +130,11 @@ describe("WslBackend", () => {
     const { backend, panes, calls } = setup({ distro: "Ubuntu" });
     panes.set("td-s1", "1 0 ");
     await backend.start("s1", spec, { cols: 80, rows: 24 });
-    expect(calls.map(subcommand)).toEqual(["has-session", "kill-session"]);
+    // Besides the check of the working directory (issue #113).
+    expect(calls.filter((args) => !args.includes("test")).map(subcommand)).toEqual([
+      "has-session",
+      "kill-session",
+    ]);
   });
 
   it("releases the keepalive when the PTY cannot be spawned", async () => {
@@ -324,5 +328,116 @@ describe("WslBackend", () => {
     // Without WSL, wsl.exe ignores WSL_UTF8 and writes UTF-16 (PR #115 review).
     answer = { code: 1, stdout: "", stderr: "N\0o\0 \0W\0S\0L\0" };
     await expect(backend.distros()).rejects.toThrow(/^wsl\.exe -l -v failed \(exit 1\): No WSL$/);
+  });
+});
+
+// Issue #113 (openspec change missing-cwd-warning): the start checks the working directory and warns.
+describe("WslBackend: missing working directory", () => {
+  const isCwdCheck = (args: readonly string[]) => args.includes("test");
+  const start = (backend: WslBackend, cwd: string) =>
+    backend.start("s1", { backend: "wsl", distro: "Ubuntu", cwd }, { cols: 80, rows: 24 });
+
+  it("checks the directory with test -d as an argument array and starts with a cwd_missing warning", async () => {
+    const { backend, calls, ptys } = setup({
+      respond: (args) => (isCwdCheck(args) ? { code: 1, stdout: "", stderr: "" } : undefined),
+    });
+
+    const pty = await start(backend, "/srv/api; rm -rf ~");
+
+    expect(calls.filter(isCwdCheck)).toEqual([
+      ["-d", "Ubuntu", "--cd", "~", "--exec", "test", "-d", "/srv/api; rm -rf ~"],
+    ]);
+    expect(ptys).toHaveLength(1);
+    expect(pty.warnings).toEqual([{ code: "cwd_missing", path: "/srv/api; rm -rf ~", distro: "Ubuntu" }]);
+  });
+
+  it("has no warning when the directory exists", async () => {
+    const { backend } = setup({ respond: (args) => (isCwdCheck(args) ? ok() : undefined) });
+    expect((await start(backend, "/srv")).warnings).toBeUndefined();
+  });
+
+  it.each([
+    ["timed out", { code: null, stdout: "", stderr: "", timedOut: true }],
+    ["wsl.exe failed", { code: 1, stdout: "", stderr: "Wsl/Service/E_UNEXPECTED" }],
+    ["distro missing", distroMissing],
+  ] as const)("starts without a warning when the check %s", async (_name, result) => {
+    const { backend, ptys } = setup({ respond: (args) => (isCwdCheck(args) ? result : undefined) });
+    expect((await start(backend, "/srv/api")).warnings).toBeUndefined();
+    expect(ptys).toHaveLength(1);
+  });
+
+  it("starts without a warning when the check throws", async () => {
+    const { backend, ptys } = setup({
+      respond: (args) => {
+        if (isCwdCheck(args)) throw new Error("spawn wsl.exe ENOENT");
+        return undefined;
+      },
+    });
+    expect((await start(backend, "/srv/api")).warnings).toBeUndefined();
+    expect(ptys).toHaveLength(1);
+  });
+
+  it.each([["~"], ["~/src"], ["relative/dir"], ["/" + "a".repeat(512)]])("does not check %s", async (cwd) => {
+    const { backend, calls } = setup({ respond: () => ({ code: 1, stdout: "", stderr: "" }) });
+    await start(backend, cwd).catch(() => {});
+    expect(calls.filter(isCwdCheck)).toEqual([]);
+  });
+
+  it("gives the check its own timeout", async () => {
+    const timeouts: number[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      commandTimeoutMs: 15_000,
+      cwdCheckTimeoutMs: 1_234,
+      run: async (args, options) => {
+        if (isCwdCheck(args)) timeouts.push(options.timeoutMs);
+        return isCwdCheck(args) ? ok() : missing;
+      },
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+    });
+    await start(backend, "/srv");
+    expect(timeouts).toEqual([1_234]);
+    backend.dispose();
+  });
+
+  it("runs the check alongside the status call of the start, not after it", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      run: async (args) => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        inFlight -= 1;
+        return isCwdCheck(args) ? { code: 1, stdout: "", stderr: "" } : missing;
+      },
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+    });
+    const pty = await start(backend, "/srv/api");
+    expect(most).toBe(2);
+    expect(pty.warnings).toHaveLength(1);
+    backend.dispose();
+  });
+
+  it("has no warning when the start joins a session that still runs", async () => {
+    const { backend, panes } = setup({
+      respond: (args) => (isCwdCheck(args) ? { code: 1, stdout: "", stderr: "" } : undefined),
+    });
+    panes.set("td-s1", "0  ");
+    expect((await start(backend, "/srv/api")).warnings).toBeUndefined();
+  });
+
+  it("does not check on attach", async () => {
+    const { backend, calls } = setup({ respond: (args) => (isCwdCheck(args) ? ok() : undefined) });
+    const pty = await backend.attach(
+      "s1",
+      { backend: "wsl", distro: "Ubuntu", cwd: "/srv/api" },
+      { cols: 80, rows: 24 },
+    );
+    expect(calls.filter(isCwdCheck)).toEqual([]);
+    expect(pty.warnings).toBeUndefined();
   });
 });

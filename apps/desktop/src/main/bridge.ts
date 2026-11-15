@@ -87,7 +87,7 @@ export class DesktopBridge {
           ...(writerViewId === undefined ? {} : { writerViewId }),
         }),
       ),
-      core.on("session.stateChanged", ({ sessionId, state, lastExitCode }) => {
+      core.on("session.stateChanged", ({ sessionId, state, lastExitCode, warnings }) => {
         // Archiving makes the core forget all views of the session; the records here must go with them.
         if (state === "Archived") this.forgetViews(sessionId);
         this.toAll({
@@ -95,6 +95,7 @@ export class DesktopBridge {
           sessionId,
           state,
           ...(lastExitCode === undefined ? {} : { lastExitCode }),
+          ...(warnings === undefined ? {} : { warnings }),
         });
       }),
       core.on("session.created", ({ session }) => this.toAll({ kind: "sessionCreated", session })),

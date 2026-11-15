@@ -161,7 +161,7 @@ Wird `historyLimitBytes` gesenkt, SHALL der Core beim nächsten Schreiben mit ge
 
 ### Requirement: Neuzeichnen beim Anhängen nicht speichern
 
-Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie die Ausgabe der PTY, die ein Backend-Aufruf dafür neu zeichnet, während dieses Aufrufs und höchstens 2 s je Aufruf als Neuzeichnen kennzeichnen; ein gescheiterter Aufruf beendet die Kennzeichnung sofort. Der Verlauf MUST solche Ausgabe nicht speichern; Views MUST sie unverändert erhalten. Alle übrige Ausgabe SHALL der Verlauf speichern, auch Neuzeichnen, das tmux von selbst oder beim Anbinden einer PTY auslöst.
+Fordert die Registry nach dem Anhängen einer View ein Neuzeichnen an, SHALL sie die Ausgabe der PTY, die ein Backend-Aufruf dafür neu zeichnet, während dieses Aufrufs und höchstens 2 s je Aufruf als Neuzeichnen kennzeichnen; ein gescheiterter Aufruf beendet das sofort. Der Verlauf MUST solche Ausgabe nicht speichern, Views MUST sie unverändert erhalten. Übrige Ausgabe SHALL er speichern, auch Neuzeichnen von tmux selbst oder beim Anbinden einer PTY, nicht aber nach einer Größenänderung.
 
 #### Scenario: Neuzeichnen beim Anhängen
 
@@ -260,6 +260,68 @@ Die Suche MUST begrenzt bleiben: höchstens `limit` Treffer (Standard und Höchs
 - **GIVEN** Zeilen „a.c“ und „abc“
 - **WHEN** der Client „a.c“ sucht
 - **THEN** liefert der Core nur „a.c“
+
+### Requirement: Neuzeichnen nach Größenänderung nicht speichern
+
+Ändert die schreibende View die Größe einer Session mit PTY eines Backends mit Neuzeichnen (WSL), SHALL die Registry vorher ein Neuzeichnen anfordern; dessen Ausgabe ist gekennzeichnet wie beim Anhängen, der Verlauf MUST sie nicht speichern. Größenänderungen während eines Neuzeichnens SHALL sie bis zur Grenze ihrer Kette (nächste Anforderung) zu genau einem folgenden zusammenfassen. Gleiche Größe oder fehlende PTY MUST kein Neuzeichnen anfordern. Views MUST die Ausgabe unverändert erhalten.
+
+#### Scenario: Größenänderung
+
+- **GIVEN** eine WSL-Session mit Logging, einer schreibenden View und gespeicherter Ausgabe „seen-42“
+- **WHEN** die View die Größe ändert und tmux den Bildschirm neu in die PTY schreibt
+- **THEN** entsteht kein neuer Verlaufseintrag, und die View erhält das Neuzeichnen als Ausgabe
+
+#### Scenario: Fenster ziehen
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung noch läuft
+- **WHEN** zwei weitere Größenänderungen folgen und tmux jedes Mal neu zeichnet
+- **THEN** läuft genau ein weiteres Neuzeichnen danach, und keine dieser Ausgaben wird gespeichert
+
+#### Scenario: Ausgabe nach der Größenänderung
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung beendet ist
+- **WHEN** das Programm „after-2“ ausgibt
+- **THEN** speichert der Verlauf „after-2“
+
+#### Scenario: Gleiche Größe
+
+- **GIVEN** eine Session mit PTY und der Größe 80×24
+- **WHEN** die schreibende View die Größe 80×24 sendet
+- **THEN** fordert die Registry kein Neuzeichnen an, und die folgende Ausgabe wird gespeichert
+
+#### Scenario: Session ohne PTY
+
+- **GIVEN** eine beendete Session (`Exited`) mit schreibender View
+- **WHEN** die View die Größe 120×40 sendet
+- **THEN** fordert die Registry kein Neuzeichnen an und speichert die Größe 120×40
+
+#### Scenario: Gescheitertes Neuzeichnen nach Größenänderung
+
+- **GIVEN** eine Session, deren Neuzeichnen nach einer Größenänderung zweimal scheitert
+- **WHEN** danach ein Neuzeichnen von tmux eintrifft
+- **THEN** speichert der Verlauf es
+
+### Requirement: Grenze der Kennzeichnung bei Größenänderungen
+
+Eine Größenänderung ohne laufende Kette beginnt eine; Grenze 1 s danach. Sie endet 1 s nach ihrer letzten Größenänderung, frühestens an der Grenze. Die Kennzeichnung ihrer Neuzeichnen SHALL an der Grenze enden; Ausgabe bis dahin MUST im Verlauf fehlen. Danach SHALL die Registry für die Kette kein Neuzeichnen und kein gekennzeichnetes Folge-Neuzeichnen mehr starten, der Verlauf MUST wieder speichern, auch doppelte Neuzeichnen. Neuzeichnen beim Anhängen MUST gekennzeichnet bleiben.
+
+#### Scenario: Fenster lange ziehen
+
+- **GIVEN** eine WSL-Session, deren schreibende View 2 s lang alle 70 ms die Größe ändert, während ein Programm ausgibt
+- **WHEN** die Ausgabe in der ersten Sekunde und danach eintrifft
+- **THEN** fehlt die Ausgabe der ersten Sekunde im Verlauf, die spätere Ausgabe wird gespeichert, auch wenn tmux den Bildschirm dabei neu zeichnet
+
+#### Scenario: Neue Kette nach einer Pause
+
+- **GIVEN** eine Kette, deren Grenze abgelaufen ist, und seit ihrer letzten Größenänderung mehr als 1 s
+- **WHEN** die View die Größe ändert und tmux neu zeichnet
+- **THEN** beginnt eine neue Kette, und der Verlauf speichert dieses Neuzeichnen nicht
+
+#### Scenario: Anhängen bleibt unberührt
+
+- **GIVEN** eine Kette, deren Grenze in 150 ms abläuft, und eine zweite View, die mit Snapshot des Backends anhängt
+- **WHEN** das Neuzeichnen für das Anhängen über die Grenze hinaus läuft oder als Folge-Neuzeichnen nach dem Aufruf der Größenänderung startet
+- **THEN** speichert der Verlauf weder dieses Neuzeichnen noch die Ausgabe während seines Aufrufs
 
 ### Requirement: Trefferzeilen wie im Terminal
 

@@ -27,6 +27,8 @@ export interface SessionRegistryOptions {
   backends: readonly Backend[];
   /** Clock for `createdAt`/`updatedAt`; defaults to `new Date()`. */
   now?: () => Date;
+  /** Monotonic clock in ms for durations (resize chains, issue #99); defaults to `performance.now()`. */
+  monotonicNow?: () => number;
   /**
    * Storage of the session metadata (ADR 0004). Every change of a session is saved before it is reported.
    * Without a repository the registry keeps sessions only in memory. Required for `restore()`.
@@ -131,6 +133,14 @@ export interface OutputEvent {
 /** Default of `SessionRegistryOptions.redrawOutputMaxMs`; a redraw call took about 270 ms when measured. */
 export const DEFAULT_REDRAW_OUTPUT_MAX_MS = 2_000;
 
+/**
+ * Longest time the redraws that resizes request flag output, counted from the first resize of a chain (issue
+ * #99). Long enough for a resize and its redraw call (about 110 + 270 ms when measured) plus a follow-up; a
+ * longer drag stores its output again, and the repaint with it (a repeated screen rather than lost output).
+ * A chain ends once no resize came for this long after its limit.
+ */
+export const RESIZE_REDRAW_MAX_MS = 1_000;
+
 export interface AttachResult {
   session: SessionInfo;
   /** Whether this view became the writer. */
@@ -168,11 +178,24 @@ const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 interface RedrawRun {
   /** Another redraw was requested meanwhile; it follows this one. */
   again: boolean;
+  /** An attach asked for the follow-up (`again`); the end of a resize chain does not cancel it. */
+  againForAttach: boolean;
+  /** The running call was requested by an attach; the end of a resize chain does not unflag it. */
+  callForAttach: boolean;
   /**
    * PTY the running backend call repaints; its output is flagged `fromRedraw` (issue #88). Unset between calls,
    * after a failed call and once `redrawOutputMaxMs` passed.
    */
   pty: PtyHandle | undefined;
+}
+
+interface ResizeChain {
+  /** `RESIZE_REDRAW_MAX_MS` passed since the first resize: resizes request no redraw any more. */
+  expired: boolean;
+  /** Monotonic time of the first resize in ms. */
+  startedAt: number;
+  /** Monotonic time of the last resize in ms. */
+  lastAt: number;
 }
 
 interface SessionEntry {
@@ -188,6 +211,8 @@ interface SessionEntry {
   modes: TerminalModes;
   /** Redraw in progress; `again` asks for one more after it (see `requestRedraw`). */
   redraw: RedrawRun | undefined;
+  /** Resizes right after each other whose redraws flag output for at most `RESIZE_REDRAW_MAX_MS` (issue #99). */
+  resizeChain: ResizeChain | undefined;
   /** Lifecycle operation in progress; further lifecycle calls are rejected meanwhile (kill/archive cancel a re-attach). */
   busy: "start" | "kill" | "archive" | "reattach" | "delete" | undefined;
   /** PTY end reported while kill/archive was running; decides the state if that operation fails. */
@@ -231,6 +256,7 @@ export class SessionRegistry {
   private readonly sessions = new Map<SessionId, SessionEntry>();
   private readonly backends: readonly Backend[];
   private readonly now: () => Date;
+  private readonly monotonicNow: () => number;
   private readonly repository: SessionRepository | undefined;
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
@@ -252,6 +278,7 @@ export class SessionRegistry {
   constructor(options: SessionRegistryOptions) {
     this.backends = options.backends;
     this.now = options.now ?? (() => new Date());
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.repository = options.repository;
     this.reattachDelaysMs = options.reattachDelaysMs ?? DEFAULT_REATTACH_DELAYS_MS;
     this.redrawOutputMaxMs = options.redrawOutputMaxMs ?? DEFAULT_REDRAW_OUTPUT_MAX_MS;
@@ -620,22 +647,25 @@ export class SessionRegistry {
     if (writer) this.setWriter(entry, viewId);
     if (entry.pty && entry.info.state === "Detached") this.setState(entry, "Running");
     // Not awaited: the view gets its snapshot at once.
-    if (fromBackend && backend) this.requestRedraw(entry, backend);
+    if (fromBackend && backend) this.requestRedraw(entry, backend, "attach");
     return { session: snapshotInfo(entry.info), writer, snapshot, outputSeq };
   }
 
   /**
    * Asks the backend to repaint the session's screen (issue #34). At most one redraw per session runs; requests
    * while it runs are merged into one follow-up, which covers the latest view (several panes attaching at once,
-   * #29). A failed redraw is retried once, then reported through `onRedrawError`.
+   * #29). A failed redraw is retried once, then reported through `onRedrawError`. `reason` tells whether the
+   * end of a resize chain may cut the request short (`resize`) or not (`attach`).
    */
-  private requestRedraw(entry: SessionEntry, backend: Backend): void {
+  private requestRedraw(entry: SessionEntry, backend: Backend, reason: "attach" | "resize"): void {
     if (!backend.redraw) return;
+    const forAttach = reason === "attach";
     if (entry.redraw) {
       entry.redraw.again = true;
+      if (forAttach) entry.redraw.againForAttach = true;
       return;
     }
-    const run: RedrawRun = { again: false, pty: undefined };
+    const run: RedrawRun = { again: false, againForAttach: false, callForAttach: forAttach, pty: undefined };
     entry.redraw = run;
     void this.runRedraws(entry, backend, run).finally(() => {
       if (entry.redraw === run) entry.redraw = undefined;
@@ -643,8 +673,11 @@ export class SessionRegistry {
   }
 
   private async runRedraws(entry: SessionEntry, backend: Backend, run: RedrawRun): Promise<void> {
+    let forAttach = run.callForAttach;
     do {
+      run.callForAttach = forAttach;
       run.again = false;
+      run.againForAttach = false;
       let failure: unknown;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
@@ -659,6 +692,7 @@ export class SessionRegistry {
         if (this.disposed) return;
       }
       if (failure !== undefined) this.onRedrawError(failure, snapshotInfo(entry.info));
+      forAttach = run.againForAttach;
     } while (run.again && !this.disposed);
   }
 
@@ -672,7 +706,8 @@ export class SessionRegistry {
     run: RedrawRun,
     call: () => Promise<void> | undefined,
   ): Promise<void> {
-    const pty = entry.pty;
+    // A resize call (also its retry) after the end of its chain flags nothing (issue #99).
+    const pty = run.callForAttach || !entry.resizeChain?.expired ? entry.pty : undefined;
     run.pty = pty;
     const limit = setTimeout(() => {
       this.timers.delete(limit);
@@ -686,6 +721,45 @@ export class SessionRegistry {
       this.timers.delete(limit);
       run.pty = undefined;
     }
+  }
+
+  /**
+   * Requests the redraw of a resize, within its chain (issue #99). The first resize after a quiet pause starts a
+   * chain; `RESIZE_REDRAW_MAX_MS` later the chain expires: the flag of a running resize call ends, a follow-up
+   * only resizes asked for is dropped, and further resizes request nothing. Program output while the window is
+   * dragged is lost for at most that long; afterwards repaints are stored again. The chain ends
+   * `RESIZE_REDRAW_MAX_MS` after its last resize, at the earliest at its limit. Durations use the monotonic
+   * clock; the timer ends the flag of a running call, the check here covers a late timer.
+   */
+  private flagResizeRepaint(entry: SessionEntry, backend: Backend): void {
+    const now = this.monotonicNow();
+    let chain = entry.resizeChain;
+    if (chain && !chain.expired && now - chain.startedAt >= RESIZE_REDRAW_MAX_MS) {
+      this.expireResizeChain(entry, chain);
+    }
+    if (chain?.expired && now - chain.lastAt >= RESIZE_REDRAW_MAX_MS) chain = undefined;
+    if (!chain) {
+      const fresh: ResizeChain = { expired: false, startedAt: now, lastAt: now };
+      chain = fresh;
+      entry.resizeChain = fresh;
+      const limit = setTimeout(() => {
+        this.timers.delete(limit);
+        this.expireResizeChain(entry, fresh);
+      }, RESIZE_REDRAW_MAX_MS);
+      this.timers.add(limit);
+    }
+    chain.lastAt = now;
+    if (!chain.expired) this.requestRedraw(entry, backend, "resize");
+  }
+
+  /** Ends the flag a resize chain set; a redraw an attach asked for keeps its flag (issue #88). */
+  private expireResizeChain(entry: SessionEntry, chain: ResizeChain): void {
+    if (chain.expired) return;
+    chain.expired = true;
+    const run = entry.redraw;
+    if (!run || entry.resizeChain !== chain) return;
+    if (!run.againForAttach) run.again = false;
+    if (!run.callForAttach) run.pty = undefined;
   }
 
   /** Detaches a view. The process keeps running; the writer gets no automatic successor (ADR 0005). */
@@ -713,11 +787,20 @@ export class SessionRegistry {
     entry.pty.write(data);
   }
 
-  /** Sets the authoritative terminal size. Only the writer may resize (ADR 0003). */
+  /**
+   * Sets the authoritative terminal size. Only the writer may resize (ADR 0003). A changed size of a running
+   * PTY requests a redraw first: tmux repaints the client after the resize, and that repaint arrives while the
+   * redraw call runs, so it is flagged `fromRedraw` like the repaint after an attach (issue #99). Resizes
+   * right after each other flag for at most `RESIZE_REDRAW_MAX_MS` in total (see `flagResizeRepaint`).
+   */
   resize(sessionId: SessionId, viewId: ViewId, size: TerminalSize): void {
     const entry = this.entry(sessionId);
     this.assertWriter(entry, viewId);
     assertSize(size);
+    const changed = size.cols !== entry.info.size.cols || size.rows !== entry.info.size.rows;
+    const backend = this.backendFor(entry.info.launch);
+    // Before the resize, so that the flag is set when the first byte of the repaint arrives.
+    if (entry.pty && changed && backend?.redraw) this.flagResizeRepaint(entry, backend);
     entry.pty?.resize(size);
     entry.info.size = { cols: size.cols, rows: size.rows };
     entry.info.updatedAt = this.now().toISOString();
@@ -1141,6 +1224,7 @@ function newEntry(info: SessionInfo): SessionEntry {
     outputSeq: 0,
     modes: new TerminalModes(),
     redraw: undefined,
+    resizeChain: undefined,
     busy: undefined,
     endedDuringOp: undefined,
     reattach: { attempts: 0, boundAt: Number.NEGATIVE_INFINITY },

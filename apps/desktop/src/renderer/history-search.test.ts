@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DELETED_SESSION,
   groupHits,
+  hitAt,
   HistorySearchModel,
+  moveSelection,
   QUERY_TOO_LONG,
   SEARCH_DELAY_MS,
   SEARCH_LIMIT,
@@ -220,5 +222,128 @@ describe("HistorySearchModel", () => {
     expect(searchHistory).toHaveBeenCalledTimes(1);
     expect(changes()).toBe(before);
     expect(model.getState()).toEqual({ status: "searching", query: "x" });
+  });
+});
+
+describe("moveSelection", () => {
+  it("starts at the first hit going down and at the last going up", () => {
+    expect(moveSelection(5, -1, "ArrowDown")).toBe(0);
+    expect(moveSelection(5, -1, "ArrowUp")).toBe(4);
+  });
+
+  it("steps by one and stops at both ends instead of wrapping", () => {
+    expect(moveSelection(5, 1, "ArrowDown")).toBe(2);
+    expect(moveSelection(5, 1, "ArrowUp")).toBe(0);
+    expect(moveSelection(5, 4, "ArrowDown")).toBe(4);
+    expect(moveSelection(5, 0, "ArrowUp")).toBe(0);
+  });
+
+  it("jumps to the first or last hit with Home and End", () => {
+    expect(moveSelection(5, 2, "Home")).toBe(0);
+    expect(moveSelection(5, 2, "End")).toBe(4);
+  });
+
+  it("selects nothing without hits and repairs an index outside the list", () => {
+    expect(moveSelection(0, -1, "ArrowDown")).toBe(-1);
+    expect(moveSelection(0, 3, "End")).toBe(-1);
+    expect(moveSelection(3, 9, "ArrowUp")).toBe(2);
+  });
+});
+
+describe("hitAt", () => {
+  const sessions = [session("s1", "Build"), session("s2", "Logs")];
+  const groups = groupHits([hit("s1", 9, "a"), hit("s2", 8, "b"), hit("s1", 7, "c")], sessions);
+
+  it("counts through the groups in display order", () => {
+    // Groups: Build [a, c], Logs [b].
+    expect(hitAt(groups, 0)?.hit.line).toBe("a");
+    expect(hitAt(groups, 1)?.hit.line).toBe("c");
+    expect(hitAt(groups, 2)).toMatchObject({ group: { name: "Logs" }, hit: { line: "b" } });
+  });
+
+  it("has no hit outside the list", () => {
+    expect(hitAt(groups, -1)).toBeUndefined();
+    expect(hitAt(groups, 3)).toBeUndefined();
+  });
+});
+
+describe("HistorySearchModel selection", () => {
+  const sessions = [session("s1", "Build"), session("s2", "Logs")];
+  const answer = async (): Promise<HistorySearchResult> => ({
+    hits: [hit("s1", 9, "one"), hit("s2", 8, "two"), hit("s2", 7, "three")],
+    truncated: false,
+  });
+  async function searched() {
+    const searchHistory = vi.fn((_query: string, _limit?: number) => answer());
+    const model = new HistorySearchModel({ searchHistory }, () => sessions);
+    await model.run("o");
+    return { model, searchHistory };
+  }
+  const selected = (model: HistorySearchModel): number | undefined => {
+    const view = model.getState();
+    return view.status === "done" ? view.selected : undefined;
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("starts without a selection and moves over the groups, stopping at the end", async () => {
+    const { model } = await searched();
+    expect(selected(model)).toBe(-1);
+
+    for (let step = 0; step < 4; step++) expect(model.move("ArrowDown")).toBe(true);
+
+    expect(selected(model)).toBe(2);
+    expect(model.move("Home")).toBe(true);
+    expect(selected(model)).toBe(0);
+  });
+
+  it("leaves Home and End to the text field as long as nothing is selected", async () => {
+    const { model } = await searched();
+
+    expect(model.move("Home")).toBe(false);
+    expect(model.move("End")).toBe(false);
+    expect(selected(model)).toBe(-1);
+  });
+
+  it("ignores the keys without results", () => {
+    const model = new HistorySearchModel({ searchHistory: vi.fn() }, () => sessions);
+
+    expect(model.move("ArrowDown")).toBe(false);
+  });
+
+  it("searches with Enter without a selection and opens the selected hit with Enter", async () => {
+    const { model, searchHistory } = await searched();
+    expect(model.activate("o")).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(searchHistory).toHaveBeenCalledTimes(2);
+
+    model.move("ArrowUp"); // from nothing: the last hit
+    // Groups: Build [one], Logs [two, three]; the last hit belongs to Logs.
+    expect(model.activate("o")).toBe("s2");
+    expect(searchHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("searches instead of opening once the text changed after the results", async () => {
+    const { model, searchHistory } = await searched();
+    model.move("ArrowDown");
+
+    model.setQuery("ou");
+    expect(selected(model)).toBe(-1);
+    expect(model.move("ArrowDown")).toBe(false);
+    expect(model.activate("ou")).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(searchHistory).toHaveBeenLastCalledWith("ou", SEARCH_LIMIT);
+  });
+
+  it("resets the selection when new results arrive", async () => {
+    const { model } = await searched();
+    model.move("ArrowUp");
+    expect(selected(model)).toBe(2);
+
+    await model.run("o");
+
+    expect(selected(model)).toBe(-1);
   });
 });

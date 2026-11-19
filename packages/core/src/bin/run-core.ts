@@ -202,11 +202,18 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   } catch (error) {
     dataDirError = error;
   }
+  let logWriteFailed = false;
   const logger = createLogger({
     ...(dataDir === undefined ? {} : { file: path.join(logDir(dataDir), CORE_LOG_FILE) }),
     source: "core",
     // stderr stays as before, for tests and development.
     mirror: (_line, _level, _source, text) => void stderr.write(`termdock-core: ${text}\n`),
+    // Once: a log file that cannot be written would otherwise stay unnoticed.
+    onWriteError: (error) => {
+      if (logWriteFailed) return;
+      logWriteFailed = true;
+      void stderr.write(`termdock-core: log file not writable: ${messageOf(error)}\n`);
+    },
   });
   // Messages only in the IPC answers and on stderr; a stack trace of an unexpected error goes into the file too.
   const log = (text: string): void => logger.error(text);

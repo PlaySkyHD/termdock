@@ -22,7 +22,7 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
-import { createDesktopLogger, helpMenuTemplate, openLogFolder } from "./diagnostics.js";
+import { createDesktopLogger, flushWithin, helpMenuTemplate, openLogFolder } from "./diagnostics.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
@@ -52,10 +52,14 @@ const RENDERER = path.join(here, "..", "renderer", "index.html");
 const SCREENSHOT_TIMEOUT_MS = 480_000;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
+/** Longest wait for the log file before the app exits. */
+const LOG_FLUSH_TIMEOUT_MS = 1_000;
 
 // Stderr only until the data directory is known (a screenshot run uses its own); then `desktop.log` as well.
 let logger = createDesktopLogger(undefined);
 const log = (text: string): void => logger.error(text);
+/** Set when the app ends the core on purpose (quit, screenshot run); the close of the connection is then expected. */
+let shuttingDown = false;
 
 let shotDir: string | undefined;
 let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
@@ -166,11 +170,17 @@ async function main(): Promise<void> {
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       cleanTemp();
     }
+    await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(1);
     return;
   }
 
-  client.onClose(() => log("coreClosed: the connection to the core ended"));
+  // A close that follows our own shutdown or quit is expected; any other end of the connection is an incident.
+  client.onClose(() =>
+    shuttingDown
+      ? logger.info("coreClosed: the connection to the core ended after shutdown or quit")
+      : log("coreClosed: the connection to the core ended unexpectedly"),
+  );
   const port = withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
   // The layout of all windows (#29): the renderers report their parts, this process adds the geometry and saves.
   // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
@@ -230,8 +240,14 @@ async function main(): Promise<void> {
     decide: (reason) => decideQuit(decideDeps(), reason),
     retainAll,
     flush: () => Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]).then(() => undefined),
-    shutdownCore: async () => void (await port.request("core.shutdown", { stopSessions: true })),
-    closeClient: () => client.close(),
+    shutdownCore: async () => {
+      shuttingDown = true;
+      await port.request("core.shutdown", { stopSessions: true });
+    },
+    closeClient: () => {
+      shuttingDown = true;
+      return client.close();
+    },
     quit: () => app.quit(),
     log,
   });
@@ -403,6 +419,16 @@ async function main(): Promise<void> {
   // Closing the last window is intercepted in its `close` handler; this is the fallback for a window that went
   // away another way.
   app.on("window-all-closed", () => quitFlow.windowsClosed());
+  // The last log lines (the incident before the end) are written before the process ends.
+  let logFlushed = false;
+  app.on("will-quit", (event) => {
+    if (logFlushed) return;
+    event.preventDefault();
+    void flushWithin(logger, LOG_FLUSH_TIMEOUT_MS).then(() => {
+      logFlushed = true;
+      app.quit();
+    });
+  });
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
@@ -438,6 +464,7 @@ async function runScreenshot(
   const finish = (): Promise<void> =>
     (finishing ??= (async () => {
       clearTimeout(guard);
+      shuttingDown = true;
       // Ends every session of this core (tmux kill-session on the run's own socket) and the core itself.
       await client.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
         log(`core.shutdown: ${error instanceof Error ? error.message : String(error)}`);
@@ -447,6 +474,7 @@ async function runScreenshot(
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
       cleanTemp();
+      await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
       app.exit(exitCode);
     })());
 

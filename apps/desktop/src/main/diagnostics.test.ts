@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDesktopLogger,
+  flushWithin,
   helpMenuTemplate,
   openLogFolder,
   OPEN_LOG_FOLDER_LABEL,
@@ -66,6 +67,24 @@ describe("openLogFolder", () => {
       `could not open the log folder ${path.join("d", "logs")}: no application`,
       `could not open the log folder ${path.join("d", "logs")}: EACCES`,
     ]);
+  });
+});
+
+describe("flushWithin", () => {
+  it("returns once the logger has written", async () => {
+    let done = false;
+    await flushWithin({ flush: async () => void (done = true) }, 1000);
+    expect(done).toBe(true);
+  });
+
+  it("gives up after the time limit when the write hangs", async () => {
+    const started = Date.now();
+    await flushWithin({ flush: () => new Promise<void>(() => {}) }, 50);
+    expect(Date.now() - started).toBeLessThan(900);
+  });
+
+  it("does not reject when the flush fails", async () => {
+    await expect(flushWithin({ flush: () => Promise.reject(new Error("x")) }, 50)).resolves.toBeUndefined();
   });
 });
 

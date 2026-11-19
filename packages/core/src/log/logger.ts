@@ -39,6 +39,17 @@ export interface Logger {
   flush(): Promise<void>;
 }
 
+/** Longest text of one line in bytes; more is cut and marked, so one entry cannot fill the file. */
+export const MAX_LINE_BYTES = 16 * 1024;
+
+/** Cuts `text` to `MAX_LINE_BYTES` (on a character boundary) and appends a marker with the cut size. */
+export function truncateText(text: string): string {
+  const total = Buffer.byteLength(text);
+  if (total <= MAX_LINE_BYTES) return text;
+  const head = Buffer.from(text).subarray(0, MAX_LINE_BYTES).toString("utf8").replace(/�+$/, "");
+  return `${head} … [truncated ${total - Buffer.byteLength(head)} bytes]`;
+}
+
 /** Folder of the diagnostic logs below the data directory (spec diagnostics). */
 export function logDir(dataDir: string): string {
   return path.join(dataDir, "logs");
@@ -165,7 +176,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const make = (source: string): Logger => {
     const emit = (level: LogLevel, text: string): void => {
       try {
-        const clean = redact(String(text), env);
+        const clean = truncateText(redact(String(text), env));
         const line = formatLine(now(), level, source, clean);
         writer?.write(`${line}\n`);
         mirror?.(line, level, source, clean);

@@ -42,6 +42,17 @@ export async function openLogFolder(dataDir: string, deps: OpenLogFolderDeps): P
   }
 }
 
+/** Waits for the logger to write what is queued, but at most `ms`; never rejects. Used before the app exits. */
+export async function flushWithin(logger: Pick<Logger, "flush">, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+  try {
+    await Promise.race([logger.flush().catch(() => {}), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The menu "Hilfe" with its one entry; `open` is called on a click. */
 export function helpMenuTemplate(open: () => void): {
   label: string;

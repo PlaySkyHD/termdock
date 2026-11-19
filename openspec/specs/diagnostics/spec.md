@@ -23,7 +23,13 @@ Der Core SHALL seine Meldungen zusätzlich zu stderr nach `<Datenordner>/logs/co
 
 ### Requirement: Inhalt und Besitz der Logs
 
-Stacktraces SHALL nur im Log und auf stderr stehen, nie in IPC-Antworten. Terminal-Ausgabe und Startkommandos von Profilen MUST nie ins Log gelangen; Meldungen tragen nur Session-IDs und Fehlermeldungen. Ein zweiter Core, der mit `already_running` endet, SHALL den Datenordner nicht anlegen und nicht in `core.log` schreiben.
+Stacktraces SHALL nur im Log und auf stderr stehen, nie in IPC-Antworten. Der Text einer Zeile SHALL auf 16 KiB gekürzt und die Kürzung markiert werden. Terminal-Ausgabe und Startkommandos von Profilen MUST nie ins Log gelangen; Meldungen tragen nur Session-IDs und Fehlermeldungen. Ein zweiter Core, der mit `already_running` endet, SHALL den Datenordner nicht anlegen und nicht in `core.log` schreiben.
+
+#### Scenario: Überlange Zeile
+
+- **GIVEN** eine Meldung von 32 KiB
+- **WHEN** sie geloggt wird
+- **THEN** enthält die Zeile die ersten 16 KiB, danach `… [truncated 16384 bytes]`, und kein Mehrbytezeichen ist zerschnitten
 
 #### Scenario: Zweiter Core
 
@@ -34,7 +40,6 @@ Stacktraces SHALL nur im Log und auf stderr stehen, nie in IPC-Antworten. Termin
 ### Requirement: Rotation und begrenzte Größe
 
 Jede Log-Datei SHALL ab 1 MiB rotieren: die aktive Datei wird zu `<name>.1.log`, eine ältere Rotation entfällt, so dass je Prozess höchstens zwei Dateien bestehen. Schreiben SHALL asynchron laufen und weder IPC noch PTY blockieren. Schlägt das Schreiben fehl, MUST der Aufrufer davon nichts merken und die App weiterlaufen; der Logger SHALL beim nächsten Schreiben neu beginnen. Scheitert nur die Rotation, SHALL er weiter in die aktive Datei schreiben; die Warteschlange ist begrenzt.
-
 #### Scenario: Rotation gesperrt
 
 - **GIVEN** die Rotation scheitert, weil eine Datei gesperrt ist

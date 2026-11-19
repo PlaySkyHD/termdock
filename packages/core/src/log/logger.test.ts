@@ -2,7 +2,14 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createLogger, formatLine, MAX_PENDING_LINES, rotatedPath } from "./logger.js";
+import {
+  createLogger,
+  formatLine,
+  MAX_LINE_BYTES,
+  MAX_PENDING_LINES,
+  rotatedPath,
+  truncateText,
+} from "./logger.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -27,6 +34,30 @@ describe("rotatedPath", () => {
   it("numbers the rotated files before the extension", () => {
     expect(rotatedPath(path.join("d", "core.log"), 0)).toBe(path.join("d", "core.log"));
     expect(rotatedPath(path.join("d", "core.log"), 1)).toBe(path.join("d", "core.1.log"));
+  });
+});
+
+describe("truncateText", () => {
+  it("leaves a short text and cuts a long one with a marker", () => {
+    expect(truncateText("short")).toBe("short");
+    const cut = truncateText("x".repeat(MAX_LINE_BYTES + 100));
+    expect(cut).toBe(`${"x".repeat(MAX_LINE_BYTES)} … [truncated 100 bytes]`);
+  });
+
+  it("does not split a multi-byte character", () => {
+    const cut = truncateText("€".repeat(MAX_LINE_BYTES));
+    expect(cut).not.toContain("�");
+    expect(cut).toMatch(/ … \[truncated \d+ bytes\]$/);
+  });
+
+  it("applies to a logged line", async () => {
+    const file = path.join(tempDir(), "core.log");
+    const log = createLogger({ file, now: fixedNow, env: {} });
+    log.error("y".repeat(MAX_LINE_BYTES * 2));
+    await log.flush();
+    const text = readFileSync(file, "utf8");
+    expect(Buffer.byteLength(text)).toBeLessThan(MAX_LINE_BYTES + 200);
+    expect(text).toContain("[truncated 16384 bytes]");
   });
 });
 

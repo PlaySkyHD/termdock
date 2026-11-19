@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitBounds } from "./window-geometry.js";
+import { fitBounds, screenshotOrigin } from "./window-geometry.js";
 
 const primary = { x: 0, y: 0, width: 1920, height: 1040 };
 const left = { x: -1280, y: 0, width: 1280, height: 984 };
@@ -52,5 +52,34 @@ describe("fitBounds", () => {
 
   it("works without any display list by trusting the primary one", () => {
     expect(fitBounds({ x: 9000, y: 0, width: 600, height: 400 }, [], primary)).toMatchObject({ x: 660 });
+  });
+});
+
+describe("screenshotOrigin", () => {
+  const right = { x: 1920, y: 0, width: 1920, height: 1160 };
+  const displays = [
+    { workArea: left, primary: false },
+    { workArea: right, primary: false },
+    { workArea: primary, primary: true },
+  ];
+
+  it("opens on the first display that is not the primary one", () => {
+    expect(screenshotOrigin(displays, undefined)).toEqual({ x: -1240, y: 40 });
+  });
+
+  it("opens on the display with the given number", () => {
+    expect(screenshotOrigin(displays, "2")).toEqual({ x: 1960, y: 40 });
+  });
+
+  it("opens on the primary display when asked to", () => {
+    expect(screenshotOrigin(displays, "primary")).toEqual({ x: 40, y: 40 });
+  });
+
+  it("falls back to the default for a display number that does not exist", () => {
+    expect(screenshotOrigin(displays, "7")).toEqual({ x: -1240, y: 40 });
+  });
+
+  it("uses the primary display when it is the only one", () => {
+    expect(screenshotOrigin([{ workArea: primary, primary: true }], undefined)).toEqual({ x: 40, y: 40 });
   });
 });

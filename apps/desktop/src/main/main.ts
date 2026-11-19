@@ -44,7 +44,7 @@ import {
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
-import { fitBounds } from "./window-geometry.js";
+import { fitBounds, screenshotOrigin } from "./window-geometry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
@@ -268,8 +268,20 @@ async function main(): Promise<void> {
         screen.getAllDisplays().map((display) => display.workArea),
         screen.getPrimaryDisplay().workArea,
       );
+    // Screenshot windows open off the primary screen, the user may be working there (TERMDOCK_SCREENSHOT_DISPLAY).
+    const shotOrigin =
+      shotDir !== undefined && !fitted
+        ? screenshotOrigin(
+            screen.getAllDisplays().map((display) => ({
+              workArea: display.workArea,
+              primary: display.id === screen.getPrimaryDisplay().id,
+            })),
+            process.env.TERMDOCK_SCREENSHOT_DISPLAY,
+          )
+        : undefined;
+    if (shotOrigin) log(`screenshot window at ${shotOrigin.x},${shotOrigin.y}`);
     const win = new BrowserWindow({
-      ...(fitted ?? {}),
+      ...(fitted ?? shotOrigin ?? {}),
       width: fitted?.width ?? width,
       height: fitted?.height ?? height,
       backgroundColor: "#1e1e1e",

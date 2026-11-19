@@ -53,6 +53,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **Merge:** erst den Worktree entfernen, dann mergen. Die genaue Befehlsfolge steht im Skill `orchestrate-issues`, Abschnitt 5.
 - **Screenshots bei jeder sichtbaren UI-Änderung**, in PR und Issue. Aufnahme über den Screenshot-Modus der App (`--screenshot <dir>`, `webContents.capturePage()`), nicht per Bildschirmfoto des Hosts. Mit `--scenes <gruppe,…>` läuft nur eine Szenengruppe (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `restart`; jede bringt ihren Aufbau mit, ein unbekannter Name beendet den Lauf mit Code 1); die Arbeit an einer Szene prüft die Gruppe, vor dem PR läuft einmal alles. Hochladen mit `bash scripts/attach-screenshots.sh pr|issue <n> <dateien…>`: Die Bilder liegen im Orphan-Branch `pr-assets` (nie auf `main`) und erscheinen als Kommentar. Neue Szenen nehmen den nächsten freien Zehnerblock; `apps/desktop/src/main/scene-prefixes.test.ts` prüft eindeutige Präfixe.
 - **`UnknownVizError` aus `capturePage()`** in einer Szene, die der Diff nicht berührt, deutet auf GPU-Konkurrenz (Spiele, Videoexport) hin, nicht auf einen Fehler im Code (PR #114, #115). Den Nutzer fragen, ob GPU-lastige Programme laufen, danach den Lauf wiederholen; den Code nicht ändern. Screenshot-Läufe holen Fenster in den Vordergrund: Läuft beim Nutzer etwas im Vollbild, vorher fragen.
+- **Screenshot-Fenster öffnen auf dem ersten Nebenmonitor**, nicht auf dem Hauptmonitor des Nutzers. `TERMDOCK_SCREENSHOT_DISPLAY=primary` oder `=<nummer>` (1-basiert, Reihenfolge von `screen.getAllDisplays()`) wählt einen anderen. Szenen positionieren Fenster relativ zum ersten Fenster, nie absolut (`screenshot-restore.ts`).
 - Verbotene Befehle (u. a. `git restore`, `git stash`, `git reset --hard`): siehe Abschnitt 5.
 
 ## 5. Agent-Konfiguration
@@ -65,6 +66,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
   - `git restore`, `git stash`, `git reset --hard` (auch mit `-C <pfad>` oder `-c k=v` davor);
   - tmux `kill-server` auf dem Socket `termdock` oder ohne `-L` (`-L termdock-test…` ist erlaubt, siehe Abschnitt 2);
   - `wsl --shutdown`, `wsl --terminate`, `wsl -t` (siehe Abschnitt 2);
+  - `git push` im Haupt-Checkout `P:/GitHub/termdock` (cwd oder `-C`); gepusht wird nur aus dem eigenen Worktree (#128);
   - schreibende Shell-Befehle auf Dateien im Repo-Checkout oder einem Worktree (`P:/GitHub/termdock…` und relative Pfade): `sed -i`, `perl -i`, `node -e`/`-p` mit `writeFileSync` und Co., Umleitungen `>`/`>>`, `tee`, Heredocs in Dateien, `Set-Content`/`Out-File`/`Add-Content`;
   - `cp`, `mv`, `install` (und `Copy-Item`/`Move-Item`), wenn das Ziel (letztes Nicht-Options-Argument, `-t <dir>`, `--target-directory`, `-Destination`) im Repo-Checkout oder einem Worktree liegt. Kopien aus dem Repo nach `P:/Temp/` bleiben erlaubt.
   - Erlaubt bleiben Umleitungen nach `/dev/null`, `$null` und `P:/Temp/`, `git commit -F <datei>`, Formatter, Generatoren und `gh … --body-file`. Dateien ändern Agents mit Read, Edit und Write.
@@ -76,3 +78,4 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - Architekturentscheidungen stehen in `docs/adr/`. Weicht eine Umsetzung ab, wird das ADR im selben PR angepasst.
 - Vor jedem Merge ein Code Review (`code-review <PR>`), Befunde beheben oder begründet verwerfen. Den Worktree-Pfad immer im Argument nennen, sonst prüft der geforkte Review womöglich einen anderen Klon (Skill `orchestrate-issues`, Abschnitte 3 und 5).
 - Ursachen im Code belegen, bevor ein Fix gebaut wird.
+- **`git push` ist ein eigener Befehl.** Davor die Ausgabe von Checks, Merge und Screenshot-Lauf lesen; nie `… && git push` oder `…; git push` an Checks, Merge oder `cd` hängen (PRs #124–#126). Bei `| tail` den Exit-Code mit `set -o pipefail` oder `${PIPESTATUS[0]}` prüfen.

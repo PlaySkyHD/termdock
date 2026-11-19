@@ -28,6 +28,7 @@ import type { DecideDeps } from "./quit-flow.js";
 import { QuitPrompt } from "./quit-prompt.js";
 import {
   cleanStaleSockets,
+  describeError,
   isolatedCore,
   QuietWatch,
   SCENE_GROUPS,
@@ -432,9 +433,26 @@ async function runScreenshot(
   try {
     const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
     if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
-    await runScenario({ dir, bridge, watch, log, tmuxSocket, core: client, ...control }, groups);
+    // A failed group is repeated once (#127); the lines `retry <group>: <error>` also go into the summary.
+    const retried: string[] = [];
+    const scenarioLog = (text: string): void => {
+      if (text.startsWith("retry ")) retried.push(text);
+      log(text);
+    };
+    try {
+      await runScenario(
+        { dir, bridge, watch, log: scenarioLog, tmuxSocket, core: client, ...control },
+        groups,
+      );
+    } finally {
+      log(
+        retried.length === 0
+          ? "screenshot run: no retries"
+          : `screenshot run: retries\n  ${retried.join("\n  ")}`,
+      );
+    }
   } catch (error) {
-    log(`screenshot failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+    log(`screenshot failed: ${describeError(error, true)}`);
     exitCode = 1;
   }
   await finish();

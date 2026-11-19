@@ -1,6 +1,19 @@
 import type { PaneNode } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { layoutPanes, layoutWindow, takesInput } from "./pane-layout.js";
+import { claimsAfterRestart, layoutPanes, layoutWindow, takesInput } from "./pane-layout.js";
+
+describe("claimsAfterRestart (#130)", () => {
+  it("lets only a pane that existed before the restart take the writer", () => {
+    expect(claimsAfterRestart(0, 1)).toBe(true);
+    expect(claimsAfterRestart(2, 3)).toBe(true);
+  });
+
+  it("does not let a pane created after the restart, or the first start, take it", () => {
+    expect(claimsAfterRestart(undefined, 1)).toBe(false);
+    expect(claimsAfterRestart(1, 1)).toBe(false);
+    expect(claimsAfterRestart(undefined, 0)).toBe(false);
+  });
+});
 
 describe("takesInput (#66: the input moves only on request)", () => {
   const down = { x: 100, y: 50 };

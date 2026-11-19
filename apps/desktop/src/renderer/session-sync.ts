@@ -79,7 +79,10 @@ export function connectStore(
         return;
       }
       case "coreClosed":
-        store.markCoreClosed();
+        store.markCoreClosed(event.restarting);
+        return;
+      case "coreRestarted":
+        void reload();
         return;
       case "output":
       case "resized":
@@ -127,6 +130,30 @@ export function connectStore(
       } catch (error) {
         onError(error instanceof Error ? error.message : String(error));
       }
+    }
+  };
+
+  /**
+   * The main process is connected to a new core (#130): sessions, workspaces and status as it knows them. The new
+   * list and the next generation go into the store in one step, so the panes attach again with the new states. When
+   * the list fails, they attach with what the store has; a pane whose session is gone shows the attach error.
+   */
+  const reload = async (): Promise<void> => {
+    workspaceEventSeen = false;
+    void loadWorkspaces();
+    let sessions = store.getState().sessions;
+    try {
+      sessions = await api.listSessions();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    }
+    if (disposed) return;
+    store.coreRestarted(sessions);
+    try {
+      const status = await api.coreStatus();
+      if (!disposed) store.setCoreStatus(status);
+    } catch {
+      // As at the start: without the status the bar shows no hint.
     }
   };
 

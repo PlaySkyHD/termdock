@@ -74,7 +74,9 @@ export type BridgeCall =
   | { method: "updateProfile"; profileId: LaunchProfileId; change: ProfileChange }
   | { method: "deleteProfile"; profileId: LaunchProfileId }
   /** The WSL distributions (`wsl.distros`); an empty list names its reason. */
-  | { method: "listDistros" };
+  | { method: "listDistros" }
+  /** The button "Core neu starten" (#130): restarts the core after the limit of automatic restarts. */
+  | { method: "restartCore" };
 
 /** The fields of `profile.update` besides the id. */
 export type ProfileChange = Omit<ProfileUpdateParams, "profileId">;
@@ -122,6 +124,7 @@ export interface BridgeResults {
   updateProfile: LaunchProfile;
   deleteProfile: null;
   listDistros: WslDistrosResult;
+  restartCore: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -164,7 +167,13 @@ export type BridgeEvent =
   | { kind: "profilesChanged"; profiles: LaunchProfile[] }
   /** The menu entry "Einstellungen …" asks the focused window to open the settings dialog (#64). */
   | { kind: "openSettings" }
-  | { kind: "coreClosed" };
+  /**
+   * The connection to the core ended; every view of the window is gone with it. `restarting`: the main process
+   * starts the core again (#130), otherwise it stays disconnected until `restartCore`.
+   */
+  | { kind: "coreClosed"; restarting: boolean }
+  /** The main process is connected to a core again: the window lists anew and attaches its views again (#130). */
+  | { kind: "coreRestarted" };
 
 /**
  * API the preload exposes as `window.termdock`. Rejected promises carry the code in the message as
@@ -205,6 +214,8 @@ export interface TermdockApi {
   updateProfile(profileId: LaunchProfileId, change: ProfileChange): Promise<LaunchProfile>;
   deleteProfile(profileId: LaunchProfileId): Promise<void>;
   listDistros(): Promise<WslDistrosResult>;
+  /** Restarts the core once the automatic restarts gave up; does nothing while connected or restarting. */
+  restartCore(): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

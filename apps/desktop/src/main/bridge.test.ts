@@ -2,7 +2,7 @@ import { IpcError } from "@termdock/core";
 import type { EventListener } from "@termdock/core";
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
 import type { EventMap, EventName, LaunchProfile, Method, SessionInfo } from "@termdock/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BridgeEvent } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
@@ -441,7 +441,99 @@ describe("DesktopBridge events", () => {
     await core.close();
 
     expect(a.events).toEqual([]);
-    expect(b.events).toEqual([{ kind: "coreClosed" }]);
+    expect(b.events).toEqual([{ kind: "coreClosed", restarting: false }]);
+  });
+});
+
+describe("DesktopBridge core restart (#130)", () => {
+  function withRestarts(restarting: boolean, disconnected = false) {
+    const core = new FakeCore();
+    const restarts = { restarting: () => restarting, disconnected: () => disconnected, restart: vi.fn() };
+    const bridge = new DesktopBridge(core, undefined, undefined, restarts);
+    const a = new FakeWindow(1);
+    const b = new FakeWindow(2);
+    bridge.addWindow(a);
+    bridge.addWindow(b);
+    return { core, bridge, restarts, a, b };
+  }
+
+  it("tells every window whether the core is restarted when the connection ends", async () => {
+    const { core, a, b } = withRestarts(true);
+
+    await core.close();
+
+    expect(a.events).toEqual([{ kind: "coreClosed", restarting: true }]);
+    expect(b.events).toEqual([{ kind: "coreClosed", restarting: true }]);
+  });
+
+  it("forgets the views of the old core: their later calls do not reach the new one", async () => {
+    const { core, bridge, a } = withRestarts(true);
+    await attach(core, bridge, a, "s1", "v1");
+
+    await core.close();
+    core.requests.length = 0;
+    const detached = await bridge.call(a.id, { method: "detach", viewId: "v1" });
+    const typed = await bridge.call(a.id, { method: "input", viewId: "v1", data: "ls\r" });
+
+    expect(bridge.viewsOf(a.id)).toEqual([]);
+    expect(detached).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(typed).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(core.requests).toEqual([]);
+  });
+
+  it("sends output of the new core only to windows that attach again", async () => {
+    const { core, bridge, a, b } = withRestarts(true);
+    await attach(core, bridge, a, "s1", "v1");
+    await attach(core, bridge, b, "s1", "v2");
+    await core.close();
+    a.events.length = 0;
+    b.events.length = 0;
+
+    await attach(core, bridge, a, "s1", "v3");
+    core.emit("session.output", { sessionId: "s1", seq: 1 }, bytes("after"));
+
+    expect(a.events).toEqual([{ kind: "output", sessionId: "s1", seq: 1, data: bytes("after") }]);
+    expect(b.events).toEqual([]);
+  });
+
+  it("announces a restarted core and a given-up restart to every window", () => {
+    const { bridge, a, b } = withRestarts(false);
+
+    bridge.coreRestarted();
+    bridge.coreRestartFailed();
+    bridge.coreRestarting();
+
+    const expected = [
+      { kind: "coreRestarted" },
+      { kind: "coreClosed", restarting: false },
+      { kind: "coreClosed", restarting: true },
+    ];
+    expect(a.events).toEqual(expected);
+    expect(b.events).toEqual(expected);
+  });
+
+  it("tells a page that loads while the core is gone, and nothing while it is connected", () => {
+    const gone = withRestarts(false, true);
+    gone.bridge.windowLoaded(gone.a.id);
+    const back = withRestarts(false, false);
+    back.bridge.windowLoaded(back.a.id);
+    const restarting = withRestarts(true, true);
+    restarting.bridge.windowLoaded(restarting.a.id);
+
+    expect(gone.a.events).toEqual([{ kind: "coreClosed", restarting: false }]);
+    expect(gone.b.events).toEqual([]);
+    expect(back.a.events).toEqual([]);
+    expect(restarting.a.events).toEqual([{ kind: "coreClosed", restarting: true }]);
+  });
+
+  it("restarts the core on the button without sending anything to the core", async () => {
+    const { core, bridge, restarts, a } = withRestarts(false);
+
+    const result = await bridge.call(a.id, { method: "restartCore" });
+
+    expect(result).toEqual({ ok: true, value: null });
+    expect(restarts.restart).toHaveBeenCalledTimes(1);
+    expect(core.requests).toEqual([]);
   });
 });
 

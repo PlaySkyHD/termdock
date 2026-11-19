@@ -22,6 +22,8 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
+import { CoreSupervisor } from "./core-supervisor.js";
+import type { SupervisorState } from "./core-supervisor.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
@@ -117,23 +119,47 @@ async function main(): Promise<void> {
     app.on("second-instance", () => (windows.open ? windows.open() : (windows.queued += 1)));
 
   await app.whenReady();
-  let client: CoreClient;
   let corePid: number | undefined;
+  // The screenshot run holds a restart here to capture "Core startet neu …" (#130); otherwise always open.
+  let restartHold: Promise<void> | undefined;
+  // Set once the bridge exists; the supervisor tells the windows about restarts through it (#130).
+  let restartNotes: { last: SupervisorState; bridge?: DesktopBridge } = { last: "connecting" };
+  // Connects or starts the core, at the app start and after the connection ended (#130).
+  const supervisor = new CoreSupervisor<CoreClient>({
+    connect: async () => {
+      await restartHold;
+      return (
+        await connectOrStartCore({
+          connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
+          startCore: () => {
+            corePid = startDetachedCore({
+              execPath: process.execPath,
+              entry: coreEntryPath(),
+              // The core always gets the pipe this app connects to.
+              env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
+              onError: (error) => log(`core process: ${error.message}`),
+            });
+          },
+          sleep: (ms) => sleep(ms),
+          now: () => Date.now(),
+        })
+      ).client;
+    },
+    now: () => Date.now(),
+    sleep: (ms) => sleep(ms),
+    onState: (state) => {
+      const { last, bridge: notes } = restartNotes;
+      restartNotes = { ...restartNotes, last: state };
+      // The button after the limit: the windows show the restart again (a lost connection says it itself).
+      if (last === "failed" && state === "restarting") notes?.coreRestarting();
+      if (last !== "restarting") return;
+      if (state === "connected") notes?.coreRestarted();
+      else if (state === "failed") notes?.coreRestartFailed();
+    },
+    log,
+  });
   try {
-    ({ client } = await connectOrStartCore({
-      connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
-      startCore: () => {
-        corePid = startDetachedCore({
-          execPath: process.execPath,
-          entry: coreEntryPath(),
-          // The core always gets the pipe this app connects to.
-          env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
-          onError: (error) => log(`core process: ${error.message}`),
-        });
-      },
-      sleep: (ms) => sleep(ms),
-      now: () => Date.now(),
-    }));
+    await supervisor.start();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(message);
@@ -156,7 +182,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const port = withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
+  // The supervisor's port stays the same object across restarts of the core (#130).
+  const port = withRequestTimeout(supervisor.port, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
   // The layout of all windows (#29): the renderers report their parts, this process adds the geometry and saves.
   // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
   const newCoordinator = (): LayoutCoordinator => new LayoutCoordinator({ core: port, log });
@@ -167,7 +194,8 @@ async function main(): Promise<void> {
   };
   // The quit dialog (#60) is a view of a window: the prompt sends the question there and takes the answer back.
   const quitPrompt: QuitPrompt = new QuitPrompt((windowId, event): boolean => bridge.sendTo(windowId, event));
-  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt);
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor);
+  restartNotes = { ...restartNotes, bridge };
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
@@ -215,8 +243,12 @@ async function main(): Promise<void> {
     decide: (reason) => decideQuit(decideDeps(), reason),
     retainAll,
     flush: () => Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]).then(() => undefined),
-    shutdownCore: async () => void (await port.request("core.shutdown", { stopSessions: true })),
-    closeClient: () => client.close(),
+    // A quit never restarts the core (#130), also not when it ends on the shutdown.
+    shutdownCore: async () => {
+      supervisor.stop({ stopSessions: true });
+      await port.request("core.shutdown", { stopSessions: true });
+    },
+    closeClient: () => supervisor.close(),
     quit: () => app.quit(),
     log,
   });
@@ -256,7 +288,10 @@ async function main(): Promise<void> {
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     // A reload (Ctrl+R) or a crashed renderer takes its views with it; the core must not keep them, a dead
     // view could hold the writer. The first load has no views yet, so detaching there is a no-op.
-    contents.on("did-finish-load", () => quitPrompt.resend(id));
+    contents.on("did-finish-load", () => {
+      quitPrompt.resend(id);
+      bridge.windowLoaded(id); // a page that loads while the core is gone learns it at once (#130)
+    });
     contents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isSameDocument) {
         void bridge.resetWindow(id);
@@ -356,7 +391,7 @@ async function main(): Promise<void> {
   if (shotDir !== undefined) {
     // The scenario closes and reopens windows itself; that must not end the app.
     app.on("window-all-closed", () => {});
-    await runScreenshot(shotDir, shotScenes, client, bridge, {
+    await runScreenshot(shotDir, shotScenes, supervisor, bridge, {
       createWindow: (width, height) => {
         const win = createWindow(width, height);
         if (!win) throw new Error("Too many windows");
@@ -372,6 +407,19 @@ async function main(): Promise<void> {
       },
       flushLayout: () => coordinator.flush(),
       decideQuit: (win) => decideQuit(decideDeps(win), "user"),
+      // The restart scenes (#130): end the isolated core like a crash, and hold its restart for a picture.
+      killCore: () => {
+        if (corePid === undefined) throw new Error("The isolated core has no process id");
+        process.kill(corePid);
+      },
+      holdCoreRestart: () => {
+        let release!: () => void;
+        restartHold = new Promise<void>((resolve) => (release = resolve));
+        return () => {
+          restartHold = undefined;
+          release();
+        };
+      },
     });
     return;
   }
@@ -401,12 +449,14 @@ function isAlive(pid: number): boolean {
 async function runScreenshot(
   dir: string,
   groups: readonly SceneGroup[],
-  client: CoreClient,
+  supervisor: CoreSupervisor<CoreClient>,
   bridge: DesktopBridge,
   control: ScenarioControl,
 ) {
+  // The supervisor's port: the scenes may restart the core (#130).
+  const core = supervisor.port;
   const watch = new QuietWatch();
-  client.on("session.output", () => watch.saw());
+  core.on("session.output", () => watch.saw());
   let exitCode = 0;
   const guard = setTimeout(() => {
     log(`screenshot run took longer than ${SCREENSHOT_TIMEOUT_MS} ms`);
@@ -417,12 +467,14 @@ async function runScreenshot(
   const finish = (): Promise<void> =>
     (finishing ??= (async () => {
       clearTimeout(guard);
+      // No restart from here on (#130); the shutdown ends the core on purpose.
+      supervisor.stop({ stopSessions: true });
       // Ends every session of this core (tmux kill-session on the run's own socket) and the core itself.
-      await client.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
+      await core.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
         log(`core.shutdown: ${error instanceof Error ? error.message : String(error)}`);
         exitCode = 1;
       });
-      await client.close();
+      await supervisor.close();
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
       cleanTemp();
@@ -432,7 +484,7 @@ async function runScreenshot(
   try {
     const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
     if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
-    await runScenario({ dir, bridge, watch, log, tmuxSocket, core: client, ...control }, groups);
+    await runScenario({ dir, bridge, watch, log, tmuxSocket, core, ...control }, groups);
   } catch (error) {
     log(`screenshot failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     exitCode = 1;

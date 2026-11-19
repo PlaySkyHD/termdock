@@ -271,6 +271,50 @@ input {
   pointer-events: none;
 }
 
+/* The core is gone (#130): the terminal stays readable but dimmed, the note and the button sit in its middle. */
+.core-lost {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(30, 30, 30, 0.72);
+  font-family: var(--td-font-ui);
+}
+
+.core-lost__text {
+  margin: 0;
+  padding: 6px 14px;
+  border-radius: 3px;
+  background: var(--td-status-neutral);
+  color: var(--td-status-foreground);
+  font-size: 13px;
+}
+
+.core-lost[data-core="closed"] .core-lost__text {
+  background: var(--td-status-error);
+}
+
+/* "Core neu gestartet" (#130): a short note at the top of the tab area that closes itself and takes no mouse. */
+.core-toast {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 20;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 3px;
+  background: var(--td-state-running);
+  color: #1e1e1e;
+  font-family: var(--td-font-ui);
+  font-size: 13px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
 /* Above the bar of a reader, which lies at the same edge. */
 .pane:has(.reader-bar) .pane-warning {
   bottom: 36px;
@@ -797,6 +841,10 @@ input {
 .status-bar--closed,
 .status-bar--error {
   background: var(--td-status-error);
+}
+
+.status-bar--restarting {
+  background: var(--td-status-neutral);
 }
 
 .status-bar__item {

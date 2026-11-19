@@ -36,6 +36,27 @@ export function fitBounds(
   };
 }
 
+/** Distance of a screenshot window from the corner of its work area. */
+const SHOT_INSET = 40;
+
+/**
+ * Where screenshot windows open, so a run does not cover the screen the user is working on. `choice` is
+ * `TERMDOCK_SCREENSHOT_DISPLAY`: `primary`, or the 1-based number of a display in `displays` order; without it the
+ * first display that is not the primary one, and the primary one if there is no other.
+ */
+export function screenshotOrigin(
+  displays: readonly { workArea: WindowBounds; primary: boolean }[],
+  choice: string | undefined,
+): { x: number; y: number } {
+  const number = choice !== undefined && /^\d+$/.test(choice) ? Number(choice) : undefined;
+  const area =
+    (number !== undefined ? displays[number - 1] : undefined) ??
+    (choice === "primary" ? undefined : displays.find((display) => !display.primary)) ??
+    displays.find((display) => display.primary) ??
+    displays[0];
+  return { x: (area?.workArea.x ?? 0) + SHOT_INSET, y: (area?.workArea.y ?? 0) + SHOT_INSET };
+}
+
 /** Length of the overlap of two intervals (0 when they do not meet). */
 function overlap(start: number, length: number, otherStart: number, otherLength: number): number {
   return Math.max(0, Math.min(start + length, otherStart + otherLength) - Math.max(start, otherStart));

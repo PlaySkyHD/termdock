@@ -13,7 +13,8 @@
 // inside) is in the repository, or if the event has no `cwd`. Worktrees (`P:/GitHub/termdock-wt/…`) match
 // the same prefix as the checkout (`isRepoAbsolute`). `cp`, `mv` and `install` are checked by their
 // destination only (last non-option word, `-t <dir>`, `--target-directory`). A command the lexer cannot split cleanly
-// (unbalanced `$(`) is allowed. The guard prefers missing a case over a false alarm.
+// (unbalanced `$(`) is allowed. `git push` is blocked only if its directory (`-C` or the working
+// directory) is known to be the main checkout. The guard prefers missing a case over a false alarm.
 //
 // Known gaps (not detected):
 // - `cp`/`mv`/`install` with a destination outside the repository, even if `mv` removes a source inside it;
@@ -423,16 +424,33 @@ function stripPrefixes(words, ps) {
   return w;
 }
 
-function checkGit(args) {
+// The main checkout itself, not a worktree below `termdock-wt`.
+function isMainCheckout(path) {
+  return /^(?:p:|\/p|\/mnt\/p)\/github\/termdock(?:\/|$)/.test(posix.normalize(normalize(path)));
+}
+
+function checkGit(args, ctx) {
   let i = 0;
+  let dir = ctx.cwd;
   while (i < args.length && args[i].startsWith("-")) {
     const takesValue = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(
       args[i],
     );
+    if (args[i] === "-C" && args[i + 1] !== undefined) {
+      const target = args[i + 1];
+      if (isAbsolute(target)) dir = /^[$%~]/.test(target) ? null : posix.normalize(normalize(target));
+      else dir = dir ? posix.join(dir, normalize(target)) : null;
+    }
     i += takesValue ? 2 : 1;
   }
   const sub = args[i];
   const rest = args.slice(i + 1);
+  // Only a known directory counts; agents push from their worktree (issue #128).
+  if (sub === "push" && dir && isMainCheckout(dir))
+    return block(
+      "`git push` im Haupt-Checkout: Hier wird nicht gepusht, nur `gh pr merge` und `git pull --ff-only`.",
+      "Im eigenen Worktree pushen (`git -C P:/GitHub/termdock-wt/<branch> push -u origin <branch>`), als eigener Befehl nach gelesener Check-Ausgabe.",
+    );
   if (sub === "restore")
     return block(
       "`git restore` verwirft Änderungen ohne Rückweg.",
@@ -713,7 +731,7 @@ function checkWords(words, ctx, dialect, heredocs) {
       return null;
     }
     case "git":
-      return checkGit(args);
+      return checkGit(args, ctx);
     case "tmux":
       return checkTmux(args);
     case "wsl":

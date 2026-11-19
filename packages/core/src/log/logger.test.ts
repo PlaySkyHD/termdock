@@ -50,6 +50,18 @@ describe("truncateText", () => {
     expect(cut).toMatch(/ … \[truncated \d+ bytes\]$/);
   });
 
+  it("cuts after the redaction: a secret across the limit leaves no part behind", async () => {
+    const file = path.join(tempDir(), "core.log");
+    const log = createLogger({ file, now: fixedNow, env: {} });
+    // The token starts 20 bytes before the limit, so a cut before the redaction would keep "ghp_xxxxxxxxxxxxxxxx".
+    log.error(`${".".repeat(MAX_LINE_BYTES - 20)}ghp_${"x".repeat(36)} ${"z".repeat(100)}`);
+    await log.flush();
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain("«redacted»");
+    expect(text).not.toContain("ghp_");
+    expect(text).not.toContain("xxxx");
+  });
+
   it("applies to a logged line", async () => {
     const file = path.join(tempDir(), "core.log");
     const log = createLogger({ file, now: fixedNow, env: {} });

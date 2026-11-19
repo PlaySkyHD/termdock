@@ -53,6 +53,19 @@ export async function flushWithin(logger: Pick<Logger, "flush">, ms: number): Pr
   }
 }
 
+/**
+ * Removes a directory the logger writes into (the temp data directory of a screenshot run) only after the logger
+ * has written its queue; the other order would let the pending write create `logs/` again.
+ */
+export async function removeAfterFlush(
+  logger: Pick<Logger, "flush">,
+  ms: number,
+  remove: () => void,
+): Promise<void> {
+  await flushWithin(logger, ms);
+  remove();
+}
+
 /** The menu "Hilfe" with its one entry; `open` is called on a click. */
 export function helpMenuTemplate(open: () => void): {
   label: string;

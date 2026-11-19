@@ -22,7 +22,13 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
-import { createDesktopLogger, flushWithin, helpMenuTemplate, openLogFolder } from "./diagnostics.js";
+import {
+  createDesktopLogger,
+  flushWithin,
+  helpMenuTemplate,
+  openLogFolder,
+  removeAfterFlush,
+} from "./diagnostics.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
@@ -168,7 +174,7 @@ async function main(): Promise<void> {
       });
       log(`isolated core: ${outcome}`);
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
-      cleanTemp();
+      await cleanTemp();
     }
     await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(1);
@@ -473,8 +479,7 @@ async function runScreenshot(
       await client.close();
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
-      cleanTemp();
-      await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
+      await cleanTemp();
       app.exit(exitCode);
     })());
 
@@ -489,12 +494,19 @@ async function runScreenshot(
   await finish();
 }
 
-function cleanTemp(): void {
-  if (shotTemp === undefined) return;
-  try {
-    // The core may still hold its database for a moment after the shutdown answer.
-    rmSync(shotTemp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch (error) {
-    log(`could not remove ${shotTemp}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+/** Flushes the log first (it lives in the temp directory), then removes the directory; no log line after that. */
+async function cleanTemp(): Promise<void> {
+  const dir = shotTemp;
+  if (dir === undefined) return;
+  await removeAfterFlush(logger, LOG_FLUSH_TIMEOUT_MS, () => {
+    try {
+      // The core may still hold its database for a moment after the shutdown answer.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      // Not through the logger: its write would create the folder again.
+      process.stderr.write(
+        `termdock-desktop: could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  });
 }

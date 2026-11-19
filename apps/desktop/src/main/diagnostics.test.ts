@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import {
   helpMenuTemplate,
   openLogFolder,
   OPEN_LOG_FOLDER_LABEL,
+  removeAfterFlush,
 } from "./diagnostics.js";
 
 const dirs: string[] = [];
@@ -85,6 +86,27 @@ describe("flushWithin", () => {
 
   it("does not reject when the flush fails", async () => {
     await expect(flushWithin({ flush: () => Promise.reject(new Error("x")) }, 50)).resolves.toBeUndefined();
+  });
+});
+
+describe("removeAfterFlush", () => {
+  it("leaves nothing behind when lines are still queued at the end", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "termdock-desktop-log-"));
+    dirs.push(dir);
+    const log = createDesktopLogger(dir, { write: () => true });
+    log.error("last line before the end");
+    await removeAfterFlush(log, 1000, () => rmSync(dir, { recursive: true, force: true }));
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("shows the problem it prevents: removing first lets the queued write recreate the folder", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "termdock-desktop-log-"));
+    dirs.push(dir);
+    const log = createDesktopLogger(dir, { write: () => true });
+    log.error("last line before the end");
+    rmSync(dir, { recursive: true, force: true });
+    await log.flush();
+    expect(existsSync(dir)).toBe(true);
   });
 });
 

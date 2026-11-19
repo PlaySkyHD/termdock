@@ -111,15 +111,20 @@ async function resetRun({ core, closeAllWindows, log }: ScenarioDeps): Promise<v
     }
   };
   await attempt("windows", () => closeAllWindows(true));
-  const sessions = (await core.request("session.list", {})).result.sessions;
-  for (const { id } of sessions) {
-    await attempt(`kill ${id}`, () => core.request("session.kill", { sessionId: id }));
-    await attempt(`delete ${id}`, () => core.request("session.delete", { sessionId: id }));
-  }
-  for (const { id } of (await core.request("workspace.list", {})).result.workspaces)
-    await attempt(`workspace ${id}`, () => core.request("workspace.delete", { workspaceId: id }));
-  for (const { id } of (await core.request("profile.list", {})).result.profiles)
-    await attempt(`profile ${id}`, () => core.request("profile.delete", { profileId: id }));
+  await attempt("sessions", async () => {
+    for (const { id } of (await core.request("session.list", {})).result.sessions) {
+      await attempt(`kill ${id}`, () => core.request("session.kill", { sessionId: id }));
+      await attempt(`delete ${id}`, () => core.request("session.delete", { sessionId: id }));
+    }
+  });
+  await attempt("workspaces", async () => {
+    for (const { id } of (await core.request("workspace.list", {})).result.workspaces)
+      await attempt(`workspace ${id}`, () => core.request("workspace.delete", { workspaceId: id }));
+  });
+  await attempt("profiles", async () => {
+    for (const { id } of (await core.request("profile.list", {})).result.profiles)
+      await attempt(`profile ${id}`, () => core.request("profile.delete", { profileId: id }));
+  });
   await attempt("settings", () =>
     core.request("settings.set", { settings: { confirmQuitWhileRunning: true, quitAction: null } }),
   );
@@ -1022,7 +1027,7 @@ async function keymapScenes(
       current.some((row) => row.includes("echo zweite Zeile")),
     "the pasted lines",
     10_000,
-  ).catch(() => {}); // the checks below name what is missing
+  ).catch((error: unknown) => log(`paste wait: ${describeError(error)}`)); // the checks below fail the run
   const pasted = await rows();
   log(`after paste: ${JSON.stringify(pasted.filter((row) => row.trim() !== ""))}`);
   if (

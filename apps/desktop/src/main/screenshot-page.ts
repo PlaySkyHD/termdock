@@ -44,7 +44,7 @@ async function capturePageWithRetry(win: BrowserWindow): Promise<Electron.Native
       return await win.webContents.capturePage();
     } catch (error) {
       last = error;
-      await sleep(1_000);
+      if (attempt < 5) await sleep(1_000);
     }
   }
   throw new Error(`capturePage failed 5 times: ${describeError(last)}`);

@@ -54,10 +54,21 @@ describe("startDetachedCore", () => {
 });
 
 describe("coreEntryPath", () => {
-  it("points at the built termdock-core entry of the core package", () => {
-    const entry = coreEntryPath();
+  it("points at the built termdock-core entry of the core package when run from the repo", () => {
+    const entry = coreEntryPath({ packaged: false, resourcesPath: "C:\\electron\\resources" });
 
     expect(entry.replace(/\\/g, "/")).toMatch(/packages\/core\/dist\/bin\/termdock-core\.js$/);
     expect(existsSync(entry)).toBe(true);
+  });
+
+  it("points below app.asar.unpacked of the resources folder in the installed app", () => {
+    const resourcesPath = "C:\\Users\\u\\AppData\\Local\\Programs\\TermDock\\resources";
+
+    const entry = coreEntryPath({ packaged: true, resourcesPath });
+
+    // Outside of app.asar: the core runs as plain Node and loads node-pty from the unpacked folder.
+    expect(entry.replace(/\\/g, "/")).toBe(
+      "C:/Users/u/AppData/Local/Programs/TermDock/resources/app.asar.unpacked/node_modules/@termdock/core/dist/bin/termdock-core.js",
+    );
   });
 });

@@ -41,8 +41,31 @@ export function startDetachedCore(options: StartCoreOptions): number | undefined
   return child.pid;
 }
 
-/** `packages/core/dist/bin/termdock-core.js`, found through the package entry of `@termdock/core`. */
-export function coreEntryPath(): string {
+export interface CoreEntryOptions {
+  /** `app.isPackaged`: true in the installed app. */
+  packaged: boolean;
+  /** `process.resourcesPath` of the running Electron. */
+  resourcesPath: string;
+}
+
+/**
+ * The script the core runs. From the repo: `packages/core/dist/bin/termdock-core.js`, found through the package
+ * entry of `@termdock/core`. In the installed app (ADR 0007): the copy below `resources/app.asar.unpacked`, which
+ * electron-builder unpacks with node-pty, so the core needs nothing out of `app.asar`.
+ */
+export function coreEntryPath(options: CoreEntryOptions): string {
+  if (options.packaged) {
+    return path.join(
+      options.resourcesPath,
+      "app.asar.unpacked",
+      "node_modules",
+      "@termdock",
+      "core",
+      "dist",
+      "bin",
+      "termdock-core.js",
+    );
+  }
   const main = createRequire(import.meta.url).resolve("@termdock/core");
   return path.join(path.dirname(main), "bin", "termdock-core.js");
 }

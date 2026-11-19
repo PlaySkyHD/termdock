@@ -41,6 +41,8 @@ import {
 } from "./screenshot.js";
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
+import { runSmokeTest, smokeTestDataDir, smokeTestRequested } from "./smoke-test.js";
+import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { fitBounds, screenshotOrigin } from "./window-geometry.js";
 
@@ -51,8 +53,15 @@ const RENDERER = path.join(here, "..", "renderer", "index.html");
 const SCREENSHOT_TIMEOUT_MS = 480_000;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
+/** Upper bound of `--smoke-test` until the first answer: the core start plus `core.status` (reconcile). */
+const SMOKE_TIMEOUT_MS = 90_000;
 
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
+
+// One Electron profile (and single-instance lock) for the repo and the installed app (ADR 0007); the screenshot
+// and check modes below replace it with their own. The installed app gets its AppUserModelID for one taskbar icon.
+app.setPath("userData", appUserDataDir(app.getPath("appData")));
+if (app.isPackaged) app.setAppUserModelId(APP_USER_MODEL_ID);
 
 let shotDir: string | undefined;
 let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
@@ -97,11 +106,29 @@ if (shotDir !== undefined) {
   // tmux servers of aborted runs (sockets of ended processes); never rejects, `finish()` waits for it.
   staleSocketCleanup = cleanStaleSockets(process.pid, { ...wslSocketDeps(), isAlive, log });
 }
+
+// The check mode of the built app (ADR 0007) is isolated the same way: own pipe, tmux socket and Electron
+// profile, the data folder from TERMDOCK_DATA_DIR (never the productive one), no window.
+let smokeDataDir: string | undefined;
+if (badArguments === undefined && smokeTestRequested(process.argv)) {
+  try {
+    if (shotDir !== undefined) throw new Error("--smoke-test and --screenshot exclude each other");
+    smokeDataDir = smokeTestDataDir(process.env);
+    isolated = isolatedCore(smokeDataDir, process.pid, randomBytes(4).toString("hex"));
+    app.setPath("userData", path.join(smokeDataDir, "electron-profile"));
+  } catch (error) {
+    log(error instanceof Error ? error.message : String(error));
+    smokeDataDir = undefined;
+    badArguments = 2;
+  }
+}
 const pipePath = isolated?.pipePath ?? defaultPipeName();
 
 if (badArguments !== undefined) {
   // Without a directory the run would fall back to the productive core; stop before anything starts.
   app.exit(badArguments);
+} else if (smokeDataDir !== undefined) {
+  void smokeTest();
 } else if (shotDir === undefined && !app.requestSingleInstanceLock()) {
   // Another app runs; it opens a window in its own main process (see "second-instance").
   app.exit(0);
@@ -125,7 +152,7 @@ async function main(): Promise<void> {
       startCore: () => {
         corePid = startDetachedCore({
           execPath: process.execPath,
-          entry: coreEntryPath(),
+          entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
           // The core always gets the pipe this app connects to.
           env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
           onError: (error) => log(`core process: ${error.message}`),
@@ -397,6 +424,51 @@ async function main(): Promise<void> {
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
+}
+
+/** `--smoke-test` (ADR 0007): start the isolated core, `hello` and `core.status`, shut it down, exit 0 or 1. */
+async function smokeTest(): Promise<void> {
+  // Whatever throws, the process must end: a check that hangs would block the CI job until its timeout.
+  let code: 0 | 1 = 1;
+  try {
+    code = await smokeTestRun();
+  } catch (error) {
+    log(`smoke test failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  } finally {
+    app.exit(code);
+  }
+}
+
+async function smokeTestRun(): Promise<0 | 1> {
+  await app.whenReady();
+  let corePid: number | undefined;
+  return runSmokeTest({
+    connectOrStart: () =>
+      connectOrStartCore({
+        connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
+        startCore: () => {
+          corePid = startDetachedCore({
+            execPath: process.execPath,
+            entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+            env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
+            onError: (error) => log(`core process: ${error.message}`),
+          });
+        },
+        sleep: (ms) => sleep(ms),
+        now: () => Date.now(),
+      }),
+    stopCore: () =>
+      stopIsolatedCore(corePid, {
+        connect: () =>
+          connect(pipePath, { clientKind: "desktop", connectTimeoutMs: 2_000, requestTimeoutMs: 15_000 }),
+        kill: (pid) => process.kill(pid),
+        isAlive: (pid) => isAlive(pid),
+        sleep: (ms) => sleep(ms),
+      }),
+    coreAlive: () => corePid !== undefined && isAlive(corePid),
+    log,
+    timeoutMs: SMOKE_TIMEOUT_MS,
+  });
 }
 
 function isAlive(pid: number): boolean {

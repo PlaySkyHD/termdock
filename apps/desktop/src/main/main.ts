@@ -42,6 +42,7 @@ import {
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
 import { runSmokeTest, smokeTestDataDir, smokeTestRequested } from "./smoke-test.js";
+import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { fitBounds } from "./window-geometry.js";
 
@@ -56,6 +57,11 @@ const QUIT_SAVE_TIMEOUT_MS = 3_000;
 const SMOKE_TIMEOUT_MS = 90_000;
 
 const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
+
+// One Electron profile (and single-instance lock) for the repo and the installed app (ADR 0007); the screenshot
+// and check modes below replace it with their own. The installed app gets its AppUserModelID for one taskbar icon.
+app.setPath("userData", appUserDataDir(app.getPath("appData")));
+if (app.isPackaged) app.setAppUserModelId(APP_USER_MODEL_ID);
 
 let shotDir: string | undefined;
 let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
@@ -410,9 +416,21 @@ async function main(): Promise<void> {
 
 /** `--smoke-test` (ADR 0007): start the isolated core, `hello` and `core.status`, shut it down, exit 0 or 1. */
 async function smokeTest(): Promise<void> {
+  // Whatever throws, the process must end: a check that hangs would block the CI job until its timeout.
+  let code: 0 | 1 = 1;
+  try {
+    code = await smokeTestRun();
+  } catch (error) {
+    log(`smoke test failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  } finally {
+    app.exit(code);
+  }
+}
+
+async function smokeTestRun(): Promise<0 | 1> {
   await app.whenReady();
   let corePid: number | undefined;
-  const code = await runSmokeTest({
+  return runSmokeTest({
     connectOrStart: () =>
       connectOrStartCore({
         connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
@@ -439,7 +457,6 @@ async function smokeTest(): Promise<void> {
     log,
     timeoutMs: SMOKE_TIMEOUT_MS,
   });
-  app.exit(code);
 }
 
 function isAlive(pid: number): boolean {

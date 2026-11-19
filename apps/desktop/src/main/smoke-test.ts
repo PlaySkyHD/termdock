@@ -64,8 +64,20 @@ export interface SmokeTestDeps {
   timeoutMs: number;
 }
 
-/** Runs the check and returns the exit code: 0 when the started core answered and ended on shutdown, else 1. */
+/**
+ * Runs the check and returns the exit code: 0 when the started core answered and ended on shutdown, else 1. Never
+ * rejects: an error while closing or stopping also counts as 1, so the caller always gets to exit.
+ */
 export async function runSmokeTest(deps: SmokeTestDeps): Promise<0 | 1> {
+  try {
+    return await check(deps);
+  } catch (error) {
+    deps.log(`smoke test failed: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
+async function check(deps: SmokeTestDeps): Promise<0 | 1> {
   let timer: NodeJS.Timeout | undefined;
   let timedOut = false;
   const timeout = new Promise<never>((_, reject) => {

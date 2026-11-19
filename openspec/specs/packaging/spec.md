@@ -24,7 +24,7 @@ Legt fest, wie aus `apps/desktop` ein installierbares TermDock für Windows ents
 
 ### Requirement: Datenordner bleibt bei der Deinstallation
 
-Die Deinstallation über „Apps“ SHALL das Programm entfernen und `%APPDATA%\TermDock` (Datenbank, Verlauf, Einstellungen) stehen lassen. Installer und Deinstaller MUST das auf ihrer Willkommensseite sagen, ebenso dass sie ein laufendes TermDock samt Core im Hintergrund beenden und laufende Sessions dabei enden können.
+Die Deinstallation über „Apps“ SHALL das Programm entfernen und `%APPDATA%\TermDock` (Datenbank, Verlauf, Einstellungen) stehen lassen. Installer und Deinstaller MUST das auf ihrer Willkommensseite sagen, ebenso dass sie ein laufendes TermDock samt Core im Hintergrund beenden und laufende WSL-Sessions dabei in der Regel enden.
 
 #### Scenario: Deinstallation
 
@@ -49,6 +49,22 @@ Im Paket SHALL der Main den Core mit `process.execPath` und `ELECTRON_RUN_AS_NOD
 - **GIVEN** `coreEntryPath({ packaged: false, resourcesPath })`
 - **WHEN** der Main den Core-Einstieg bestimmt
 - **THEN** ist es die gebaute Datei `packages/core/dist/bin/termdock-core.js`
+
+### Requirement: Electron-Profil und Taskleiste
+
+Der Main SHALL `userData` ausdrücklich auf `%APPDATA%\@termdock\desktop` setzen, aus dem Repo und im Paket gleich, damit beide dieselbe Einzelinstanz-Sperre nutzen und nie zwei Mains auf einem Core laufen. Screenshot- und Prüfmodus ersetzen es weiter durch ihr eigenes Profil. Im Paket MUST der Main die AppUserModelID `io.github.playskyhd.termdock` setzen, gleich der `appId` des Installers.
+
+#### Scenario: Installierte App neben laufender Repo-App
+
+- **GIVEN** eine aus dem Repo gestartete App läuft
+- **WHEN** der Benutzer die installierte App startet
+- **THEN** übergibt sie an den laufenden Main und öffnet dort ein Fenster, statt einen zweiten Main zu starten
+
+#### Scenario: Profilordner und ID
+
+- **GIVEN** `appUserDataDir(%APPDATA%)` und `APP_USER_MODEL_ID`
+- **WHEN** der Test sie prüft
+- **THEN** ist der Ordner `%APPDATA%\@termdock\desktop` und die ID gleich der `appId` aus `electron-builder.json`
 
 ### Requirement: Prüfmodus der gebauten App
 

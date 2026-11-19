@@ -89,6 +89,25 @@ describe("runSmokeTest", () => {
     expect(d.stopCore).not.toHaveBeenCalled();
   });
 
+  it("fails instead of rejecting when closing or stopping throws", async () => {
+    const failing = vi.fn(async () => {
+      throw new Error("pipe broke");
+    });
+
+    await expect(runSmokeTest(deps({ stopCore: failing }))).resolves.toBe(1);
+    await expect(
+      runSmokeTest(
+        deps({
+          connectOrStart: async () => ({
+            client: { close: failing },
+            started: true,
+            status: { backendUnavailable: [] },
+          }),
+        }),
+      ),
+    ).resolves.toBe(1);
+  });
+
   it("fails when the core had to be killed or is still running", async () => {
     await expect(runSmokeTest(deps({ stopCore: async () => "killed" }))).resolves.toBe(1);
     await expect(runSmokeTest(deps({ coreAlive: () => true }))).resolves.toBe(1);

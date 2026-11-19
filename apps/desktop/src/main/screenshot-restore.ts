@@ -148,7 +148,9 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
 
   // --- Window 1: three tabs, one of them split, sidebar hidden ----------------------------------------
   const first = createWindow(1000, 640);
-  first.setBounds({ x: 40, y: 40, width: 1000, height: 640 });
+  // Relative to where the window opened, which is the screen the run uses (TERMDOCK_SCREENSHOT_DISPLAY).
+  const origin = first.getBounds();
+  first.setBounds({ x: origin.x, y: origin.y, width: 1000, height: 640 });
   await waitFor(
     first,
     `document.querySelectorAll('[data-session-name]').length >= 9`,
@@ -165,7 +167,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
 
   // --- Window 2: a split with the session that dies later, a plain tab, an exited session ------------------
   const second = createWindow(900, 600);
-  second.setBounds({ x: 120, y: 100, width: 900, height: 600 });
+  second.setBounds({ x: origin.x + 80, y: origin.y + 60, width: 900, height: 600 });
   await waitFor(
     second,
     `document.querySelectorAll('[data-session-name]').length >= 9`,

@@ -4,7 +4,8 @@
 // (clicks through `webContents.executeJavaScript`, `data-` attributes of the sidebar) and the sessions through the
 // bridge, so what is captured is what the app shows. Needs Electron, WSL and the isolated core; no unit test.
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { SessionInfo } from "@termdock/protocol";
@@ -102,7 +103,7 @@ export async function runScenario(
  * workspace, no profile and the quit settings as the core starts. A step that fails is logged; the repeat of the
  * group then shows whether it mattered.
  */
-async function resetRun({ core, closeAllWindows, log }: ScenarioDeps): Promise<void> {
+async function resetRun({ core, closeAllWindows, log, dir }: ScenarioDeps): Promise<void> {
   const attempt = async (what: string, action: () => Promise<unknown>): Promise<void> => {
     try {
       await action();
@@ -110,6 +111,14 @@ async function resetRun({ core, closeAllWindows, log }: ScenarioDeps): Promise<v
       log(`reset ${what}: ${describeError(error)}`);
     }
   };
+  // Pictures of the failed first try (`failed-*.png`) move to `<dir>/retry/`, so an upload of `<dir>` after a
+  // green repeat does not carry them; a failure of the repeat writes new ones next to the scenes.
+  await attempt("failed pictures", async () => {
+    const failed = readdirSync(dir).filter((file) => /^failed-.*\.png$/.test(file));
+    if (failed.length === 0) return;
+    mkdirSync(path.join(dir, "retry"), { recursive: true });
+    for (const file of failed) renameSync(path.join(dir, file), path.join(dir, "retry", file));
+  });
   await attempt("windows", () => closeAllWindows(true));
   await attempt("sessions", async () => {
     for (const { id } of (await core.request("session.list", {})).result.sessions) {
@@ -487,24 +496,24 @@ async function splitScenes(
       await type(name, "PS1='$ '; clear\r");
       await sleep(600);
     }
-    const answers = (): Promise<number> => sttyAnswers(name);
-    const before = command.includes("stty size") ? await answers() : undefined;
+    const before = command.includes("stty size") ? (await sttyScreen(name)).text : undefined;
     await type(name, `${command}\r`);
     // A timeout fails the run: a picture of a half-drawn screen must not pass.
     await watch.quiet(800, 15_000);
     await sleep(300);
     // Under load the answer can reach the drawn rows after the output paused, or the input went in before the
-    // shell was ready: wait until a new answer stands there and send the (harmless) command again at 8 s.
+    // shell was ready: wait until the screen changed and ends in an answer and the prompt (so the answer is new,
+    // however many older ones scrolled away), and send the (harmless) command again at 8 s.
     if (before !== undefined) {
       const start = Date.now();
       let resent = false;
-      let now = await answers();
-      while (now <= before) {
+      let now = await sttyScreen(name);
+      while (!now.answered || now.text === before) {
         if (Date.now() - start > 20_000) {
           await capture(win, "failed-no-stty-answer.png").catch(() => {});
           const rows = (await panes()).map((pane) => pane.rows.filter((row) => row.trim() !== "").slice(-4));
           throw new Error(
-            `no new stty answer in ${name} within 20 s (${now} answers on screen, had ${before}); last rows per pane: ${JSON.stringify(rows)}`,
+            `no new stty answer in ${name} within 20 s (answered: ${now.answered}, screen changed: ${now.text !== before}); last rows per pane: ${JSON.stringify(rows)}`,
           );
         }
         if (!resent && Date.now() - start > 8_000) {
@@ -512,14 +521,19 @@ async function splitScenes(
           await type(name, `${command}\r`);
         }
         await sleep(200);
-        now = await answers();
+        now = await sttyScreen(name);
       }
     }
   };
-  /** How many `stty size` answers (`rows cols`) the pane of the session shows. */
-  const sttyAnswers = async (name: string): Promise<number> => {
+  /**
+   * The screen of the session's pane and whether it ends in an `stty size` answer followed by the bare prompt
+   * (`$`). That shape does not depend on how many older answers are still on screen, so scrolling cannot hide it.
+   */
+  const sttyScreen = async (name: string): Promise<{ text: string; answered: boolean }> => {
     const pane = (await panes()).find((each) => each.sessionId === session(name).id);
-    return pane?.rows.filter((row) => /^\d+ \d+$/.test(row.trim())).length ?? 0;
+    const rows = (pane?.rows ?? []).map((row) => row.trim()).filter((row) => row !== "");
+    const answered = rows.at(-1) === "$" && /^\d+ \d+$/.test(rows.at(-2) ?? "");
+    return { text: rows.join("\n"), answered };
   };
 
   /** Clicks with real mouse events of the window (so pointer capture and focus behave as for a user). */

@@ -41,7 +41,11 @@ async function capturePageWithRetry(win: BrowserWindow): Promise<Electron.Native
   let last: unknown;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      return await win.webContents.capturePage();
+      const image = await win.webContents.capturePage();
+      // Not a line starting with `retry `: that prefix is for repeated scene groups (the run summary).
+      if (last !== undefined)
+        console.error(`termdock-desktop: capturePage attempt ${attempt} after: ${describeError(last)}`);
+      return image;
     } catch (error) {
       last = error;
       if (attempt < 5) await sleep(1_000);

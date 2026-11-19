@@ -54,6 +54,17 @@ export type { SettingsRepository } from "./storage/settings-repository.js";
 export { InMemoryWorkspaceRepository, SqliteWorkspaceRepository } from "./storage/workspace-repository.js";
 export type { WorkspaceRepository } from "./storage/workspace-repository.js";
 
+// diagnostic logs
+export {
+  createLogger,
+  DEFAULT_LOG_FILES,
+  DEFAULT_LOG_MAX_BYTES,
+  logDir,
+  redact,
+  REDACTED,
+} from "./log/index.js";
+export type { Logger, LoggerOptions, LogLevel } from "./log/index.js";
+
 // workspaces
 export { defaultCwd } from "./workspace/default-cwd.js";
 export type { DefaultCwdInput } from "./workspace/default-cwd.js";

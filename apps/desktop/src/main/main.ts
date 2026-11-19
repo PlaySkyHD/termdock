@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { connect, defaultPipeName } from "@termdock/core";
+import { connect, defaultPipeName, resolveDataDir } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
 import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
 import type { LayoutWindow } from "@termdock/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
 import type { WindowLayouts } from "./bridge.js";
@@ -22,6 +22,7 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
+import { createDesktopLogger, helpMenuTemplate, openLogFolder } from "./diagnostics.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
@@ -52,7 +53,9 @@ const SCREENSHOT_TIMEOUT_MS = 480_000;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
 
-const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
+// Stderr only until the data directory is known (a screenshot run uses its own); then `desktop.log` as well.
+let logger = createDesktopLogger(undefined);
+const log = (text: string): void => logger.error(text);
 
 let shotDir: string | undefined;
 let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
@@ -98,6 +101,17 @@ if (shotDir !== undefined) {
   staleSocketCleanup = cleanStaleSockets(process.pid, { ...wslSocketDeps(), isAlive, log });
 }
 const pipePath = isolated?.pipePath ?? defaultPipeName();
+/** Where `termdock.db` and `logs/` lie: the isolated one of a screenshot run, else as the core resolves it. */
+const dataDir: string | undefined = shotTemp ?? safeDataDir();
+logger = createDesktopLogger(dataDir);
+
+function safeDataDir(): string | undefined {
+  try {
+    return resolveDataDir();
+  } catch {
+    return undefined;
+  }
+}
 
 if (badArguments !== undefined) {
   // Without a directory the run would fall back to the productive core; stop before anything starts.
@@ -156,6 +170,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  client.onClose(() => log("coreClosed: the connection to the core ended"));
   const port = withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
   // The layout of all windows (#29): the renderers report their parts, this process adds the geometry and saves.
   // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
@@ -263,7 +278,8 @@ async function main(): Promise<void> {
         quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
       }
     });
-    contents.on("render-process-gone", () => {
+    contents.on("render-process-gone", (_event, details) => {
+      log(`render-process-gone: window ${id}, reason ${details.reason}, exit code ${details.exitCode}`);
       void bridge.resetWindow(id);
       quitPrompt.windowGone(id);
     });
@@ -350,6 +366,11 @@ async function main(): Promise<void> {
           { label: "Entwicklerwerkzeuge", role: "toggleDevTools" },
         ],
       },
+      // "Log-Ordner öffnen": the folder with core.log and desktop.log (spec diagnostics).
+      helpMenuTemplate(() => {
+        if (dataDir !== undefined)
+          void openLogFolder(dataDir, { openPath: (folder) => shell.openPath(folder), log });
+      }),
     ]),
   );
 

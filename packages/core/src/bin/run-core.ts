@@ -1,6 +1,7 @@
 // Start logic of the `termdock-core` process, separate from `process.exit` so that tests can run it.
 // Order (ADR 0001, design assemble-core): take the pipe, open the database, reconcile, register the autostart
 // sessions (issue #61), then serve requests.
+import path from "node:path";
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
 import type {
   LaunchProfile,
@@ -14,6 +15,7 @@ import type {
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
+import { createLogger, logDir } from "../log/index.js";
 import { runAutostart } from "../session/autostart.js";
 import type { AutostartResult } from "../session/autostart.js";
 import { CoreError } from "../session/errors.js";
@@ -33,6 +35,8 @@ import type { WorkspaceRepository } from "../storage/workspace-repository.js";
 import { ProfileService } from "../workspace/profile-service.js";
 import { WorkspaceService } from "../workspace/service.js";
 
+/** Name of the core's log file in `<dataDir>/logs/` (spec diagnostics). */
+export const CORE_LOG_FILE = "core.log";
 /** Exit code of a second core that finds the pipe taken (ADR 0001). */
 export const ALREADY_RUNNING_EXIT_CODE = 10;
 /** `wsl.distros` waits at most this long for `wsl.exe -l -v`; a desktop request waits 10 s (spec wsl-backend). */
@@ -41,7 +45,7 @@ const DISTRO_LIST_TIMEOUT_MS = 5_000;
 export interface RunCoreOptions {
   /** Defaults to the per-user pipe name. */
   pipePath?: string;
-  /** Directory of `termdock.db`; defaults to `TERMDOCK_DATA_DIR`, else `%APPDATA%\TermDock`. */
+  /** Directory of `termdock.db` and `logs/`; defaults to `TERMDOCK_DATA_DIR`, else `%APPDATA%\TermDock`. */
   dataDir?: string;
   /** tmux socket of the WSL backend; defaults to `termdock`. Tests use `termdock-test`. */
   tmuxSocket?: string;
@@ -189,8 +193,24 @@ class StorageProfileRepository implements ProfileRepository {
 
 export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResult> {
   const stderr = options.stderr ?? process.stderr;
-  // Only messages: stack traces stay out of logs, as they stay out of IPC answers.
-  const log = (text: string): void => void stderr.write(`termdock-core: ${text}\n`);
+  // The log folder lies in the data directory; if that cannot be found, the core still logs to stderr and
+  // then fails to start below with the same reason.
+  let dataDir: string | undefined;
+  let dataDirError: unknown;
+  try {
+    dataDir = options.dataDir ?? resolveDataDir();
+  } catch (error) {
+    dataDirError = error;
+  }
+  const logger = createLogger({
+    ...(dataDir === undefined ? {} : { file: path.join(logDir(dataDir), CORE_LOG_FILE) }),
+    source: "core",
+    // stderr stays as before, for tests and development.
+    mirror: (_line, _level, _source, text) => void stderr.write(`termdock-core: ${text}\n`),
+  });
+  // Messages only in the IPC answers and on stderr; a stack trace of an unexpected error goes into the file too.
+  const log = (text: string): void => logger.error(text);
+  const warn = (text: string): void => logger.warn(text);
   const ownBackends: WslBackend[] = options.backends
     ? []
     : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
@@ -212,6 +232,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     repository,
     defaultLoggingEnabled: () => getSettings().historyEnabledByDefault,
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
+    onRedrawError: (error, session) => log(`could not redraw session ${session.id}: ${messageOf(error)}`),
+    onListenerError: (error) => log(`registry listener failed: ${detailOf(error)}`),
     // Forgets the session in the store and deletes `history/<id>/` (path check in `historyDir`, ADR 0004).
     removeHistory: async (sessionId) => {
       if (!history) throw new Error("The history store is not open yet");
@@ -252,15 +274,18 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       ready,
       ...(options.pipePath === undefined ? {} : { pipePath: options.pipePath }),
       onShutdown: () => void close().then(() => options.onExit?.(0)),
-      onInternalError: (error) => log(`internal error: ${messageOf(error)}`),
+      onInternalError: (error) => log(`internal error: ${detailOf(error)}`),
     });
   } catch (error) {
     for (const backend of ownBackends) backend.dispose();
     if (error instanceof AlreadyRunningError) {
-      log(`already_running: ${error.message}`);
+      // Only on stderr: a second core must not create or touch the data directory (ADR 0001), and the log
+      // file belongs to the core that runs.
+      void stderr.write(`termdock-core: already_running: ${error.message}\n`);
       return { exitCode: ALREADY_RUNNING_EXIT_CODE, errorCode: "already_running" };
     }
-    log(`start failed: ${messageOf(error)}`);
+    log(`start failed: ${detailOf(error)}`);
+    await logger.flush();
     return { exitCode: 1, errorCode: "start_failed" };
   }
 
@@ -287,6 +312,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       // Queued output is written before the process may end.
       await history?.dispose();
       storage?.dispose();
+      // The process may end right after: what was logged is written first.
+      await logger.flush();
     })();
     return closing;
   };
@@ -302,7 +329,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
   let restore: RestoreResult;
   try {
-    const dataDir = options.dataDir ?? resolveDataDir();
+    if (dataDir === undefined) throw dataDirError;
     storage = openStorage({ dataDir, onLayoutInvalid: log, onProfileInvalid: log });
     history = new HistoryStore({
       dataDir,
@@ -328,14 +355,14 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     restore = outcome;
   } catch (error) {
     markFailed(new CoreError("internal", "Core failed to start"));
-    log(`start failed: ${messageOf(error)}`);
+    log(`start failed: ${detailOf(error)}`);
     // Let the waiting requests write their answers before the connections end.
     await new Promise((resolve) => setImmediate(resolve));
     await close();
     return { exitCode: 1, errorCode: "start_failed" };
   }
   for (const kind of restore.backendUnavailable) {
-    log(`backend_unavailable: ${kind} could not be reached, its sessions are Interrupted`);
+    warn(`backend_unavailable: ${kind} could not be reached, its sessions are Interrupted`);
   }
   // Autostart (issue #61): once per start, after the reconcile and before requests are let through, so every
   // client sees the autostart sessions in its first `session.list` and no request (profile change, shutdown)
@@ -362,4 +389,9 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "unknown";
+}
+
+/** Message and stack for the log file; the IPC answers never carry it. */
+function detailOf(error: unknown): string {
+  return error instanceof Error ? (error.stack ?? error.message) : "unknown";
 }

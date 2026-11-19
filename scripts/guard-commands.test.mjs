@@ -122,11 +122,24 @@ const blocked = [
   ["PowerShell", "cp P:\\Temp\\a.ts P:\\GitHub\\termdock\\a.ts"],
   ["PowerShell", "Copy-Item -Path P:\\Temp\\a.ts -Destination P:\\GitHub\\termdock\\a.ts"],
   ["PowerShell", "Move-Item P:\\Temp\\a.ts src\\a.ts", "P:\\GitHub\\termdock-wt\\feat\\x"],
+  // git push from the main checkout (issue #128)
+  ["Bash", "git push -u origin feat/x", "P:/GitHub/termdock"],
+  ["PowerShell", "git push origin HEAD", "P:\\GitHub\\termdock"],
+  ["Bash", "git -C P:/GitHub/termdock push"],
+  ["Bash", "git -C ../termdock push", "P:/GitHub/termdock-wt"],
+  ["Bash", "cd P:/GitHub/termdock && git push", "P:/Temp"],
+  ["Bash", "git worktree remove x || true; git push origin feat/x", "P:/GitHub/termdock/apps"],
 ];
 
 const allowed = [
   // git
   ["Bash", "git status"],
+  ["Bash", "git push -u origin feat/x", "P:/GitHub/termdock-wt/feat/x"],
+  ["Bash", "git -C P:/GitHub/termdock-wt/feat/x push -u origin feat/x", "P:/GitHub/termdock"],
+  ["Bash", "cd P:/GitHub/termdock-wt/feat/x && git push", "P:/GitHub/termdock"],
+  ["Bash", "git push"],
+  ["Bash", "git -C P:/GitHub/termdock pull --ff-only origin main", "P:/GitHub/termdock"],
+  ["Bash", 'git commit -m "no git push from the main checkout"', "P:/GitHub/termdock"],
   ["Bash", "git commit -F P:/Temp/td-issues/commit-43.txt"],
   ["Bash", 'git commit -m "fix: no git stash, git restore or wsl --shutdown here"'],
   ["Bash", 'git -c user.name=PlaySkyHD commit -m "a > b"'],

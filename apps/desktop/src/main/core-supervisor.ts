@@ -96,7 +96,7 @@ export class CoreSupervisor<C extends CorePort> {
   async start(): Promise<C> {
     try {
       const client = await this.deps.connect();
-      this.bind(client);
+      await this.bind(client);
       return client;
     } catch (error) {
       this.setState("failed");
@@ -136,16 +136,16 @@ export class CoreSupervisor<C extends CorePort> {
     return this.stateNow === "restarting" || this.stateNow === "failed";
   }
 
-  private bind(client: C): void {
+  /** Takes the connection; after `stop` it ends it instead (the returned promise, which `close` waits for). */
+  private async bind(client: C): Promise<void> {
     if (this.stateNow === "stopped") {
       // The app quits while the core came back: nobody wants this connection, and a quit that ends the sessions
       // ends them on this core as well.
-      const shutdown = this.shutdownLate
-        ? client.request("core.shutdown", { stopSessions: true }).then(() => undefined)
-        : Promise.resolve();
-      void shutdown
-        .catch((error: unknown) => this.deps.log(`core.shutdown after the restart: ${messageOf(error)}`))
-        .finally(() => void client.close().catch(() => {}));
+      if (this.shutdownLate)
+        await client
+          .request("core.shutdown", { stopSessions: true })
+          .catch((error: unknown) => this.deps.log(`core.shutdown after the restart: ${messageOf(error)}`));
+      await client.close().catch(() => {});
       return;
     }
     this.client = client;
@@ -197,7 +197,7 @@ export class CoreSupervisor<C extends CorePort> {
       this.restarts.push(this.deps.now());
       try {
         const client = await this.deps.connect();
-        this.bind(client);
+        await this.bind(client);
         return;
       } catch (error) {
         this.deps.log(`core restart failed: ${messageOf(error)}`);

@@ -1639,7 +1639,7 @@ Endet die Verbindung zum Core, während die App läuft und nicht beendet wird, S
 
 - **GIVEN** der Core startet neu oder der Main hat aufgegeben
 - **WHEN** ein Fenster neu lädt oder ein neues Fenster öffnet
-- **THEN** erhält es sofort `coreClosed` mit dem aktuellen `restarting`
+- **THEN** fragt es beim Start `coreConnection` und zeigt die Trennung mit dem aktuellen `restarting`, sofern noch kein neueres Event kam
 
 ### Requirement: Views nach dem Neustart neu anhängen
 

@@ -340,6 +340,7 @@ describe("CoreSupervisor", () => {
     const closing = supervisor.close();
     release();
     await closing;
+    // The fake clock ends the bounded wait of `close` at once; the late core still gets its shutdown.
     await flush();
 
     expect(clients[1]!.requests).toEqual(["core.shutdown"]);

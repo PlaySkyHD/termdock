@@ -18,8 +18,16 @@ function session(id: string, state: SessionState = "Detached"): SessionInfo {
 }
 
 /** Bridge double: the test decides when the list and the status are answered and emits events. */
-class FakeApi implements Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus"> {
+class FakeApi implements Pick<
+  TermdockApi,
+  "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus" | "coreConnection"
+> {
   private listener: ((event: BridgeEvent) => void) | undefined;
+  /** What `coreConnection` answers (#130). */
+  connection = { closed: false, restarting: false };
+  async coreConnection() {
+    return this.connection;
+  }
   /** What `listWorkspaces` answers; an `Error` makes it reject. The test may swap it between calls. */
   workspaces: Workspace[] | Error = [];
   workspaceListCalls = 0;
@@ -211,6 +219,44 @@ describe("connectStore", () => {
     expect(states(s)).toEqual([["a", "Interrupted"]]);
     expect(api.workspaceListCalls).toBe(workspaceCalls + 1);
     expect(s.getState().coreStatus).toEqual({ backendUnavailable: ["wsl"] });
+  });
+
+  it("learns at the start that the core is gone, unless an event said otherwise (#130)", async () => {
+    const gone = new FakeApi();
+    gone.connection = { closed: true, restarting: true };
+    const s = store();
+    connectStore(s, gone, () => {});
+    await settle();
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreRestarting: true });
+
+    const back = new FakeApi();
+    back.connection = { closed: true, restarting: false };
+    const t = store();
+    connectStore(t, back, () => {});
+    back.emit({ kind: "coreRestarted" });
+    await settle();
+    expect(t.getState().coreClosed).toBe(false);
+  });
+
+  it("applies events of the new core that arrive before its list on top of it (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a"), session("bb")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    api.emit({ kind: "stateChanged", sessionId: "a", state: "Interrupted" });
+    api.emit({ kind: "sessionCreated", session: session("ccc") });
+    api.answer([session("a"), session("bb")]);
+    await settle();
+
+    expect(states(s)).toEqual([
+      ["a", "Interrupted"],
+      ["bb", "Detached"],
+      ["ccc", "Detached"],
+    ]);
   });
 
   it("attaches again with what it has when the new list fails (#130)", async () => {

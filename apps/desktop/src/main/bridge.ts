@@ -147,15 +147,6 @@ export class DesktopBridge {
     this.toAll({ kind: "coreClosed", restarting: true });
   }
 
-  /**
-   * A page of the window has loaded (new window, reload). While the core is gone it learns that at once (#130);
-   * otherwise it would wait for an event that was sent before it existed.
-   */
-  windowLoaded(windowId: number): void {
-    if (this.restarts?.disconnected())
-      this.sendTo(windowId, { kind: "coreClosed", restarting: this.restarts.restarting() });
-  }
-
   addWindow(window: BridgeWindow): void {
     this.windows.set(window.id, window);
   }
@@ -320,6 +311,12 @@ export class DesktopBridge {
       case "restartCore":
         this.restarts?.restart();
         return null;
+      case "coreConnection":
+        // A page that loads while the core is gone would wait for an event sent before it listened (#130).
+        return {
+          closed: this.restarts?.disconnected() ?? false,
+          restarting: this.restarts?.restarting() ?? false,
+        };
     }
   }
 
@@ -517,6 +514,8 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "listDistros" };
     case "restartCore":
       return { method: "restartCore" };
+    case "coreConnection":
+      return { method: "coreConnection" };
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }

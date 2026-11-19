@@ -4,7 +4,7 @@ import type { SessionId, SessionInfo, SessionState, SessionWarning } from "@term
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import type { UiStore } from "./ui-store.js";
 
-type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus">;
+type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus" | "coreConnection">;
 
 interface StateChange {
   sessionId: SessionId;
@@ -51,6 +51,8 @@ export function connectStore(
    * after it, so a later answer of `listWorkspaces` (possibly computed before it) must not replace it.
    */
   let workspaceEventSeen = false;
+  /** An event about the core connection has arrived; it is newer than the answer of `coreConnection` (#130). */
+  let connectionEventSeen = false;
   const applyChange = (change: StateChange): void =>
     store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode, change.warnings);
 
@@ -79,9 +81,11 @@ export function connectStore(
         return;
       }
       case "coreClosed":
+        connectionEventSeen = true;
         store.markCoreClosed(event.restarting);
         return;
       case "coreRestarted":
+        connectionEventSeen = true;
         void reload();
         return;
       case "output":
@@ -133,6 +137,21 @@ export function connectStore(
     }
   };
 
+  /** Applies the events held while the list was out on top of it; from then on events go straight to the store. */
+  const applyHeld = (sessions: readonly SessionInfo[]): void => {
+    const known = new Set(sessions.map((session) => session.id));
+    for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
+    for (const change of changes) applyChange(change);
+    for (const edit of edits) {
+      if ("update" in edit) store.sessionUpdated(edit.update);
+      else store.sessionRemoved(edit.removed);
+    }
+    listed = true;
+    created.length = 0;
+    changes.length = 0;
+    edits.length = 0;
+  };
+
   /**
    * The main process is connected to a new core (#130): sessions, workspaces and status as it knows them. The new
    * list and the next generation go into the store in one step, so the panes attach again with the new states. When
@@ -140,6 +159,8 @@ export function connectStore(
    */
   const reload = async (): Promise<void> => {
     workspaceEventSeen = false;
+    // Events of the new core that arrive before its list are held and applied on top of it, as at the start.
+    listed = false;
     void loadWorkspaces();
     let sessions = store.getState().sessions;
     try {
@@ -149,6 +170,7 @@ export function connectStore(
     }
     if (disposed) return;
     store.coreRestarted(sessions);
+    applyHeld(sessions);
     try {
       const status = await api.coreStatus();
       if (!disposed) store.setCoreStatus(status);
@@ -158,6 +180,14 @@ export function connectStore(
   };
 
   const ready = (async () => {
+    // A page that loads while the core is gone (reload, new window) missed the event that said so (#130).
+    void api.coreConnection().then(
+      (connection) => {
+        if (!disposed && !connectionEventSeen && connection.closed)
+          store.markCoreClosed(connection.restarting);
+      },
+      () => {},
+    );
     // Alongside the sessions; `ready` does not wait for it (its retries take seconds).
     void loadWorkspaces();
     let sessions: SessionInfo[] = [];
@@ -172,17 +202,7 @@ export function connectStore(
     if (disposed) return;
     // From here on, to the end of this block, nothing can interleave: events go straight to the store after it.
     store.setSessions(sessions, loaded);
-    const known = new Set(sessions.map((session) => session.id));
-    for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
-    for (const change of changes) applyChange(change);
-    for (const edit of edits) {
-      if ("update" in edit) store.sessionUpdated(edit.update);
-      else store.sessionRemoved(edit.removed);
-    }
-    listed = true;
-    created.length = 0;
-    changes.length = 0;
-    edits.length = 0;
+    applyHeld(sessions);
     if (!loaded) void retryList();
     try {
       const status = await api.coreStatus();

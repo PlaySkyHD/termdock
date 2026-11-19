@@ -31,6 +31,7 @@ class FakeCoreApi implements Pick<
   | "listSessions"
   | "listWorkspaces"
   | "coreStatus"
+  | "coreConnection"
   | "attach"
   | "detach"
   | "input"
@@ -56,6 +57,9 @@ class FakeCoreApi implements Pick<
   }
   async coreStatus() {
     return { backendUnavailable: [] };
+  }
+  async coreConnection() {
+    return { closed: false, restarting: false };
   }
   async attach(sessionId: SessionId, size: TerminalSize): Promise<AttachedView> {
     const viewId = `v${++this.next}`;

@@ -206,6 +206,8 @@ async function main(): Promise<void> {
   /** Every open window stays in the layout with its current geometry (quit, end of the Windows session). */
   const retainAll = (): void => {
     quitting = true;
+    // The quit is decided: a core that ends from here on (logoff, crash during the save) is not restarted (#130).
+    supervisor.stop();
     for (const win of BrowserWindow.getAllWindows()) {
       const id = win.webContents.id;
       coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
@@ -300,10 +302,7 @@ async function main(): Promise<void> {
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     // A reload (Ctrl+R) or a crashed renderer takes its views with it; the core must not keep them, a dead
     // view could hold the writer. The first load has no views yet, so detaching there is a no-op.
-    contents.on("did-finish-load", () => {
-      quitPrompt.resend(id);
-      bridge.windowLoaded(id); // a page that loads while the core is gone learns it at once (#130)
-    });
+    contents.on("did-finish-load", () => quitPrompt.resend(id));
     contents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isSameDocument) {
         void bridge.resetWindow(id);
@@ -441,7 +440,10 @@ async function main(): Promise<void> {
   app.on("before-quit", (event) => quitFlow.beforeQuit(() => event.preventDefault()));
   // Closing the last window is intercepted in its `close` handler; this is the fallback for a window that went
   // away another way.
-  app.on("window-all-closed", () => quitFlow.windowsClosed());
+  app.on("window-all-closed", () => {
+    supervisor.stop(); // the app quits: no restart (#130)
+    quitFlow.windowsClosed();
+  });
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();

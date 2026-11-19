@@ -76,7 +76,16 @@ export type BridgeCall =
   /** The WSL distributions (`wsl.distros`); an empty list names its reason. */
   | { method: "listDistros" }
   /** The button "Core neu starten" (#130): restarts the core after the limit of automatic restarts. */
-  | { method: "restartCore" };
+  | { method: "restartCore" }
+  /** Whether the core is connected right now; a page that loads while it is gone asks this once (#130). */
+  | { method: "coreConnection" };
+
+/** The connection to the core as a window needs it (#130). */
+export interface CoreConnectionState {
+  /** No connection: the core restarts (`restarting`) or the restarts gave up. */
+  closed: boolean;
+  restarting: boolean;
+}
 
 /** The fields of `profile.update` besides the id. */
 export type ProfileChange = Omit<ProfileUpdateParams, "profileId">;
@@ -125,6 +134,7 @@ export interface BridgeResults {
   deleteProfile: null;
   listDistros: WslDistrosResult;
   restartCore: null;
+  coreConnection: CoreConnectionState;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -216,6 +226,7 @@ export interface TermdockApi {
   listDistros(): Promise<WslDistrosResult>;
   /** Restarts the core once the automatic restarts gave up; does nothing while connected or restarting. */
   restartCore(): Promise<void>;
+  coreConnection(): Promise<CoreConnectionState>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

@@ -512,18 +512,24 @@ describe("DesktopBridge core restart (#130)", () => {
     expect(b.events).toEqual(expected);
   });
 
-  it("tells a page that loads while the core is gone, and nothing while it is connected", () => {
+  it("answers a page that asks for the connection, without asking the core", async () => {
     const gone = withRestarts(false, true);
-    gone.bridge.windowLoaded(gone.a.id);
     const back = withRestarts(false, false);
-    back.bridge.windowLoaded(back.a.id);
     const restarting = withRestarts(true, true);
-    restarting.bridge.windowLoaded(restarting.a.id);
 
-    expect(gone.a.events).toEqual([{ kind: "coreClosed", restarting: false }]);
-    expect(gone.b.events).toEqual([]);
-    expect(back.a.events).toEqual([]);
-    expect(restarting.a.events).toEqual([{ kind: "coreClosed", restarting: true }]);
+    expect(await gone.bridge.call(1, { method: "coreConnection" })).toEqual({
+      ok: true,
+      value: { closed: true, restarting: false },
+    });
+    expect(await back.bridge.call(1, { method: "coreConnection" })).toEqual({
+      ok: true,
+      value: { closed: false, restarting: false },
+    });
+    expect(await restarting.bridge.call(1, { method: "coreConnection" })).toEqual({
+      ok: true,
+      value: { closed: true, restarting: true },
+    });
+    expect(gone.core.requests).toEqual([]);
   });
 
   it("restarts the core on the button without sending anything to the core", async () => {

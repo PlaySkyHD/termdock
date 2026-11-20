@@ -42,6 +42,9 @@ import type { TerminalController, ViewStatus } from "./terminal-controller.js";
 import { activeTab, MAX_PANES, MAX_TABS, paneCount, tabSessionId, UiStore } from "./ui-store.js";
 import type { SplitDirection } from "./ui-store.js";
 
+/** How long the note "Core neu gestartet" stays (#130). */
+const CORE_RESTARTED_NOTE_MS = 4_000;
+
 export function App({ api }: { api: TermdockApi }) {
   const store = useMemo(() => new UiStore({ newId: () => crypto.randomUUID() }), []);
   const state = useSyncExternalStore(store.subscribe, store.getState);
@@ -340,6 +343,19 @@ export function App({ api }: { api: TermdockApi }) {
   // The tab area: the bar of layout patterns opens at its top edge (#78).
   const tabPanels = useRef<HTMLDivElement>(null);
 
+  // Restart of the core (#130): the button once the automatic restarts gave up, and a short note after a restart.
+  const restartCore =
+    state.coreClosed && !state.coreRestarting
+      ? () => void api.restartCore().catch((error: unknown) => console.error(error))
+      : undefined;
+  const [coreRestartedShown, setCoreRestartedShown] = useState(false);
+  useEffect(() => {
+    if (state.coreGeneration === 0) return;
+    setCoreRestartedShown(true);
+    const timer = setTimeout(() => setCoreRestartedShown(false), CORE_RESTARTED_NOTE_MS);
+    return () => clearTimeout(timer);
+  }, [state.coreGeneration]);
+
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
   return (
@@ -432,13 +448,21 @@ export function App({ api }: { api: TermdockApi }) {
                 store.dismissWarnings(sessionId);
                 refocus();
               }}
+              coreGeneration={state.coreGeneration}
+              onRestartCore={restartCore}
             />
+            {coreRestartedShown && (
+              <div className="core-toast" role="status" data-hint="core-restarted">
+                Core neu gestartet
+              </div>
+            )}
           </div>
         </main>
         <StatusBar
           session={activeSession}
           view={activeView}
-          hints={coreHints(state.coreStatus, state.coreClosed)}
+          hints={coreHints(state.coreStatus, state.coreClosed, state.coreRestarting)}
+          onRestartCore={restartCore}
           notice={notice}
           // claimWriter never rejects; a refusal arrives as the error of the view status.
           onClaimWriter={() => {

@@ -110,6 +110,11 @@ describe("coreHints", () => {
       "WSL nicht erreichbar",
     ]);
   });
+
+  it("names a restart of the core instead of the lost connection (#130)", () => {
+    expect(coreHints(undefined, true, true)).toEqual(["Core startet neu …"]);
+    expect(coreHints(undefined, false, true)).toEqual([]);
+  });
 });
 
 describe("stateText", () => {

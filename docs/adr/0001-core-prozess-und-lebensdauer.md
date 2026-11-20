@@ -17,6 +17,8 @@ Das Konzept verlangt einen zentralen Core, von dem Fenster nur Clients sind (Kap
 - **UI schließen, Sessions beenden:** Der Client sendet `core.shutdown { stopSessions: true }`. Der Core beendet alle verwalteten Sessions kontrolliert (tmux `kill-session`, PTY beenden), schreibt ihren Zustand `Exited` und beendet sich.
 - **Core-Neustart oder Absturz:** Beim Start gleicht der Core die gespeicherte Registry mit den Backends ab (Reconcile, ADR 0005). WSL-Sessions, deren tmux-Session noch existiert, werden wieder angebunden. Windows-Sessions überleben das Ende des Core nicht und werden `Interrupted`.
 
+- **Logs (Issue #129):** Der Core läuft ohne Konsole und ohne Pipes zur App, stderr geht verloren. Er schreibt daher zusätzlich nach `<Datenordner>/logs/core.log`, der Desktop-Main-Prozess nach `<Datenordner>/logs/desktop.log` (Datenordner wie die Datenbank: `TERMDOCK_DATA_DIR` oder `%APPDATA%\TermDock`). Jede Datei rotiert ab 1 MiB auf `<name>.1.log`, je Prozess gibt es höchstens zwei Dateien. Schreiben ist asynchron und wirft nie. Ein gemeinsamer Filter (`redact`) ersetzt bekannte Geheimnisformen durch `«redacted»`, bevor eine Zeile geschrieben wird. Ein zweiter Core, der mit `already_running` endet, legt den Datenordner nicht an und schreibt nur nach stderr.
+
 ## Folgen
 
 - Windows-Shells haben eine schwächere Persistenzgarantie als WSL: Sie überleben das Schließen der UI, aber nicht das Ende des Core oder einen Windows-Neustart. Die UI zeigt das an (Abnahme 15).

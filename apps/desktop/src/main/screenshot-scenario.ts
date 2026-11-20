@@ -16,6 +16,7 @@ import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from
 import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { cwdScenes } from "./screenshot-cwd.js";
 import { captureWindow } from "./screenshot-page.js";
+import { restartScenes } from "./screenshot-restart.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
@@ -54,6 +55,10 @@ export interface ScenarioControl {
   flushLayout(): Promise<void>;
   /** The decision of a quit by the user, with the dialog in `win` (#60); `undefined` when the user cancels. */
   decideQuit(win: BrowserWindow): Promise<{ stopSessions: boolean } | undefined>;
+  /** Ends the isolated core process like a crash (#130); the supervisor of the main process restarts it. */
+  killCore(): void;
+  /** Holds the next restart of the core before it connects; the returned function lets it go on (#130). */
+  holdCoreRestart(): () => void;
 }
 
 export interface ScenarioDeps extends ScenarioControl {
@@ -308,6 +313,7 @@ async function playGroups(
   await play("search", () => searchScenes(deps));
   await play("settings", () => settingsScenes(deps));
   await play("cwd", () => cwdScenes(deps));
+  await play("restart", () => restartScenes(deps));
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------

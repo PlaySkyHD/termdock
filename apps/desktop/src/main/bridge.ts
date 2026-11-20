@@ -36,6 +36,16 @@ export interface QuitAnswers {
   ack(windowId: number, requestId: string): void;
 }
 
+/** The restart of the core as the bridge needs it (`CoreSupervisor` fits, #130). */
+export interface CoreRestarts {
+  /** True while the main process replaces a lost connection; read when the connection ends. */
+  restarting(): boolean;
+  /** True while there is no connection because the core restarts or the restarts gave up. */
+  disconnected(): boolean;
+  /** The button "Core neu starten"; does nothing unless the automatic restarts gave up. */
+  restart(): void;
+}
+
 /** A window as the bridge sees it; `id` is the `webContents` id. */
 export interface BridgeWindow {
   readonly id: number;
@@ -69,6 +79,7 @@ export class DesktopBridge {
     private readonly core: CorePort,
     private readonly layouts?: WindowLayouts,
     private readonly quit?: QuitAnswers,
+    private readonly restarts?: CoreRestarts,
   ) {
     this.subscriptions = [
       core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
@@ -111,8 +122,29 @@ export class DesktopBridge {
       // Settings dialog (#64): every window, also for changes of other clients.
       core.on("settings.changed", ({ settings }) => this.toAll({ kind: "settingsChanged", settings })),
       core.on("profile.changed", ({ profiles }) => this.toAll({ kind: "profilesChanged", profiles })),
-      core.onClose(() => this.toAll({ kind: "coreClosed" })),
+      core.onClose(() => {
+        // The views and their numbers belonged to the core that is gone; a new core knows none of them (#130).
+        this.views.clear();
+        this.attaching.clear();
+        this.outputSeq.clear();
+        this.toAll({ kind: "coreClosed", restarting: this.restarts?.restarting() ?? false });
+      }),
     ];
+  }
+
+  /** The main process is connected to a core again (#130): every window lists anew and attaches again. */
+  coreRestarted(): void {
+    this.toAll({ kind: "coreRestarted" });
+  }
+
+  /** The restarts gave up (#130): the windows stay disconnected and offer "Core neu starten". */
+  coreRestartFailed(): void {
+    this.toAll({ kind: "coreClosed", restarting: false });
+  }
+
+  /** "Core neu starten" started a restart after the restarts gave up (#130): the panes show it again. */
+  coreRestarting(): void {
+    this.toAll({ kind: "coreClosed", restarting: true });
   }
 
   addWindow(window: BridgeWindow): void {
@@ -276,6 +308,15 @@ export class DesktopBridge {
         return null;
       case "listDistros":
         return (await core.request("wsl.distros", {})).result;
+      case "restartCore":
+        this.restarts?.restart();
+        return null;
+      case "coreConnection":
+        // A page that loads while the core is gone would wait for an event sent before it listened (#130).
+        return {
+          closed: this.restarts?.disconnected() ?? false,
+          restarting: this.restarts?.restarting() ?? false,
+        };
     }
   }
 
@@ -307,7 +348,8 @@ export class DesktopBridge {
       const left = (counts.get(windowId) ?? 1) - 1;
       if (left > 0) counts.set(windowId, left);
       else counts.delete(windowId);
-      if (counts.size === 0) this.attaching.delete(sessionId);
+      // After the end of the connection a new attach may have its own counts already.
+      if (counts.size === 0 && this.attaching.get(sessionId) === counts) this.attaching.delete(sessionId);
     }
   }
 
@@ -470,6 +512,10 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "deleteProfile", profileId: text(raw["profileId"], "profileId") };
     case "listDistros":
       return { method: "listDistros" };
+    case "restartCore":
+      return { method: "restartCore" };
+    case "coreConnection":
+      return { method: "coreConnection" };
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }

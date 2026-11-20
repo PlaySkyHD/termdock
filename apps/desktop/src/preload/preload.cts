@@ -61,6 +61,8 @@ const api: TermdockApi = {
   updateProfile: (profileId, change) => call({ method: "updateProfile", profileId, change }),
   deleteProfile: async (profileId) => void (await call({ method: "deleteProfile", profileId })),
   listDistros: () => call({ method: "listDistros" }),
+  restartCore: async () => void (await call({ method: "restartCore" })),
+  coreConnection: () => call({ method: "coreConnection" }),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

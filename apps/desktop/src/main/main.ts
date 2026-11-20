@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { connect, defaultPipeName } from "@termdock/core";
+import { connect, defaultPipeName, resolveDataDir } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
 import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
 import type { LayoutWindow } from "@termdock/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
 import type { WindowLayouts } from "./bridge.js";
@@ -22,6 +22,15 @@ import {
   withRequestTimeout,
 } from "./core-connection.js";
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
+import { CoreSupervisor } from "./core-supervisor.js";
+import type { SupervisorState } from "./core-supervisor.js";
+import {
+  createDesktopLogger,
+  flushWithin,
+  helpMenuTemplate,
+  openLogFolder,
+  removeAfterFlush,
+} from "./diagnostics.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
@@ -58,10 +67,14 @@ const RENDERER = path.join(here, "..", "renderer", "index.html");
 const SCREENSHOT_TIMEOUT_MS = 480_000;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
+/** Longest wait for the log file before the app exits. */
+const LOG_FLUSH_TIMEOUT_MS = 1_000;
 /** Upper bound of `--smoke-test` until the first answer: the core start plus `core.status` (reconcile). */
 const SMOKE_TIMEOUT_MS = 90_000;
 
-const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
+// Stderr only until the data directory is known (a screenshot run uses its own); then `desktop.log` as well.
+let logger = createDesktopLogger(undefined);
+const log = (text: string): void => logger.error(text);
 
 // One Electron profile (and single-instance lock) for the repo and the installed app (ADR 0007); the screenshot
 // and check modes below replace it with their own. The installed app gets its AppUserModelID for one taskbar icon.
@@ -130,6 +143,17 @@ if (badArguments === undefined && smokeTestRequested(process.argv)) {
   }
 }
 const pipePath = isolated?.pipePath ?? defaultPipeName();
+/** Where `termdock.db` and `logs/` lie: the isolated one of a screenshot run, else as the core resolves it. */
+const dataDir: string | undefined = shotTemp ?? smokeDataDir ?? safeDataDir();
+logger = createDesktopLogger(dataDir);
+
+function safeDataDir(): string | undefined {
+  try {
+    return resolveDataDir();
+  } catch {
+    return undefined;
+  }
+}
 
 if (badArguments !== undefined) {
   // Without a directory the run would fall back to the productive core; stop before anything starts.
@@ -170,28 +194,53 @@ async function main(): Promise<void> {
     }
     if (!locked) {
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
-      cleanTemp();
+      await cleanTemp();
+      await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
       app.exit(1);
       return;
     }
   }
-  let client: CoreClient;
   let corePid: number | undefined;
+  // The screenshot run holds a restart here to capture "Core startet neu …" (#130); otherwise always open.
+  let restartHold: Promise<void> | undefined;
+  // Set once the bridge exists; the supervisor tells the windows about restarts through it (#130).
+  let restartNotes: { last: SupervisorState; bridge?: DesktopBridge } = { last: "connecting" };
+  // Connects or starts the core, at the app start and after the connection ended (#130).
+  const supervisor = new CoreSupervisor<CoreClient>({
+    connect: async () => {
+      await restartHold;
+      return (
+        await connectOrStartCore({
+          connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
+          startCore: () => {
+            corePid = startDetachedCore({
+              execPath: process.execPath,
+              entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+              // The core always gets the pipe this app connects to.
+              env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
+              onError: (error) => log(`core process: ${error.message}`),
+            });
+          },
+          sleep: (ms) => sleep(ms),
+          now: () => Date.now(),
+        })
+      ).client;
+    },
+    now: () => Date.now(),
+    sleep: (ms) => sleep(ms),
+    onState: (state) => {
+      const { last, bridge: notes } = restartNotes;
+      restartNotes = { ...restartNotes, last: state };
+      // The button after the limit: the windows show the restart again (a lost connection says it itself).
+      if (last === "failed" && state === "restarting") notes?.coreRestarting();
+      if (last !== "restarting") return;
+      if (state === "connected") notes?.coreRestarted();
+      else if (state === "failed") notes?.coreRestartFailed();
+    },
+    log,
+  });
   try {
-    ({ client } = await connectOrStartCore({
-      connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
-      startCore: () => {
-        corePid = startDetachedCore({
-          execPath: process.execPath,
-          entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
-          // The core always gets the pipe this app connects to.
-          env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
-          onError: (error) => log(`core process: ${error.message}`),
-        });
-      },
-      sleep: (ms) => sleep(ms),
-      now: () => Date.now(),
-    }));
+    await supervisor.start();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(message);
@@ -208,14 +257,16 @@ async function main(): Promise<void> {
       });
       log(`isolated core: ${outcome}`);
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
-      cleanTemp();
+      await cleanTemp();
       releaseScreenshotLock(screenshotLockPath, process.pid, nodeLockFs);
     }
+    await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(1);
     return;
   }
 
-  const port = withRequestTimeout(client, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
+  // The supervisor's port stays the same object across restarts of the core (#130).
+  const port = withRequestTimeout(supervisor.port, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUTS_MS);
   // The layout of all windows (#29): the renderers report their parts, this process adds the geometry and saves.
   // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
   const newCoordinator = (): LayoutCoordinator => new LayoutCoordinator({ core: port, log });
@@ -226,7 +277,8 @@ async function main(): Promise<void> {
   };
   // The quit dialog (#60) is a view of a window: the prompt sends the question there and takes the answer back.
   const quitPrompt: QuitPrompt = new QuitPrompt((windowId, event): boolean => bridge.sendTo(windowId, event));
-  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt);
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor);
+  restartNotes = { ...restartNotes, bridge };
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
@@ -237,6 +289,8 @@ async function main(): Promise<void> {
   /** Every open window stays in the layout with its current geometry (quit, end of the Windows session). */
   const retainAll = (): void => {
     quitting = true;
+    // The quit is decided: a core that ends from here on (logoff, crash during the save) is not restarted (#130).
+    supervisor.stop();
     for (const win of BrowserWindow.getAllWindows()) {
       const id = win.webContents.id;
       coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
@@ -274,8 +328,12 @@ async function main(): Promise<void> {
     decide: (reason) => decideQuit(decideDeps(), reason),
     retainAll,
     flush: () => Promise.race([coordinator.flush(), sleep(QUIT_SAVE_TIMEOUT_MS)]).then(() => undefined),
-    shutdownCore: async () => void (await port.request("core.shutdown", { stopSessions: true })),
-    closeClient: () => client.close(),
+    // A quit never restarts the core (#130), also not when it ends on the shutdown.
+    shutdownCore: async () => {
+      supervisor.stop({ stopSessions: true });
+      await port.request("core.shutdown", { stopSessions: true });
+    },
+    closeClient: () => supervisor.close(),
     quit: () => app.quit(),
     log,
   });
@@ -334,7 +392,8 @@ async function main(): Promise<void> {
         quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
       }
     });
-    contents.on("render-process-gone", () => {
+    contents.on("render-process-gone", (_event, details) => {
+      log(`render-process-gone: window ${id}, reason ${details.reason}, exit code ${details.exitCode}`);
       void bridge.resetWindow(id);
       quitPrompt.windowGone(id);
     });
@@ -421,13 +480,18 @@ async function main(): Promise<void> {
           { label: "Entwicklerwerkzeuge", role: "toggleDevTools" },
         ],
       },
+      // "Log-Ordner öffnen": the folder with core.log and desktop.log (spec diagnostics).
+      helpMenuTemplate(() => {
+        if (dataDir !== undefined)
+          void openLogFolder(dataDir, { openPath: (folder) => shell.openPath(folder), log });
+      }),
     ]),
   );
 
   if (shotDir !== undefined) {
     // The scenario closes and reopens windows itself; that must not end the app.
     app.on("window-all-closed", () => {});
-    await runScreenshot(shotDir, shotScenes, client, bridge, {
+    await runScreenshot(shotDir, shotScenes, supervisor, bridge, {
       createWindow: (width, height) => {
         const win = createWindow(width, height);
         if (!win) throw new Error("Too many windows");
@@ -443,6 +507,19 @@ async function main(): Promise<void> {
       },
       flushLayout: () => coordinator.flush(),
       decideQuit: (win) => decideQuit(decideDeps(win), "user"),
+      // The restart scenes (#130): end the isolated core like a crash, and hold its restart for a picture.
+      killCore: () => {
+        if (corePid === undefined) throw new Error("The isolated core has no process id");
+        process.kill(corePid);
+      },
+      holdCoreRestart: () => {
+        let release!: () => void;
+        restartHold = new Promise<void>((resolve) => (release = resolve));
+        return () => {
+          restartHold = undefined;
+          release();
+        };
+      },
     });
     return;
   }
@@ -452,7 +529,20 @@ async function main(): Promise<void> {
   app.on("before-quit", (event) => quitFlow.beforeQuit(() => event.preventDefault()));
   // Closing the last window is intercepted in its `close` handler; this is the fallback for a window that went
   // away another way.
-  app.on("window-all-closed", () => quitFlow.windowsClosed());
+  app.on("window-all-closed", () => {
+    supervisor.stop(); // the app quits: no restart (#130)
+    quitFlow.windowsClosed();
+  });
+  // The last log lines (the incident before the end) are written before the process ends.
+  let logFlushed = false;
+  app.on("will-quit", (event) => {
+    if (logFlushed) return;
+    event.preventDefault();
+    void flushWithin(logger, LOG_FLUSH_TIMEOUT_MS).then(() => {
+      logFlushed = true;
+      app.quit();
+    });
+  });
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
@@ -467,6 +557,7 @@ async function smokeTest(): Promise<void> {
   } catch (error) {
     log(`smoke test failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
   } finally {
+    await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(code);
   }
 }
@@ -517,12 +608,14 @@ function isAlive(pid: number): boolean {
 async function runScreenshot(
   dir: string,
   groups: readonly SceneGroup[],
-  client: CoreClient,
+  supervisor: CoreSupervisor<CoreClient>,
   bridge: DesktopBridge,
   control: ScenarioControl,
 ) {
+  // The supervisor's port: the scenes may restart the core (#130).
+  const core = supervisor.port;
   const watch = new QuietWatch();
-  client.on("session.output", () => watch.saw());
+  core.on("session.output", () => watch.saw());
   let exitCode = 0;
   const guard = setTimeout(() => {
     log(`screenshot run took longer than ${SCREENSHOT_TIMEOUT_MS} ms`);
@@ -533,15 +626,17 @@ async function runScreenshot(
   const finish = (): Promise<void> =>
     (finishing ??= (async () => {
       clearTimeout(guard);
+      // No restart from here on (#130); the shutdown ends the core on purpose.
+      supervisor.stop({ stopSessions: true });
       // Ends every session of this core (tmux kill-session on the run's own socket) and the core itself.
-      await client.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
+      await core.request("core.shutdown", { stopSessions: true }).catch((error: unknown) => {
         log(`core.shutdown: ${error instanceof Error ? error.message : String(error)}`);
         exitCode = 1;
       });
-      await client.close();
+      await supervisor.close();
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
-      cleanTemp();
+      await cleanTemp();
       releaseScreenshotLock(screenshotLockPath, process.pid, nodeLockFs);
       app.exit(exitCode);
     })());
@@ -556,10 +651,7 @@ async function runScreenshot(
       log(text);
     };
     try {
-      await runScenario(
-        { dir, bridge, watch, log: scenarioLog, tmuxSocket, core: client, ...control },
-        groups,
-      );
+      await runScenario({ dir, bridge, watch, log: scenarioLog, tmuxSocket, core, ...control }, groups);
     } finally {
       log(
         retried.length === 0
@@ -574,12 +666,19 @@ async function runScreenshot(
   await finish();
 }
 
-function cleanTemp(): void {
-  if (shotTemp === undefined) return;
-  try {
-    // The core may still hold its database for a moment after the shutdown answer.
-    rmSync(shotTemp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch (error) {
-    log(`could not remove ${shotTemp}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+/** Flushes the log first (it lives in the temp directory), then removes the directory; no log line after that. */
+async function cleanTemp(): Promise<void> {
+  const dir = shotTemp;
+  if (dir === undefined) return;
+  await removeAfterFlush(logger, LOG_FLUSH_TIMEOUT_MS, () => {
+    try {
+      // The core may still hold its database for a moment after the shutdown answer.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      // Not through the logger: its write would create the folder again.
+      process.stderr.write(
+        `termdock-desktop: could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  });
 }

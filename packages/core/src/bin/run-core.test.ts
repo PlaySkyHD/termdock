@@ -1,6 +1,6 @@
 // Assembly of the core process with FakeBackend and a real database (issue #13, spec core-ipc).
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -386,6 +386,38 @@ describe("runCore", () => {
     expect(stderr.lines.join("")).toMatch(/start failed: .+/);
     const next = await start({ pipePath, dataDir: tempDir(), backends: [new FakeBackend()] });
     expect(next.exitCode).toBe(0);
+  });
+
+  it("writes the start failure of a broken database to logs/core.log", async () => {
+    const dataDir = tempDir();
+    writeFileSync(join(dataDir, "termdock.db"), "this is not a database, just some text to break sqlite");
+
+    const failed = await start({ pipePath: uniquePipe(), dataDir, backends: [new FakeBackend()] });
+
+    expect(failed.errorCode).toBe("start_failed");
+    const log = readFileSync(join(dataDir, "logs", "core.log"), "utf8");
+    expect(log).toMatch(/^\d{4}-\d\d-\d\dT[\d:.]+Z error core start failed: .+/);
+    expect(log).toContain("file is not a database");
+  });
+
+  it("logs a backend that cannot be reached as a warning and leaves a second core's file alone", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const first = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    const c1 = await client(pipePath);
+    await c1.request("session.create", { name: "build", launch });
+    await c1.close();
+    await first.close?.();
+    const offline = new FakeBackend();
+    offline.isAvailable = false;
+    const running = await start({ pipePath, dataDir, backends: [offline] });
+    const second = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    await running.close?.();
+
+    expect(second.errorCode).toBe("already_running");
+    const log = readFileSync(join(dataDir, "logs", "core.log"), "utf8");
+    expect(log).toMatch(/ warn core backend_unavailable: wsl/);
+    expect(log).not.toContain("already_running");
   });
 
   it("tears down on a signal during a slow reconcile without changing the stored state", async () => {

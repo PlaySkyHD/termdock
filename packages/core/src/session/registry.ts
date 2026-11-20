@@ -44,6 +44,8 @@ export interface SessionRegistryOptions {
    * twice or miss some until the screen is drawn again. Defaults to `console.error`.
    */
   onRedrawError?: (error: unknown, session: SessionInfo) => void;
+  /** Called when an event listener throws; the other listeners still run. Defaults to `console.error`. */
+  onListenerError?: (error: unknown) => void;
   /**
    * Waits before each attempt to re-attach after a PTY ended without exit code; the length is the number of
    * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
@@ -237,6 +239,8 @@ interface ReattachRun {
 class ListenerSet<T> {
   private readonly listeners = new Set<Listener<T>>();
 
+  constructor(private readonly onError: (error: unknown) => void) {}
+
   add(listener: Listener<T>): Disposable {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
@@ -248,7 +252,7 @@ class ListenerSet<T> {
       try {
         listener(event);
       } catch (error) {
-        console.error("TermDock: registry listener failed:", error);
+        this.onError(error);
       }
     }
   }
@@ -271,11 +275,14 @@ export class SessionRegistry {
   private unavailableAtRestore: BackendKind[] = [];
   private disposed = false;
   private readonly timers = new Set<NodeJS.Timeout>();
-  private readonly stateListeners = new ListenerSet<StateChangeEvent>();
-  private readonly createdListeners = new ListenerSet<CreatedEvent>();
-  private readonly writerListeners = new ListenerSet<WriterChangedEvent>();
-  private readonly resizedListeners = new ListenerSet<ResizedEvent>();
-  private readonly outputListeners = new ListenerSet<OutputEvent>();
+  private readonly onListenerError: (error: unknown) => void;
+  private readonly stateListeners = new ListenerSet<StateChangeEvent>((error) => this.onListenerError(error));
+  private readonly createdListeners = new ListenerSet<CreatedEvent>((error) => this.onListenerError(error));
+  private readonly writerListeners = new ListenerSet<WriterChangedEvent>((error) =>
+    this.onListenerError(error),
+  );
+  private readonly resizedListeners = new ListenerSet<ResizedEvent>((error) => this.onListenerError(error));
+  private readonly outputListeners = new ListenerSet<OutputEvent>((error) => this.onListenerError(error));
 
   constructor(options: SessionRegistryOptions) {
     this.backends = options.backends;
@@ -289,6 +296,8 @@ export class SessionRegistry {
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
+    this.onListenerError =
+      options.onListenerError ?? ((error) => console.error("TermDock: registry listener failed:", error));
     this.onRedrawError =
       options.onRedrawError ??
       ((error, session) => console.error(`TermDock: could not redraw session ${session.id}`, error));

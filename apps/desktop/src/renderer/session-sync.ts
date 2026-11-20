@@ -4,7 +4,7 @@ import type { SessionId, SessionInfo, SessionState, SessionWarning } from "@term
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import type { UiStore } from "./ui-store.js";
 
-type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus">;
+type Api = Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus" | "coreConnection">;
 
 interface StateChange {
   sessionId: SessionId;
@@ -51,6 +51,13 @@ export function connectStore(
    * after it, so a later answer of `listWorkspaces` (possibly computed before it) must not replace it.
    */
   let workspaceEventSeen = false;
+  /** An event about the core connection has arrived; it is newer than the answer of `coreConnection` (#130). */
+  let connectionEventSeen = false;
+  /**
+   * Counts `coreClosed` and `coreRestarted` (#130). A `reload` whose count is no longer current belongs to a core
+   * that is gone again, or a newer `reload` runs: it must not write its list or switch the held events through.
+   */
+  let connectionEpoch = 0;
   const applyChange = (change: StateChange): void =>
     store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode, change.warnings);
 
@@ -79,7 +86,14 @@ export function connectStore(
         return;
       }
       case "coreClosed":
-        store.markCoreClosed();
+        connectionEventSeen = true;
+        connectionEpoch += 1;
+        store.markCoreClosed(event.restarting);
+        return;
+      case "coreRestarted":
+        connectionEventSeen = true;
+        connectionEpoch += 1;
+        void reload();
         return;
       case "output":
       case "resized":
@@ -130,7 +144,68 @@ export function connectStore(
     }
   };
 
+  /** Applies the events held while the list was out on top of it; from then on events go straight to the store. */
+  const applyHeld = (sessions: readonly SessionInfo[]): void => {
+    const known = new Set(sessions.map((session) => session.id));
+    for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
+    for (const change of changes) applyChange(change);
+    for (const edit of edits) {
+      if ("update" in edit) store.sessionUpdated(edit.update);
+      else store.sessionRemoved(edit.removed);
+    }
+    listed = true;
+    created.length = 0;
+    changes.length = 0;
+    edits.length = 0;
+  };
+
+  /**
+   * The main process is connected to a new core (#130): sessions, workspaces and status as it knows them. The new
+   * list and the next generation go into the store in one step, so the panes attach again with the new states. When
+   * the list fails, they attach with what the store has; a pane whose session is gone shows the attach error.
+   * When the connection ends meanwhile (`closed`, or a newer `coreClosed`/`coreRestarted`), it stops: the window
+   * keeps showing the end of the connection, or the newer `reload` takes over.
+   */
+  const reload = async (): Promise<void> => {
+    const epoch = connectionEpoch;
+    const current = (): boolean => !disposed && epoch === connectionEpoch;
+    workspaceEventSeen = false;
+    // Events of the new core that arrive before its list are held and applied on top of it, as at the start.
+    // Held events of an earlier core that never got its list are dropped.
+    listed = false;
+    created.length = 0;
+    changes.length = 0;
+    edits.length = 0;
+    void loadWorkspaces();
+    let sessions = store.getState().sessions;
+    try {
+      sessions = await api.listSessions();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      onError(message);
+      // The new core is gone again; the `coreClosed` of the main process says so (and whether it restarts).
+      if (message.startsWith("[closed]")) return;
+    }
+    if (!current()) return;
+    store.coreRestarted(sessions);
+    applyHeld(sessions);
+    try {
+      const status = await api.coreStatus();
+      if (current()) store.setCoreStatus(status);
+    } catch {
+      // As at the start: without the status the bar shows no hint.
+    }
+  };
+
   const ready = (async () => {
+    // A page that loads while the core is gone (reload, new window) missed the event that said so (#130).
+    void api.coreConnection().then(
+      (connection) => {
+        if (!disposed && !connectionEventSeen && connection.closed)
+          store.markCoreClosed(connection.restarting);
+      },
+      () => {},
+    );
     // Alongside the sessions; `ready` does not wait for it (its retries take seconds).
     void loadWorkspaces();
     let sessions: SessionInfo[] = [];
@@ -145,17 +220,7 @@ export function connectStore(
     if (disposed) return;
     // From here on, to the end of this block, nothing can interleave: events go straight to the store after it.
     store.setSessions(sessions, loaded);
-    const known = new Set(sessions.map((session) => session.id));
-    for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
-    for (const change of changes) applyChange(change);
-    for (const edit of edits) {
-      if ("update" in edit) store.sessionUpdated(edit.update);
-      else store.sessionRemoved(edit.removed);
-    }
-    listed = true;
-    created.length = 0;
-    changes.length = 0;
-    edits.length = 0;
+    applyHeld(sessions);
     if (!loaded) void retryList();
     try {
       const status = await api.coreStatus();

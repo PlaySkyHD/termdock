@@ -43,8 +43,12 @@ export interface UiState {
   readonly workspaces: readonly Workspace[];
   readonly window: LayoutWindow;
   readonly coreStatus: CoreStatusResult | undefined;
-  /** The connection to the core ended; final. */
+  /** The connection to the core ended; until `coreRestarted` (#130). */
   readonly coreClosed: boolean;
+  /** While `coreClosed`: the main process starts the core again; otherwise it waits for "Core neu starten". */
+  readonly coreRestarting: boolean;
+  /** Raised on every restart of the core: the panes mount and attach their views again (#130). */
+  readonly coreGeneration: number;
   /** Sessions whose warning hint the user closed in this window, until their next start (#113). */
   readonly dismissedWarnings: readonly SessionId[];
 }
@@ -68,6 +72,8 @@ export class UiStore {
       window: { id: options.newId(), sidebarVisible: true, tabs: [] },
       coreStatus: undefined,
       coreClosed: false,
+      coreRestarting: false,
+      coreGeneration: 0,
       dismissedWarnings: [],
     };
   }
@@ -184,8 +190,22 @@ export class UiStore {
     this.set({ coreStatus });
   }
 
-  markCoreClosed(): void {
-    this.set({ coreClosed: true });
+  markCoreClosed(restarting = false): void {
+    this.set({ coreClosed: true, coreRestarting: restarting });
+  }
+
+  /**
+   * The main process is connected to a core again (#130): the sessions as the new core lists them, and a new
+   * generation, so every pane attaches again (panes of sessions that did not survive show their placeholder).
+   */
+  coreRestarted(sessions: readonly SessionInfo[]): void {
+    this.set({
+      sessions: byCreation(sessions),
+      sessionsLoaded: true,
+      coreClosed: false,
+      coreRestarting: false,
+      coreGeneration: this.state.coreGeneration + 1,
+    });
   }
 
   // --- Tabs -----------------------------------------------------------------------------------

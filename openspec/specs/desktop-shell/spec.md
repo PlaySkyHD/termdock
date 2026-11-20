@@ -261,7 +261,7 @@ Eine lesende View SHALL ihre Rolle anzeigen und eine Schaltfläche „Eingabe ü
 
 - **GIVEN** die View schreibt
 - **WHEN** die Verbindung zum Core endet
-- **THEN** zeigt die View „Verbindung zum Core getrennt“ und sendet ab dann weder Eingabe noch Größe noch Schreibrecht, auch nach späteren Events
+- **THEN** zeigt die View „Core startet neu …“ oder, ohne Neustart, „Verbindung zum Core getrennt“ und sendet ab dann weder Eingabe noch Größe noch Schreibrecht, auch nach späteren Events; erst nach `coreRestarted` ersetzt eine neu angehängte View sie
 
 ### Requirement: Screenshot-Modus gegen isolierten Core
 
@@ -1528,7 +1528,7 @@ Der Screenshot-Modus SHALL mit echten Mausereignissen (`webContents.sendInputEve
 
 ### Requirement: Screenshot-Modus wählt Szenengruppen
 
-Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`) aufnehmen; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL der Lauf nach dem Zurücksetzen genau einmal wiederholen (Log `retry <gruppe>: <fehler>`, Zusammenfassung am Ende); scheitert auch das, endet er mit Code 1.
+Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
 
 #### Scenario: Eine Gruppe allein
 
@@ -1606,6 +1606,101 @@ Eine Szene des Screenshot-Modus mit Fehlermeldung, Menü oder Dialog SHALL vor d
 - **GIVEN** das Menü einer Szene liegt ganz im Fenster
 - **WHEN** die Szene aufnimmt
 - **THEN** wird das PNG geschrieben
+
+### Requirement: Core nach Absturz neu starten
+
+Endet die Verbindung zum Core, während die App läuft und nicht beendet wird, SHALL der Main den Core wie beim Start verbinden oder starten (`connectOrStartCore`, gleiche Wartezeiten). Er SHALL höchstens 3 Neustarts in 2 Minuten versuchen, auch gescheiterte zählen; danach bleibt er getrennt, bis der Nutzer „Core neu starten“ wählt, was den Zähler leert. Beim Beenden der App SHALL er nicht neu starten.
+
+#### Scenario: Core stirbt
+
+- **GIVEN** die App ist mit dem Core verbunden
+- **WHEN** der Core-Prozess endet
+- **THEN** startet der Main genau einen neuen Core, verbindet sich und meldet allen Fenstern `coreRestarted`
+
+#### Scenario: Ein anderer Core läuft schon
+
+- **GIVEN** nach dem Ende der Verbindung belegt schon ein anderer Core die Pipe
+- **WHEN** der Main neu verbindet
+- **THEN** verbindet er sich nur und startet keinen Core
+
+#### Scenario: Grenze erreicht
+
+- **GIVEN** der Main hat in den letzten 2 Minuten 3 Neustarts versucht
+- **WHEN** die Verbindung erneut endet
+- **THEN** startet er nicht neu, alle Fenster erhalten `coreClosed { restarting: false }` und zeigen „Verbindung zum Core getrennt“ mit „Core neu starten“
+
+#### Scenario: Knopf nach der Grenze
+
+- **GIVEN** der Main ist nach der Grenze getrennt
+- **WHEN** ein Fenster `restartCore` aufruft
+- **THEN** leert der Main den Zähler, alle Fenster erhalten `coreClosed { restarting: true }` und zeigen „Core startet neu …“, und er startet neu wie nach einem Absturz
+
+#### Scenario: Beenden
+
+- **GIVEN** der Nutzer beendet die App, mit oder ohne „Sessions beenden“
+- **WHEN** die Verbindung zum Core dabei endet
+- **THEN** startet der Main keinen Core
+
+#### Scenario: Beenden während des Neustarts
+
+- **GIVEN** ein Neustart verbindet sich gerade
+- **WHEN** der Nutzer die App mit „Sessions beenden“ beendet und der neue Core danach antwortet
+- **THEN** sendet der Main ihm `core.shutdown { stopSessions: true }` und schließt die Verbindung; ohne „Sessions beenden“ schließt er sie nur, und der Core läuft weiter
+
+#### Scenario: Fenster lädt während der Trennung
+
+- **GIVEN** der Core startet neu oder der Main hat aufgegeben
+- **WHEN** ein Fenster neu lädt oder ein neues Fenster öffnet
+- **THEN** fragt es beim Start `coreConnection` und zeigt die Trennung mit dem aktuellen `restarting`, sofern noch kein neueres Event kam
+
+### Requirement: Views nach dem Neustart neu anhängen
+
+Während des Neustarts SHALL jedes Pane „Core startet neu …“ zeigen und nichts an den Core senden; Eingaben gehen verloren. Nach `coreRestarted` SHALL jedes Fenster Sessions, Workspaces und Core-Status neu holen und jedes Pane seine View neu anhängen; das aktive Pane des Fensters mit dem Fokus übernimmt das Schreibrecht. Danach SHALL kurz „Core neu gestartet“ erscheinen und sich selbst schließen.
+
+#### Scenario: Wiederanbinden
+
+- **GIVEN** zwei Panes zeigen die WSL-Session `s1`, das linke ist aktiv, das Fenster hat den Fokus
+- **WHEN** der Core neu startet und `s1` beim Abgleich `Detached` bleibt
+- **THEN** hängen beide Panes neu an, zeigen die alte Ausgabe aus dem Snapshot, und genau das linke schreibt
+
+#### Scenario: Session ging verloren
+
+- **GIVEN** ein Pane zeigt eine Session, die der Abgleich `Interrupted` markiert
+- **WHEN** das Fenster nach `coreRestarted` neu lädt
+- **THEN** zeigt das Pane den Platzhalter mit `Interrupted` statt eines Terminals
+
+#### Scenario: Core endet während des Neuladens
+
+- **GIVEN** ein Fenster hat `coreRestarted` erhalten und wartet auf die Sessionliste des neuen Core
+- **WHEN** die Verbindung vor der Antwort wieder endet (`coreClosed`, oder die Liste scheitert mit `closed`) oder ein weiteres `coreRestarted` folgt
+- **THEN** übernimmt das Fenster diese Liste nicht und hängt keine Views neu an: Es zeigt weiter die getrennte Verbindung mit „Core neu starten“, oder nur das letzte Neuladen übernimmt seine Liste samt der bis dahin gehaltenen Events
+
+#### Scenario: Eingabe während des Neustarts
+
+- **GIVEN** der Core startet neu
+- **WHEN** der Nutzer im Pane tippt
+- **THEN** sendet die View nichts, und die Eingabe wird nicht nachgereicht
+
+#### Scenario: Views des alten Core
+
+- **GIVEN** ein Fenster hatte Views beim alten Core
+- **WHEN** die Verbindung endet
+- **THEN** vergisst der Main diese Views, und ihr späteres `detach` geht nicht an den neuen Core
+
+#### Scenario: Pane nach dem Neustart
+
+- **GIVEN** der Core ist neu gestartet, ein anderes Fenster schreibt in `s1`
+- **WHEN** der Nutzer im Fenster mit dem Fokus `s1` in einem neuen Pane öffnet und es aktiv macht
+- **THEN** hängt das neue Pane als Leser an; nur die Panes, die der Neustart neu anhängt, übernehmen das Schreibrecht
+
+### Requirement: Screenshot-Szenen des Core-Neustarts
+
+Die Screenshot-Gruppe `restart` SHALL den isolierten Core per Prozess-ID beenden, den Neustart anhalten, „Core startet neu …“ im Pane als `90-core-restarting.png` und nach dem Neustart „Core neu gestartet“ als `91-core-restarted.png` aufnehmen, beide mit Sichtbarkeitsselektor, und prüfen, dass die alte Ausgabe im Pane steht und das Pane schreibt.
+
+#### Scenario: Neustart im Bild
+
+- **WHEN** der Screenshot-Modus mit `--scenes restart` läuft
+- **THEN** entstehen beide Bilder, die Marke vor dem Absturz steht im Terminal, eine Eingabe danach erscheint, und der Lauf endet mit Code 0
 
 ### Requirement: Screenshot-Fenster auf einem Nebenmonitor
 

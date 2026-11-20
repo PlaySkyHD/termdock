@@ -7,6 +7,7 @@ import type { SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import type { KeyCommands } from "./keymap.js";
 import { takesInput } from "./pane-layout.js";
+import { CORE_CLOSED_TEXT, CORE_RESTARTING_TEXT } from "./session-display.js";
 import { TerminalController } from "./terminal-controller.js";
 import type { TerminalSurface, ViewStatus } from "./terminal-controller.js";
 import { NORMAL_FONT_SIZE, usableSize } from "./terminal-size.js";
@@ -104,6 +105,13 @@ export interface TerminalViewProps {
   commands: KeyCommands;
   /** Right click on the pane: paste (the window decides whether this view may). */
   onContextPaste?: () => void;
+  /**
+   * Mounted after a restart of the core (#130): once attached, the view takes the writer if it is the active pane
+   * and its window has the focus.
+   */
+  claimOnOpen?: boolean;
+  /** "Core neu starten" once the automatic restarts gave up (#130). */
+  onRestartCore?: () => void;
 }
 
 export function TerminalView({
@@ -115,6 +123,8 @@ export function TerminalView({
   onController,
   commands,
   onContextPaste,
+  claimOnOpen = false,
+  onRestartCore,
 }: TerminalViewProps) {
   const host = useRef<HTMLDivElement>(null);
   const pressed = useRef<{ x: number; y: number }>(undefined);
@@ -125,6 +135,8 @@ export function TerminalView({
   callbacks.current = { onStatus, onController, commands };
   const activeNow = useRef(active);
   activeNow.current = active;
+  const claimNow = useRef(claimOnOpen);
+  claimNow.current = claimOnOpen;
   const [status, setStatus] = useState<ViewStatus>();
 
   useEffect(() => {
@@ -140,6 +152,8 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(element);
     terminal.current = term;
+    // Read once per mount: only the view mounted by the restart claims, not a later one in the same pane.
+    const claim = claimNow.current;
     const current = new TerminalController(
       api,
       surfaceOf(term, fit, element),
@@ -152,6 +166,8 @@ export function TerminalView({
           applies: (command) => callbacks.current.commands.applies(command),
           run: (command) => callbacks.current.commands.run(command),
         },
+        // Only one window has the focus, and in it only one pane is active: one writer per session (#130).
+        claimOnOpen: () => claim && activeNow.current && document.hasFocus(),
       },
     );
     controller.current = current;
@@ -175,6 +191,7 @@ export function TerminalView({
     if (active) terminal.current?.focus();
   }, [active, focusSignal]);
 
+  const lost = status?.role === "restarting" || status?.role === "closed" ? status.role : undefined;
   // A reader shows the writer's grid, zoomed out to fit (#66) and clipped below the minimum font, dimmed around
   // it (ADR 0006). The frame lies on xterm's screen element and follows its size (grid, font, cell size).
   const reader = status?.role === "reader";
@@ -250,6 +267,22 @@ export function TerminalView({
           >
             Eingabe übernehmen
           </button>
+        </div>
+      )}
+      {/* The core is gone (#130): the last output stays visible below, the view sends nothing any more. */}
+      {lost && (
+        <div className="core-lost" role="status" data-core={lost}>
+          <p className="core-lost__text">{lost === "restarting" ? CORE_RESTARTING_TEXT : CORE_CLOSED_TEXT}</p>
+          {lost === "closed" && onRestartCore && (
+            <button
+              className="button button--primary"
+              type="button"
+              data-action="restart-core"
+              onClick={onRestartCore}
+            >
+              Core neu starten
+            </button>
+          )}
         </div>
       )}
     </div>

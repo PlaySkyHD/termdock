@@ -731,6 +731,31 @@ describe("UiStore core", () => {
 
     expect(store.getState().coreStatus).toEqual({ backendUnavailable: ["wsl"] });
     expect(store.getState().coreClosed).toBe(true);
+    expect(store.getState().coreRestarting).toBe(false);
+  });
+
+  it("takes the sessions of a restarted core and raises the generation in one step (#130)", () => {
+    const store = newStore();
+    store.setSessions([session("a"), session("b")], false);
+    store.openSession("a");
+    const tabs = store.getState().window.tabs;
+    store.markCoreClosed(true);
+    expect(store.getState()).toMatchObject({ coreClosed: true, coreRestarting: true, coreGeneration: 0 });
+    const seen: number[] = [];
+    store.subscribe(() => seen.push(store.getState().coreGeneration));
+
+    store.coreRestarted([{ ...session("a"), state: "Interrupted" }]);
+
+    expect(seen).toEqual([1]);
+    expect(store.getState()).toMatchObject({
+      coreClosed: false,
+      coreRestarting: false,
+      coreGeneration: 1,
+      sessionsLoaded: true,
+    });
+    expect(store.getState().sessions.map((each) => [each.id, each.state])).toEqual([["a", "Interrupted"]]);
+    // The window keeps its tabs and panes; only the views attach again.
+    expect(store.getState().window.tabs).toBe(tabs);
   });
 });
 

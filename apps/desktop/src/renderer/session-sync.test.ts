@@ -18,8 +18,16 @@ function session(id: string, state: SessionState = "Detached"): SessionInfo {
 }
 
 /** Bridge double: the test decides when the list and the status are answered and emits events. */
-class FakeApi implements Pick<TermdockApi, "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus"> {
+class FakeApi implements Pick<
+  TermdockApi,
+  "onEvent" | "listSessions" | "listWorkspaces" | "coreStatus" | "coreConnection"
+> {
   private listener: ((event: BridgeEvent) => void) | undefined;
+  /** What `coreConnection` answers (#130). */
+  connection = { closed: false, restarting: false };
+  async coreConnection() {
+    return this.connection;
+  }
   /** What `listWorkspaces` answers; an `Error` makes it reject. The test may swap it between calls. */
   workspaces: Workspace[] | Error = [];
   workspaceListCalls = 0;
@@ -61,6 +69,12 @@ class FakeApi implements Pick<TermdockApi, "onEvent" | "listSessions" | "listWor
   }
   fail(error: Error): void {
     this.failList?.(error);
+  }
+  /** Keeps the answer of the list that is out, so a later call cannot replace it. */
+  takeAnswer(): (sessions: SessionInfo[]) => void {
+    const answer = this.answerList;
+    if (!answer) throw new Error("no list is out");
+    return answer;
   }
 }
 
@@ -185,9 +199,151 @@ describe("connectStore", () => {
     const s = store();
     connectStore(s, api, () => {});
 
-    api.emit({ kind: "coreClosed" });
+    api.emit({ kind: "coreClosed", restarting: true });
 
     expect(s.getState().coreClosed).toBe(true);
+    expect(s.getState().coreRestarting).toBe(true);
+  });
+
+  it("lists sessions, workspaces and status anew after coreRestarted, then raises the generation (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a"), session("b")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+    const workspaceCalls = api.workspaceListCalls;
+    api.status = { backendUnavailable: ["wsl"] };
+
+    api.emit({ kind: "coreRestarted" });
+    // Until the new list is there the panes stay as they are.
+    expect(s.getState().coreGeneration).toBe(0);
+    api.answer([session("a", "Interrupted")]);
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: false, coreGeneration: 1 });
+    expect(states(s)).toEqual([["a", "Interrupted"]]);
+    expect(api.workspaceListCalls).toBe(workspaceCalls + 1);
+    expect(s.getState().coreStatus).toEqual({ backendUnavailable: ["wsl"] });
+  });
+
+  it("learns at the start that the core is gone, unless an event said otherwise (#130)", async () => {
+    const gone = new FakeApi();
+    gone.connection = { closed: true, restarting: true };
+    const s = store();
+    connectStore(s, gone, () => {});
+    await settle();
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreRestarting: true });
+
+    const back = new FakeApi();
+    back.connection = { closed: true, restarting: false };
+    const t = store();
+    connectStore(t, back, () => {});
+    back.emit({ kind: "coreRestarted" });
+    await settle();
+    expect(t.getState().coreClosed).toBe(false);
+  });
+
+  it("applies events of the new core that arrive before its list on top of it (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a"), session("bb")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    api.emit({ kind: "stateChanged", sessionId: "a", state: "Interrupted" });
+    api.emit({ kind: "sessionCreated", session: session("ccc") });
+    api.answer([session("a"), session("bb")]);
+    await settle();
+
+    expect(states(s)).toEqual([
+      ["a", "Interrupted"],
+      ["bb", "Detached"],
+      ["ccc", "Detached"],
+    ]);
+  });
+
+  it("attaches again with what it has when the new list fails (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const errors: string[] = [];
+    const connection = connectStore(s, api, (message) => errors.push(message));
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    api.fail(new Error("[timeout] no answer"));
+    await settle();
+
+    expect(errors).toEqual(["[timeout] no answer"]);
+    expect(s.getState()).toMatchObject({ coreClosed: false, coreGeneration: 1 });
+    expect(states(s)).toEqual([["a", "Detached"]]);
+  });
+
+  it("stays disconnected when the new core dies while its list is out (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    // The main process reports the end before the rejected list (limit reached: no restart follows).
+    api.emit({ kind: "coreClosed", restarting: false });
+    api.fail(new Error("[closed] Connection closed"));
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreRestarting: false, coreGeneration: 0 });
+  });
+
+  it("does not raise the generation when the list fails with closed before the event (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    api.fail(new Error("[closed] Connection closed"));
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreGeneration: 0 });
+  });
+
+  it("applies only the list and the held events of the latest of two overlapping reloads (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    const answerFirst = api.takeAnswer();
+    api.emit({ kind: "coreClosed", restarting: true });
+    api.emit({ kind: "coreRestarted" });
+    // An event of the latest core, held until its list.
+    api.emit({ kind: "stateChanged", sessionId: "bb", state: "Running" });
+    // The first, stale list arrives late: it must neither apply nor switch the events through to the store.
+    answerFirst([session("a", "Interrupted"), session("zzz")]);
+    await settle();
+    expect(s.getState().coreGeneration).toBe(0);
+    api.emit({ kind: "sessionCreated", session: session("ccc") });
+
+    api.answer([session("a"), session("bb")]);
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: false, coreGeneration: 1 });
+    expect(states(s)).toEqual([
+      ["a", "Detached"],
+      ["bb", "Running"],
+      ["ccc", "Detached"],
+    ]);
   });
 
   it("ignores output events", async () => {

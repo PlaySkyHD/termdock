@@ -53,6 +53,15 @@ export function takesInput(
   return Math.abs(up.x - down.x) <= CLICK_SLOP_PX && Math.abs(up.y - down.y) <= CLICK_SLOP_PX;
 }
 
+/**
+ * Whether the view a pane mounts now may take the writer after a restart of the core (#130): only a pane that was
+ * committed with an older generation, i.e. one that re-attaches because of the restart. A pane created afterwards
+ * (`last` undefined) or mounted again later in the same generation joins like any new view.
+ */
+export function claimsAfterRestart(last: number | undefined, generation: number): boolean {
+  return last !== undefined && last < generation;
+}
+
 export interface WindowPane extends PlacedPane {
   tabId: string;
   /** The pane's tab is the visible one. */

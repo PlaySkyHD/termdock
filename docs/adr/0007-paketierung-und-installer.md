@@ -26,6 +26,6 @@ Phase 4 des Konzepts (Kapitel 12) verlangt eine App, die sich ohne Repo und ohne
 
 ## Folgen
 
-- Ein Update oder eine Deinstallation beendet laufende `TermDock.exe`-Prozesse nach Rückfrage, auch den Core im Hintergrund, und zwar ohne `core.shutdown`. Mit dem Core endet sein WSL-Keepalive, und ohne `wsl.exe`-Prozess beendet WSL die Distro nach einigen Sekunden: Laufende WSL-Sessions enden dabei in der Regel. Der nächste Start gleicht ab (ADR 0005). Das zu lösen ist ein eigenes Issue.
+- Ein Update oder eine Deinstallation beendet laufende `TermDock.exe`-Prozesse nach Rückfrage, auch den Core im Hintergrund, und zwar ohne `core.shutdown`. Der WSL-Keepalive läuft losgelöst vom Core und liegt nicht unter `$INSTDIR` (`wsl.exe` in `System32`); er überlebt das Update und hält die Distro samt tmux-Sessions wach (ADR 0003, #140). Der nächste Start gleicht ab (ADR 0005), bindet die Sessions wieder an und übernimmt den Keepalive.
 - Ohne Signatur warnt SmartScreen. Signatur, Auto-Update (#136), Store, MSI und ARM64 sind nicht Teil dieser Entscheidung.
 - Der Bau lädt NSIS und 7-Zip aus den GitHub-Releases von electron-builder.

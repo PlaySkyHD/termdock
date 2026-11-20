@@ -77,7 +77,7 @@ export interface RunCoreResult {
   autostart?: AutostartResult;
   /**
    * Set when the core runs. Closes the pipe, releases all PTYs without changing session states, disposes the
-   * backends the core created (WSL: keepalives end, tmux sessions stay) and closes the database. Idempotent.
+   * backends the core created (WSL: keepalives and tmux sessions stay, issue #140) and closes the database. Idempotent.
    */
   close?: () => Promise<void>;
 }

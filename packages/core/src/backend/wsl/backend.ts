@@ -6,6 +6,7 @@ import {
   attachArgs,
   checksCwd,
   cwdCheckArgs,
+  endKeepalivesArgs,
   hasSessionArgs,
   isMissingSession,
   killSessionArgs,
@@ -83,9 +84,12 @@ export class WslBackend implements Backend {
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
+    const socket = this.socket;
     this.keepalive = new DistroKeepalive(
-      options.spawnKeepalive ?? spawnKeepalive,
+      options.spawnKeepalive ?? ((distro) => spawnKeepalive({ distro, socket })),
       options.keepaliveRestartDelayMs ?? 1_000,
+      // A keepalive survives its core (issue #140); the next one ends it before starting its own.
+      { takeOver: (distro) => this.exec(endKeepalivesArgs({ distro, socket })) },
     );
   }
 
@@ -210,7 +214,10 @@ export class WslBackend implements Backend {
     if (failed && results.every((result) => result.code !== 0)) throw wslError("tmux refresh-client", failed);
   }
 
-  /** Stops all keepalive processes; tmux sessions keep running (until WSL stops the distro). */
+  /**
+   * Starts no keepalive any more; running ones keep the tmux sessions alive after the core ends (issue #140) until
+   * the next core takes them over or the tmux server ends.
+   */
   dispose(): void {
     this.keepalive.dispose();
   }

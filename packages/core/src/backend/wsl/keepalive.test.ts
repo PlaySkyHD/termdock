@@ -178,16 +178,120 @@ describe("DistroKeepalive", () => {
     });
   });
 
-  it("dispose stops every process and prevents restarts", () => {
+  it("dispose leaves running processes alive and prevents starts and restarts (issue #140)", () => {
     vi.useFakeTimers();
     const { keepalive, spawned, running } = setup(1000);
     keepalive.retain("Ubuntu", "td-a");
     keepalive.retain("Debian", "td-b");
+    keepalive.retain("Alpine", "td-c");
+    spawned[2]!.crash();
     keepalive.dispose();
-    expect(running("Ubuntu")).toHaveLength(0);
-    expect(running("Debian")).toHaveLength(0);
-    vi.advanceTimersByTime(5000);
-    keepalive.retain("Ubuntu", "td-c");
-    expect(spawned).toHaveLength(2);
+    expect(running("Ubuntu")).toHaveLength(1);
+    expect(running("Debian")).toHaveLength(1);
+    expect(keepalive.isRunning("Ubuntu")).toBe(false);
+    // Neither the pending restart nor a death after dispose nor a new session starts one.
+    spawned[0]!.crash();
+    vi.advanceTimersByTime(120_000);
+    keepalive.retain("Ubuntu", "td-d");
+    expect(spawned).toHaveLength(3);
+  });
+
+  describe("take-over of left-behind keepalives (issue #140)", () => {
+    function takeOverSetup() {
+      const spawned: FakeProcess[] = [];
+      const order: string[] = [];
+      const pending: { distro: string; finish: (fail?: boolean) => void }[] = [];
+      const keepalive = new DistroKeepalive(
+        (distro) => {
+          order.push(`spawn ${distro}`);
+          const process = new FakeProcess(distro);
+          spawned.push(process);
+          return process;
+        },
+        1000,
+        {
+          takeOver: (distro) => {
+            order.push(`takeOver ${distro}`);
+            return new Promise((resolve, reject) =>
+              pending.push({ distro, finish: (fail) => (fail ? reject(new Error("pkill")) : resolve(0)) }),
+            );
+          },
+        },
+      );
+      return { keepalive, spawned, order, pending };
+    }
+
+    it("ends left-behind keepalives once per distro before the first start", async () => {
+      vi.useFakeTimers();
+      const { keepalive, spawned, order, pending } = takeOverSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      keepalive.retain("Ubuntu", "td-b");
+      expect(spawned).toHaveLength(0);
+      expect(keepalive.isRunning("Ubuntu")).toBe(false);
+      pending[0]!.finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawned).toHaveLength(1);
+      // A restart and a new start after the last session do not take over again: only this instance's ran.
+      spawned[0]!.crash();
+      await vi.advanceTimersByTimeAsync(1000);
+      keepalive.release("Ubuntu", "td-a");
+      keepalive.release("Ubuntu", "td-b");
+      keepalive.retain("Ubuntu", "td-c");
+      expect(order).toEqual(["takeOver Ubuntu", "spawn Ubuntu", "spawn Ubuntu", "spawn Ubuntu"]);
+      keepalive.dispose();
+    });
+
+    it("starts anyway when the take-over fails or throws", async () => {
+      const { keepalive, spawned, pending } = takeOverSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      pending[0]!.finish(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(spawned).toHaveLength(1);
+
+      const throwing = new DistroKeepalive(
+        (distro) => {
+          const process = new FakeProcess(distro);
+          spawned.push(process);
+          return process;
+        },
+        1000,
+        {
+          takeOver: () => {
+            throw new Error("no wsl.exe");
+          },
+        },
+      );
+      throwing.retain("Debian", "td-b");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(spawned.map((p) => p.distro)).toEqual(["Ubuntu", "Debian"]);
+      keepalive.dispose();
+      throwing.dispose();
+    });
+
+    it("starts nothing when the last session was released or the instance disposed during the take-over", async () => {
+      const { keepalive, spawned, pending } = takeOverSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      keepalive.release("Ubuntu", "td-a");
+      keepalive.retain("Debian", "td-b");
+      keepalive.dispose();
+      for (const take of pending) take.finish();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(spawned).toHaveLength(0);
+    });
+
+    it("lets a session retained again during the take-over wait for it, so its keepalive is never ended", async () => {
+      const { keepalive, spawned, order, pending } = takeOverSetup();
+      keepalive.retain("Ubuntu", "td-a");
+      keepalive.release("Ubuntu", "td-a");
+      keepalive.retain("Ubuntu", "td-b");
+      expect(spawned).toHaveLength(0);
+      pending[0]!.finish();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(order).toEqual(["takeOver Ubuntu", "spawn Ubuntu"]);
+      expect(keepalive.isRunning("Ubuntu")).toBe(true);
+      keepalive.dispose();
+    });
   });
 });

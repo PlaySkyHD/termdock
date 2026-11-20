@@ -130,11 +130,10 @@ describe("WslBackend", () => {
     const { backend, panes, calls } = setup({ distro: "Ubuntu" });
     panes.set("td-s1", "1 0 ");
     await backend.start("s1", spec, { cols: 80, rows: 24 });
-    // Besides the check of the working directory (issue #113).
-    expect(calls.filter((args) => !args.includes("test")).map(subcommand)).toEqual([
-      "has-session",
-      "kill-session",
-    ]);
+    // Besides the check of the working directory (issue #113) and the keepalive take-over (issue #140).
+    expect(calls.filter((args) => !args.includes("test") && !args.includes("pkill")).map(subcommand)).toEqual(
+      ["has-session", "kill-session"],
+    );
   });
 
   it("releases the keepalive when the PTY cannot be spawned", async () => {
@@ -152,6 +151,7 @@ describe("WslBackend", () => {
     panes.set("td-alive", "0  ");
     panes.set("td-dead", "1 3 ");
     expect(await backend.exists("alive", spec)).toBe(true);
+    await flush();
     expect(running()).toEqual(["Ubuntu"]);
     expect(await backend.exists("dead", spec)).toBe(false);
     expect(await backend.exists("none", spec)).toBe(false);
@@ -297,13 +297,36 @@ describe("WslBackend", () => {
     expect(await setup({ distro: "Nope", respond: () => distroMissing }).backend.available()).toBe(false);
   });
 
-  it("dispose stops all keepalives", async () => {
+  it("dispose leaves the keepalives running for the next core (issue #140)", async () => {
     const { backend, running } = setup();
     await backend.start("s1", spec, { cols: 80, rows: 24 });
     await backend.start("s2", { ...spec, distro: "Debian" }, { cols: 80, rows: 24 });
+    await flush();
     expect(running().sort()).toEqual(["Debian", "Ubuntu"]);
     backend.dispose();
-    expect(running()).toEqual([]);
+    expect(running().sort()).toEqual(["Debian", "Ubuntu"]);
+  });
+
+  it("ends left-behind keepalives of its socket once per distro before its first keepalive (issue #140)", async () => {
+    const { backend, calls, running } = setup({ distro: "Ubuntu" });
+    await backend.start("s1", spec, { cols: 80, rows: 24 });
+    await backend.start("s2", spec, { cols: 80, rows: 24 });
+    await flush();
+    const takeOvers = calls.filter((args) => args.includes("pkill"));
+    expect(takeOvers).toEqual([
+      [
+        "-d",
+        "Ubuntu",
+        "--cd",
+        "~",
+        "--exec",
+        "pkill",
+        "-x",
+        "-f",
+        "tmux -L termdock-test wait-for termdock-keepalive",
+      ],
+    ]);
+    expect(running()).toEqual(["Ubuntu"]);
   });
 
   it("lists the distros with its own timeout and fails with the reason (issue #64)", async () => {

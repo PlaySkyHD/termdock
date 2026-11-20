@@ -7,11 +7,12 @@
 // - Every criterion of the concept has a section `### V1-<nn>: <text>` with the text of the concept, a line
 //   `Status: <status>` and a row `| <nn> | <text> | <status> |` in the overview table.
 // - A criterion without proof must be `offen, #<issue>`; every other criterion has at least one proof.
-// - `- Test `<file>`: `<name>``: the file exists and holds the name as a string literal; the name carries
-//   `[V1-<nn>]` of its section.
+// - `- Test `<file>`: `<name>``: the file exists and has an active test (`it(`/`test(` outside comments, not
+//   `.skip`, `.todo` or `.fails`) with exactly this name; the name carries `[V1-<nn>]` of its section.
 // - `- Szene `<file>` (Gruppe `<group>`): `<picture>.png``: the file exists and holds the picture name in quotes.
 // - `- Manuell: <step>`: a step that cannot be automated.
-// - Every test in packages/ and apps/ whose name starts with `[V1-<nn>]` is listed under each of its criteria.
+// - Every active test in packages/ and apps/ whose name starts with `[V1-<nn>]` is listed under each of its
+//   criteria. A test inside `describe.skip` still counts as active; the check does not follow describe blocks.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,9 +24,6 @@ const OPEN = /^offen, #\d+$/;
 const SCAN_DIRS = ["packages", "apps"];
 const SKIP_DIRS = new Set(["node_modules", "dist", "release", "out"]);
 const TEST_FILE = /\.test\.(ts|tsx|mjs)$/;
-// `it("[V1-01] ...")`, `test.skip('[V1-01][V1-02] ...')`, also with the name on the next line (Prettier).
-// The name may hold the other quotes ("the writer's size").
-const PREFIXED_TEST = /\b(?:it|test)(?:\.\w+)*\(\s*(["'`])(\[V1-\d\d\](?:(?!\1)[^\\\n])*)\1/g;
 
 /** The criteria of section 10 of the concept: number ("01") to text. */
 export function readCriteria(text) {
@@ -100,6 +98,52 @@ function isQuoted(content, name) {
   return ['"', "'", "`"].some((quote) => content.includes(`${quote}${name}${quote}`));
 }
 
+/**
+ * The source with every comment replaced by spaces (line breaks stay), so a commented-out test is no test.
+ * Strings are skipped as a whole; a `'` or `"` string ends at the line break at the latest, so a quote in a regex
+ * literal cannot swallow the rest of the file. `${…}` inside templates is not followed.
+ */
+export function stripComments(source) {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (char === "/" && next === "/") {
+      const end = source.indexOf("\n", i);
+      const stop = end === -1 ? source.length : end;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      out += source.slice(i, stop).replace(/[^\n]/g, " ");
+      i = stop;
+    } else if (char === '"' || char === "'" || char === "`") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== char && (char === "`" || source[j] !== "\n"))
+        j += source[j] === "\\" ? 2 : 1;
+      out += source.slice(i, j + 1);
+      i = j + 1;
+    } else {
+      out += char;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+// An active test: `it("…"` or `test("…"`, also `.only`, `.concurrent` and `.sequential`, with the name as the
+// first argument (Prettier may put it on the next line). `.skip`, `.todo`, `.fails`, `.skipIf(…)` and `.each(…)` do
+// not match. The name may hold the other quotes ("the writer's size").
+const ACTIVE_TEST =
+  /(?<![\w.$])(?:it|test)(?:\.(?:only|concurrent|sequential))*\(\s*(["'`])((?:(?!\1)[^\\\n])*)\1/g;
+
+/** Names of the active tests in a test file's source, comments removed. */
+export function activeTestNames(source) {
+  return [...stripComments(source).matchAll(ACTIVE_TEST)].map((match) => match[2]);
+}
+
 function* testFiles(root, dir) {
   const full = join(root, dir);
   if (!existsSync(full)) return;
@@ -117,8 +161,8 @@ export function findPrefixedTests(root) {
   for (const dir of SCAN_DIRS) {
     for (const file of testFiles(root, dir)) {
       const content = readFileSync(join(root, file), "utf8");
-      for (const match of content.matchAll(PREFIXED_TEST)) {
-        const name = match[2];
+      for (const name of activeTestNames(content)) {
+        if (!name.startsWith("[V1-")) continue;
         const numbers = [...name.matchAll(/\[V1-(\d\d)\]/g)].map((each) => each[1]);
         found.push({ file, name, numbers });
       }
@@ -195,7 +239,11 @@ export function checkAcceptance(root) {
       const content = readFileSync(full, "utf8");
       if (proof.kind === "test") {
         if (!proof.name.includes(`[V1-${number}]`)) at(proof.line, `"${proof.name}" lacks [V1-${number}]`);
-        if (!isQuoted(content, proof.name)) at(proof.line, `no test "${proof.name}" in ${proof.file}`);
+        if (!activeTestNames(content).includes(proof.name))
+          at(
+            proof.line,
+            `no active test "${proof.name}" in ${proof.file} (missing, commented out or skipped)`,
+          );
       } else if (!isQuoted(content, proof.name)) at(proof.line, `no scene "${proof.name}" in ${proof.file}`);
     }
   }

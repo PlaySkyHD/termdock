@@ -29,13 +29,19 @@ Legt fest, wie die V1-Abnahmekriterien aus `docs/concept/v1-konzept.txt` (Abschn
 
 ### Requirement: Benannte Nachweis-Tests
 
-Ein Test, der ein Kriterium belegt, SHALL im Namen das Präfix `[V1-<nn>]` tragen. Jeder in der Übersicht genannte Test MUST als String-Literal in der genannten Datei stehen und das Präfix seines Kriteriums tragen; jede genannte Szene MUST in ihrer Datei als Bildname in Anführungszeichen stehen. Jeder Test in `packages/` und `apps/` mit `[V1-<nn>]` MUST unter jedem seiner Kriterien genannt sein.
+Ein Test, der ein Kriterium belegt, SHALL im Namen das Präfix `[V1-<nn>]` tragen. Jeder genannte Test MUST in seiner Datei ein aktiver Aufruf `it(`/`test(` außerhalb von Kommentaren mit genau diesem Namen als erstem Argument sein, nicht `.skip`, `.todo` oder `.fails`, und das Präfix seines Kriteriums tragen. Jede genannte Szene MUST in ihrer Datei als Bildname in Anführungszeichen stehen. Jeder aktive Test in `packages/` und `apps/` mit `[V1-<nn>]` MUST unter jedem seiner Kriterien genannt sein.
 
 #### Scenario: Umbenannter Test
 
 - **GIVEN** ein Test `[V1-01] does the first thing`, den die Übersicht als `[V1-01] does the frist thing` nennt
 - **WHEN** das Skript läuft
 - **THEN** meldet es, dass der genannte Test in der Datei fehlt und der echte Test unter V1-01 nicht genannt ist
+
+#### Scenario: Auskommentierter oder übersprungener Test
+
+- **GIVEN** ein genannter Test, dessen Name nur noch in einem Kommentar, in einem anderen String oder in `it.skip`, `it.todo` oder `it.fails` steht
+- **WHEN** das Skript läuft
+- **THEN** meldet es, dass es keinen aktiven Test mit diesem Namen gibt, und endet mit Code 1
 
 #### Scenario: Fehlende Datei oder Szene
 

@@ -78,8 +78,9 @@ Der WSL-Test startet `vim` aus einem Startprofil als Stellvertreter für ein int
 
 Status: automatisiert und manuell
 
-Ein Tabwechsel ändert im Core nichts: Die Panes inaktiver Tabs bleiben im Fenster eingehängt (nur verborgen), ihre Views bleiben angehängt.
+Der Renderer hängt je Pane eine View ein, Schlüssel ist die Pane-ID; eine View trennt sich (`detach`) nur, wenn ihre Pane verschwindet oder eine andere Session zeigt. Der erste Test schaltet mit allen Tab-Befehlen und per Klick um und prüft: dieselben Panes mit denselben Sessions bleiben eingehängt, kein Aufruf an den Core, alle Sessions bleiben `Running`. Der zweite Test ist nur die Voraussetzung dafür (`layoutWindow` liefert auch die Panes inaktiver Tabs). Ob der Prozess in WSL wirklich weiterläuft, zeigt erst der manuelle Schritt; deshalb bleibt das Kriterium teilweise manuell.
 
+- Test `apps/desktop/src/renderer/commands.test.ts`: `[V1-04] switches tabs without unmounting a pane or reaching the core: same views, sessions stay Running`
 - Test `apps/desktop/src/renderer/pane-layout.test.ts`: `[V1-04] lists the panes of every tab, tabs in order and each in tree order, with their tab`
 - Manuell: In Tab 1 `while :; do date +%T; sleep 1; done` starten, 30 s in Tab 2 arbeiten, zurück zu Tab 1. Erwartet: Die Uhrzeiten laufen ohne Lücke weiter, die Statusleiste zeigt weiter `Running`, `wsl.exe -d Ubuntu --exec tmux -L termdock list-panes -a -F '#{session_name} #{pane_pid}'` nennt vor und nach dem Wechsel dieselbe PID.
 

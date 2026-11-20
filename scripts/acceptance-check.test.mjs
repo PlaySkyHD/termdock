@@ -162,9 +162,54 @@ test("reports a test name that is not in the code", () => {
     docText: VALID.replace("`[V1-01] does the first thing`", "`[V1-01] does the frist thing`"),
   });
   assert.equal(errors.length, 2);
-  assert.match(errors[0], /no test "\[V1-01\] does the frist thing" in packages\/core\/src\/a\.test\.ts/);
+  assert.match(
+    errors[0],
+    /no active test "\[V1-01\] does the frist thing" in packages\/core\/src\/a\.test\.ts/,
+  );
   // The real test is no longer listed under its criterion.
   assert.match(errors[1], /"\[V1-01\] does the first thing" is not listed under V1-01/);
+});
+
+/** TESTS with the V1-01 test of a.test.ts replaced by `code`. */
+function withFirstTest(code) {
+  const file = "packages/core/src/a.test.ts";
+  return { ...TESTS, [file]: TESTS[file].replace('it("[V1-01] does the first thing", () => {});', code) };
+}
+
+test("does not count a test name that is only in a comment or another string", () => {
+  for (const code of [
+    '// it("[V1-01] does the first thing", () => {});',
+    '/*\nit("[V1-01] does the first thing", () => {});\n*/',
+    'const name = "[V1-01] does the first thing";\nexpect(name).toBe("[V1-01] does the first thing");',
+  ]) {
+    const errors = errorsFor({ tests: withFirstTest(code) });
+    assert.equal(errors.length, 1, code);
+    assert.match(
+      errors[0],
+      /no active test "\[V1-01\] does the first thing".*commented out or skipped/,
+      code,
+    );
+  }
+});
+
+test("does not count a skipped, todo or failing test", () => {
+  for (const modifier of ["skip", "todo", "fails", "skipIf(true)"]) {
+    const errors = errorsFor({
+      tests: withFirstTest(`it.${modifier}("[V1-01] does the first thing", () => {});`),
+    });
+    assert.equal(errors.length, 1, modifier);
+    assert.match(errors[0], /no active test "\[V1-01\] does the first thing"/, modifier);
+  }
+});
+
+test("counts it.only, test( and a name after a string with // in it", () => {
+  for (const code of [
+    'it.only("[V1-01] does the first thing", () => {});',
+    'test(\n  "[V1-01] does the first thing",\n  () => {},\n);',
+    'const url = "http://example.invalid/*"; // a comment\nit("[V1-01] does the first thing", () => {});',
+  ]) {
+    assert.deepEqual(errorsFor({ tests: withFirstTest(code) }), [], code);
+  }
 });
 
 test("reports a listed test without the prefix of its criterion", () => {

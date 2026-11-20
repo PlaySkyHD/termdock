@@ -614,6 +614,84 @@ describe("acquireScreenshotLock", () => {
     await expect(acquireScreenshotLock(deps)).resolves.toBe(true);
     expect(logs).toEqual([]);
   });
+
+  /** An errno error as Node's fs throws it. */
+  const fsError = (code: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`${code}: lock file`), { code });
+
+  it.each(["EPERM", "EACCES", "EBUSY"])(
+    "keeps waiting when creating the lock fails with %s",
+    async (code) => {
+      const { files, logs, deps } = setup(new Set());
+      const create = deps.fs.createExclusive;
+      let failures = 2;
+      deps.fs = {
+        ...deps.fs,
+        // The holder's delete is still pending, or an antivirus holds the file.
+        createExclusive: (file, content) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw fsError(code);
+          }
+          return create(file, content);
+        },
+      };
+
+      await expect(acquireScreenshotLock(deps)).resolves.toBe(true);
+      expect(logs).toEqual(["waiting for screenshot run (unknown pid, lock busy)"]);
+      expect(files.get(LOCK)?.content).toBe("7");
+    },
+  );
+
+  it.each(["EPERM", "EACCES", "EBUSY"])(
+    "keeps waiting when removing a stale lock fails with %s",
+    async (code) => {
+      const { files, logs, deps } = setup(new Set());
+      deps.fs.createExclusive(LOCK, "200");
+      const remove = deps.fs.remove;
+      let failures = 2;
+      deps.fs = {
+        ...deps.fs,
+        remove: (file) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw fsError(code);
+          }
+          remove(file);
+        },
+      };
+
+      await expect(acquireScreenshotLock(deps)).resolves.toBe(true);
+      expect(logs).toEqual(["waiting for screenshot run (unknown pid, lock busy)"]);
+      expect(files.get(LOCK)?.content).toBe("7");
+    },
+  );
+
+  it("gives up after 15 minutes when the file error does not go away", async () => {
+    const { clock, logs, deps } = setup(new Set());
+    deps.fs = {
+      ...deps.fs,
+      createExclusive: () => {
+        throw fsError("EBUSY");
+      },
+    };
+
+    await expect(acquireScreenshotLock(deps)).resolves.toBe(false);
+    expect(clock.now).toBeGreaterThanOrEqual(15 * 60_000);
+    expect(logs.at(-1)).toMatch(/gave up waiting/);
+  });
+
+  it("stops on other file errors", async () => {
+    const { deps } = setup(new Set());
+    deps.fs = {
+      ...deps.fs,
+      createExclusive: () => {
+        throw fsError("ENOSPC");
+      },
+    };
+
+    await expect(acquireScreenshotLock(deps)).rejects.toThrow(/ENOSPC/);
+  });
 });
 
 describe("releaseScreenshotLock", () => {

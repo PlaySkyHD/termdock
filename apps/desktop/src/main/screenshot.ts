@@ -222,7 +222,21 @@ export function screenshotLockState(
 
 export type LockAttempt = { acquired: true } | { acquired: false; holder: number | undefined };
 
-/** One attempt to take the lock: creates it, or replaces a stale one, or names its live holder. */
+/**
+ * File errors Windows reports while another process deletes or holds the lock file (delete pending, antivirus):
+ * the lock counts as busy for this round.
+ */
+const TRANSIENT_LOCK_ERRORS = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function isTransientLockError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && TRANSIENT_LOCK_ERRORS.has(code);
+}
+
+/**
+ * One attempt to take the lock: creates it, or replaces a stale one, or names its live holder. A transient file
+ * error (`EPERM`, `EACCES`, `EBUSY`) counts as busy with an unknown holder; other errors are thrown.
+ */
 export function tryScreenshotLock(
   lockPath: string,
   ownPid: number,
@@ -230,17 +244,21 @@ export function tryScreenshotLock(
   isAlive: (pid: number) => boolean,
   now: number,
 ): LockAttempt {
-  // A few rounds: between removing a stale lock and creating ours another run may have taken it.
-  for (let round = 0; round < 3; round += 1) {
-    if (fs.createExclusive(lockPath, String(ownPid))) return { acquired: true };
-    const entry = fs.read(lockPath);
-    const state = screenshotLockState(
-      entry && { content: entry.content, ageMs: now - entry.mtimeMs },
-      ownPid,
-      isAlive,
-    );
-    if (state.kind === "held") return { acquired: false, holder: state.pid };
-    if (entry !== undefined) fs.remove(lockPath);
+  try {
+    // A few rounds: between removing a stale lock and creating ours another run may have taken it.
+    for (let round = 0; round < 3; round += 1) {
+      if (fs.createExclusive(lockPath, String(ownPid))) return { acquired: true };
+      const entry = fs.read(lockPath);
+      const state = screenshotLockState(
+        entry && { content: entry.content, ageMs: now - entry.mtimeMs },
+        ownPid,
+        isAlive,
+      );
+      if (state.kind === "held") return { acquired: false, holder: state.pid };
+      if (entry !== undefined) fs.remove(lockPath);
+    }
+  } catch (error) {
+    if (!isTransientLockError(error)) throw error;
   }
   return { acquired: false, holder: undefined };
 }
@@ -268,7 +286,7 @@ export async function acquireScreenshotLock(deps: ScreenshotLockDeps): Promise<b
   for (;;) {
     const attempt = tryScreenshotLock(deps.lockPath, deps.ownPid, deps.fs, deps.isAlive, deps.now());
     if (attempt.acquired) return true;
-    const name = attempt.holder === undefined ? "(lock being written)" : String(attempt.holder);
+    const name = attempt.holder === undefined ? "(unknown pid, lock busy)" : String(attempt.holder);
     if (announced === undefined || announced.holder !== attempt.holder) {
       deps.log(`waiting for screenshot run ${name}`);
       announced = { holder: attempt.holder };

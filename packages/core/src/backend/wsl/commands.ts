@@ -27,6 +27,7 @@ export interface DistroList {
 const WORD = /^[A-Za-z0-9_-]+$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PANE_STATUS_FORMAT = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}";
+const LIST_SESSIONS_FORMAT = "#{session_name} #{pane_dead}";
 const CURSOR_FORMAT = "#{cursor_x} #{cursor_y} #{cursor_flag}";
 /** A tmux client name as `list-clients` reports it: a device path such as /dev/pts/3. */
 const CLIENT_TTY = /^\/dev(\/[A-Za-z0-9_-]+)+$/;
@@ -141,6 +142,27 @@ export function paneStatusArgs(target: TmuxTarget, id: SessionId): string[] {
     paneTarget(name),
     PANE_STATUS_FORMAT,
   ]);
+}
+
+/**
+ * Every session of the socket with the state of its active pane, one per line (issue #134). The same pane that
+ * `paneStatusArgs` reads, so a session counts as alive exactly when `exists` would say so.
+ */
+export function listSessionsArgs(target: TmuxTarget): string[] {
+  return tmux(target, "~", ["list-sessions", "-F", LIST_SESSIONS_FORMAT]);
+}
+
+/**
+ * Names of the sessions with a live pane from `listSessionsArgs`. A line that is not `<name> <0|1>` (e.g. a
+ * message of wsl.exe) is dropped; names hold no spaces, `sessionName` allows only letters, digits, `-` and `_`.
+ */
+export function parseLiveSessions(stdout: string): Set<string> {
+  const live = new Set<string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^(\S+) ([01])$/.exec(line);
+    if (match && match[2] === "0") live.add(match[1]!);
+  }
+  return live;
 }
 
 /** Visible screen with colours, then the cursor position as the last line, in one wsl.exe call. */

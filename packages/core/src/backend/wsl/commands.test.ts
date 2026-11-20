@@ -10,9 +10,11 @@ import {
   keepaliveArgs,
   killSessionArgs,
   listClientsArgs,
+  listSessionsArgs,
   parseClientTtys,
   parseCwdCheck,
   parseDistroList,
+  parseLiveSessions,
   parsePaneStatus,
   parseSnapshot,
   paneStatusArgs,
@@ -267,6 +269,29 @@ describe("other tmux commands", () => {
 });
 
 describe("parsers", () => {
+  it("lists the sessions with the state of their active pane as an argument array (issue #134)", () => {
+    expect(listSessionsArgs(target)).toEqual([
+      "-d",
+      "Ubuntu",
+      "--cd",
+      "~",
+      "--exec",
+      "tmux",
+      "-L",
+      "termdock-test",
+      "list-sessions",
+      "-F",
+      "#{session_name} #{pane_dead}",
+    ]);
+    expect(() => listSessionsArgs({ distro: "Ubuntu", socket: "a;b" })).toThrow(/socket/);
+  });
+
+  it("parses live sessions from list-sessions and drops dead panes and other lines (issue #134)", () => {
+    const stdout = "td-a 0\r\ntd-b 1\ntd-c 0\n\nwsl: a notice\ntd-d \ntd-e 0 extra\n";
+    expect(parseLiveSessions(stdout)).toEqual(new Set(["td-a", "td-c"]));
+    expect(parseLiveSessions("")).toEqual(new Set());
+  });
+
   it("recognises tmux messages for a missing session or server", () => {
     expect(isMissingSession({ code: 1, stdout: "", stderr: "can't find session: td-x\n" })).toBe(true);
     expect(isMissingSession({ code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/x\n" })).toBe(

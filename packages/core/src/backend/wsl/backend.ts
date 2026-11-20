@@ -12,9 +12,11 @@ import {
   killSessionArgs,
   listClientsArgs,
   listDistrosArgs,
+  listSessionsArgs,
   parseClientTtys,
   parseCwdCheck,
   parseDistroList,
+  parseLiveSessions,
   parsePaneStatus,
   parseSnapshot,
   paneStatusArgs,
@@ -173,6 +175,52 @@ export class WslBackend implements Backend {
     if (alive) this.keepalive.retain(target.distro, sessionName(id));
     else this.keepalive.release(target.distro, sessionName(id));
     return alive;
+  }
+
+  /**
+   * One `tmux list-sessions` per distro instead of one `exists` per session (issue #134). Keeps the keepalive
+   * bookkeeping of `exists`: every session found alive is retained, every other one released; the take-over still
+   * runs once per distro. Undefined, without touching the keepalive, when a distro cannot be resolved or a call
+   * fails (WSL error, timeout): the caller then asks `exists` per session.
+   */
+  async listLive(
+    sessions: readonly { id: SessionId; spec: LaunchSpec }[],
+  ): Promise<ReadonlySet<SessionId> | undefined> {
+    const groups = new Map<string, { target: TmuxTarget; members: { id: SessionId; name: string }[] }>();
+    try {
+      for (const { id, spec } of sessions) {
+        const target = await this.target(spec);
+        const group = groups.get(target.distro) ?? { target, members: [] };
+        group.members.push({ id, name: sessionName(id) });
+        groups.set(target.distro, group);
+      }
+    } catch {
+      return undefined;
+    }
+    const listed = await Promise.all(
+      [...groups.values()].map(async (group) => {
+        const result = await this.exec(listSessionsArgs(group.target));
+        // No server on the socket: no session of the distro is left.
+        if (isMissingSession(result)) return { group, names: new Set<string>() };
+        if (result.code !== 0) return undefined;
+        return { group, names: parseLiveSessions(result.stdout) };
+      }),
+    );
+    if (listed.some((entry) => entry === undefined)) return undefined;
+    const live = new Set<SessionId>();
+    for (const entry of listed) {
+      if (!entry) continue;
+      const { group, names } = entry;
+      for (const { id, name } of group.members) {
+        if (names.has(name)) {
+          live.add(id);
+          this.keepalive.retain(group.target.distro, name);
+        } else {
+          this.keepalive.release(group.target.distro, name);
+        }
+      }
+    }
+    return live;
   }
 
   async kill(id: SessionId, spec: LaunchSpec): Promise<void> {

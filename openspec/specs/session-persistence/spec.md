@@ -101,7 +101,7 @@ Scheitert das Speichern einer Änderung einer bestehenden Session, SHALL der Cor
 
 ### Requirement: Reconcile beim Core-Start
 
-Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Starting`, `Running` oder `Detached` abgleichen. WSL: existiert die Backend-Session, MUST der Core sich wieder anbinden und sie `Detached` setzen, sonst oder bei gescheitertem Anbinden `Interrupted`. Windows-Sessions MUST ohne Backend-Aufruf `Interrupted` werden. Neue Zustände MUST gespeichert werden. Erst danach MUST der Autostart laufen (Capability `launch-profiles`) und die abgeglichenen Zustände sehen.
+Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Starting`, `Running` oder `Detached` abgleichen. WSL: existiert die Backend-Session, MUST er sich wieder anbinden und sie `Detached` setzen, sonst oder bei gescheitertem Anbinden `Interrupted`. Die Existenz MUST er je Backend gebündelt erfragen (`listLive`), ohne Antwort per `exists`. Windows-Sessions MUST ohne Backend-Aufruf `Interrupted` werden. Neue Zustände MUST gespeichert werden. Erst danach MUST der Autostart laufen.
 
 #### Scenario: Lebende WSL-Session
 
@@ -132,6 +132,30 @@ Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Startin
 - **GIVEN** eine gespeicherte WSL-Session eines Autostart-Profils in `Running`, deren tmux-Session noch existiert, und eine eines zweiten Autostart-Profils, deren tmux-Session fehlt
 - **WHEN** der Core startet
 - **THEN** ist die erste `Detached` und ihr Profil bekommt keine neue Session; die zweite wird nach dem Reconcile `Interrupted`, danach unter ihrer ID neu gestartet, und es gibt keine weitere Session
+
+#### Scenario: Gebündelte Prüfung
+
+- **GIVEN** gespeicherte WSL-Sessions in `Running`, `Detached` und `Starting`, von denen zwei leben, sowie beendete Sessions, und ein Backend mit `listLive`
+- **WHEN** der Core startet
+- **THEN** fragt er `listLive` genau einmal mit den drei abzugleichenden Sessions, ruft `exists` nicht auf, die zwei lebenden sind `Detached` und angebunden, die dritte ist `Interrupted`
+
+#### Scenario: Rückfall auf die Einzelprüfung
+
+- **GIVEN** gespeicherte WSL-Sessions in `Running` und ein Backend, dessen `listLive` `undefined` liefert oder fehlschlägt
+- **WHEN** der Core startet
+- **THEN** prüft er jede Session mit `exists`, gleicht sie danach ab und meldet `backend_unavailable` nur, wenn eine Einzelprüfung fehlschlägt
+
+#### Scenario: Kein Bündel für nicht erreichbare Backends
+
+- **GIVEN** eine gespeicherte WSL-Session in `Running` mit nicht verfügbarem WSL-Backend und eine Windows-Session in `Running`
+- **WHEN** der Core startet
+- **THEN** fragt er kein `listLive`, beide Sessions sind `Interrupted` und das Ergebnis meldet `backend_unavailable` für WSL
+
+#### Scenario: Core endet während der gebündelten Prüfung
+
+- **GIVEN** ein laufendes `listLive` beim Start
+- **WHEN** der Core verworfen wird, bevor es antwortet
+- **THEN** bindet er keine Session an und speichert keinen neuen Zustand
 
 ### Requirement: Reconcile bei nicht erreichbarem Backend
 

@@ -46,6 +46,15 @@ export interface Backend {
   attach(id: SessionId, spec: LaunchSpec, size: TerminalSize): Promise<PtyHandle>;
   /** Whether the backend session still exists, without attaching. */
   exists(id: SessionId, spec: LaunchSpec): Promise<boolean>;
+  /**
+   * Which of `sessions` still exist, judged like `exists`, with one backend call per group instead of one per
+   * session (WSL: one `tmux list-sessions` per distro, issue #134). The reconcile uses it for many sessions at once;
+   * `exists` stays for single checks. Undefined when the backend cannot tell (a call failed): the caller then asks
+   * `exists` per session. Optional: without it the caller asks `exists` per session.
+   */
+  listLive?(
+    sessions: readonly { id: SessionId; spec: LaunchSpec }[],
+  ): Promise<ReadonlySet<SessionId> | undefined>;
   /** Ends the backend session and its processes. Resolves when it is gone. */
   kill(id: SessionId, spec: LaunchSpec): Promise<void>;
   /** Visible screen content for a new view; undefined when the backend keeps no screen (Core buffer is used). */

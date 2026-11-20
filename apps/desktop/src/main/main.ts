@@ -36,11 +36,15 @@ import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
 import { QuitPrompt } from "./quit-prompt.js";
 import {
+  acquireScreenshotLock,
   cleanStaleSockets,
   describeError,
   isolatedCore,
+  nodeLockFs,
   QuietWatch,
+  releaseScreenshotLock,
   SCENE_GROUPS,
+  SCREENSHOT_LOCK_NAME,
   screenshotDir,
   screenshotScenes,
   screenshotProfileDir,
@@ -105,6 +109,8 @@ let isolated: IsolatedCore | undefined;
 let staleSocketCleanup: Promise<unknown> | undefined;
 /** How long the end of a screenshot run waits for the cleanup of stale tmux sockets. */
 const STALE_SOCKET_WAIT_MS = 30_000;
+/** The machine-wide lock of screenshot runs (#144), taken in `main()` before the core starts. */
+const screenshotLockPath = path.join(tmpdir(), SCREENSHOT_LOCK_NAME);
 if (shotDir !== undefined) {
   shotTemp = mkdtempSync(path.join(tmpdir(), "termdock-shot-"));
   isolated = isolatedCore(shotTemp, process.pid, randomBytes(4).toString("hex"));
@@ -169,6 +175,31 @@ async function main(): Promise<void> {
     app.on("second-instance", () => (windows.open ? windows.open() : (windows.queued += 1)));
 
   await app.whenReady();
+  // Screenshot runs on this machine take turns (#144): they fight over GPU and focus. The wait comes before the
+  // core starts and before the run's own time limit (`runScreenshot`).
+  if (shotDir !== undefined) {
+    let locked = false;
+    try {
+      locked = await acquireScreenshotLock({
+        lockPath: screenshotLockPath,
+        ownPid: process.pid,
+        fs: nodeLockFs,
+        isAlive,
+        now: () => Date.now(),
+        sleep: (ms) => sleep(ms),
+        log,
+      });
+    } catch (error) {
+      log(`screenshot lock: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!locked) {
+      await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
+      await cleanTemp();
+      await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
+      app.exit(1);
+      return;
+    }
+  }
   let corePid: number | undefined;
   // The screenshot run holds a restart here to capture "Core startet neu …" (#130); otherwise always open.
   let restartHold: Promise<void> | undefined;
@@ -227,6 +258,7 @@ async function main(): Promise<void> {
       log(`isolated core: ${outcome}`);
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       await cleanTemp();
+      releaseScreenshotLock(screenshotLockPath, process.pid, nodeLockFs);
     }
     await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(1);
@@ -605,6 +637,7 @@ async function runScreenshot(
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
       await cleanTemp();
+      releaseScreenshotLock(screenshotLockPath, process.pid, nodeLockFs);
       app.exit(exitCode);
     })());
 

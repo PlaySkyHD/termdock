@@ -124,8 +124,12 @@ interface WindowsTerminalInternals {
   _agent?: {
     /** The connection node-pty created for this PTY (the replaced `ConoutConnection`). */
     _conoutSocketWorker?: unknown;
-    /** Set once the ConPTY reported the end of the process; node-pty holds the process handle until then. */
+    /** Set once the ConPTY reported the end of the process. */
     exitCode?: number;
+    /** node-pty's socket to the relay pipe `<pipe>-worker`; it has no `error` listener until it connected. */
+    _outSocket?: { on(event: "error", listener: (error: Error) => void): unknown };
+    /** node-pty's socket to the ConPTY input pipe. */
+    _inSocket?: { destroy(): void };
   };
 }
 
@@ -209,8 +213,9 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
     for (const listener of [...exitListeners]) listener(event);
   };
   const killOnce = () => {
-    // Once only: a second `kill` would close the same ConPTY again (`PtyKill` has no guard).
-    if (killed) return;
+    // Once only: a second `kill` would close the same ConPTY again (`PtyKill` has no guard). Not after the exit code
+    // either: node-pty's exit thread has released the native handle by then.
+    if (killed || processEnded()) return;
     killed = true;
     terminal.kill();
   };
@@ -221,9 +226,12 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
     // then (#160), and a lost worker closes every PTY at once.
     lostKills = lostKills
       .then(async () => {
-        // Until the ConPTY reported the exit code node-pty holds the process handle, so the PID cannot belong to
-        // another process yet. The process first: node-pty defers `kill` until the PTY's first output, which may never
-        // come without the worker (also after our own `kill`).
+        // Only while no exit code is known. node-pty's exit thread closes the process handle (`CloseHandle(hShell)`,
+        // conpty.cc) just before it reports the exit code, so in that short window the PID may already be free and,
+        // in theory, reused; accepted, the window is a few milliseconds. The process alone, not node-pty's `kill`:
+        // that runs `ClosePseudoConsole` on the native handle while the exit thread, woken by this very end of the
+        // process, releases it (crashed the test process), and node-pty defers it until the first output, which may
+        // never come without the worker. The ConPTY ends with its process (node-pty released it after the start).
         if (!processEnded()) {
           try {
             process.kill(terminal.pid);
@@ -231,13 +239,18 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
             // Already gone.
           }
         }
-        try {
-          killOnce();
-        } catch {
-          // node-pty may have closed it already.
-        }
         const deadline = Date.now() + LOST_KILL_WAIT_MS;
         while (!processEnded() && Date.now() < deadline) await sleep(25);
+        if (!processEnded()) {
+          // The process did not end (e.g. no right to end it): node-pty's `kill` as the last resort.
+          try {
+            killOnce();
+          } catch {
+            // node-pty may have closed it already.
+          }
+        }
+        // The input pipe stays open otherwise: with `useConptyDll` node-pty cleans up only on its own `kill`.
+        agentOf(terminal)?._inSocket?.destroy();
         end();
       })
       .catch((error: unknown) => {
@@ -261,6 +274,13 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
     })();
   });
   connection.onLost(close);
+  // A failed relay connection (e.g. another local client took `<pipe>-worker` first, so node-pty's connect ends in
+  // ERROR_PIPE_BUSY/ETIMEDOUT) is a lost output too. Without a listener the `error` would crash the core; with it,
+  // node-pty's own listener (added after connect) also no longer rethrows.
+  agentOf(terminal)?._outSocket?.on("error", (error) => {
+    void process.stderr.write(`termdock-core: conout reader: output of a PTY failed: ${error.message}\n`);
+    close();
+  });
   return {
     get pid() {
       return terminal.pid;

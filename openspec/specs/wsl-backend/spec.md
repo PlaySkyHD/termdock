@@ -179,7 +179,7 @@ Solange das Backend mindestens eine Session einer Distro kennt (gestartet, angeh
 
 ### Requirement: Keepalive-Neustart und Abbau
 
-Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit exponentiell wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen MUST je Distro mit bekannten Sessions einen laufenden Keepalive hinterlassen; danach startet keiner mehr.
+Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen MUST je Distro mit bekannten Sessions einen laufenden Keepalive hinterlassen; danach startet keiner mehr.
 
 #### Scenario: Keepalive stirbt
 
@@ -416,7 +416,7 @@ Endet der tmux-Server des Sockets (`kill-server`, Absturz), SHALL jede PTY des B
 
 ### Requirement: Gemeinsamer Leser für die ConPTY-Ausgabe
 
-Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lesen (ADR 0008). Eine PTY MUST erst starten, wenn dieser Worker läuft. Die Weiterleitung MUST nach der Verbindung von node-pty keinen weiteren Client annehmen. Endet eine PTY, MUST der Worker ihre Pipe schließen, auch ohne `kill`, nachdem ihre letzte Ausgabe angekommen ist. 20 PTYs MUST den RSS um weniger als 60 MiB erhöhen, `kill()` MUST unter voller Ausgabe sofort zurückkehren.
+Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lesen (ADR 0008). Eine PTY MUST erst starten, wenn dieser Worker läuft. Nach der Verbindung von node-pty MUST die Weiterleitung keinen weiteren Client annehmen (davor bleibt ein Wettlauf, ADR 0008). Endet eine PTY, MUST der Worker ihre Pipe schließen, auch ohne `kill`, nachdem ihre letzte Ausgabe angekommen ist. 20 PTYs MUST den RSS um weniger als 60 MiB erhöhen, `kill()` MUST unter voller Ausgabe sofort zurückkehren.
 
 #### Scenario: Viele PTYs
 
@@ -472,13 +472,19 @@ Der Core SHALL den Leser nur in node-pty 1.1.0 einsetzen. Bei jeder anderen Vers
 
 ### Requirement: Absturz des Lesers
 
-Endet der Worker unerwartet, SHALL der Core den Prozess jeder PTY beenden, je ConPTY höchstens ein `kill`, und ihr Ende genau einmal melden, erst wenn der Prozess beendet ist und mit einer Zahl als Exit-Code. Eine WSL-Session wird dann wie nach einem verlorenen Client neu angehängt. Zustand, Views und Schreiber MUST bleiben, je Session MUST genau ein tmux-Client laufen. Die nächste PTY MUST einen neuen Worker starten.
+Endet der Worker unerwartet oder scheitert die Verbindung einer PTY zur Weiterleitung, SHALL der Core den Prozess jeder betroffenen PTY beenden, je ConPTY höchstens ein `kill`, und ihr Ende genau einmal nach dem Prozessende melden, mit einer Zahl als Exit-Code (ohne Exit-Code nach höchstens 2 s mit -1). Die WSL-Session wird neu angehängt. Zustand, Views und Schreiber MUST bleiben, je Session MUST genau ein tmux-Client laufen. Die nächste PTY MUST einen neuen Worker starten.
 
 #### Scenario: PTYs ohne WSL
 
 - **GIVEN** drei PTYs mit `cmd.exe`
 - **WHEN** der Worker abstürzt
 - **THEN** melden alle drei ihr Ende genau einmal, jeweils erst nach dem Ende ihres Prozesses und mit einer Zahl als Exit-Code, und eine neue PTY läuft mit einem neuen Worker
+
+#### Scenario: Verbindung zur Weiterleitung scheitert
+
+- **GIVEN** zwei laufende PTYs mit `cmd.exe`
+- **WHEN** die Verbindung der ersten zu `<pipe>-worker` mit einem Fehler endet (etwa weil ein anderer Client die Pipe zuerst belegt hat)
+- **THEN** stürzt der Core nicht ab, die erste PTY meldet ihr Ende genau einmal nach dem Prozessende mit einer Zahl als Exit-Code, und die zweite läuft weiter
 
 #### Scenario: Zweites kill
 

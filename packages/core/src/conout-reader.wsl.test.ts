@@ -28,6 +28,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
   }
 }
 
+/** The tmux clients of a session by pid: a new client may get the tty of one that just ended. */
 async function clients(distro: string, id: SessionId): Promise<string[]> {
   const result = await runWsl(
     [
@@ -43,7 +44,7 @@ async function clients(distro: string, id: SessionId): Promise<string[]> {
       "-t",
       `=td-${id}`,
       "-F",
-      "#{client_tty}",
+      "#{client_pid}",
     ],
     { timeoutMs: 15_000 },
   );
@@ -74,7 +75,16 @@ describe.skipIf(!enabled)("the shared ConPTY reader crashes while WSL sessions r
   });
 
   afterEach(async () => {
-    for (const registry of registries.splice(0)) registry.dispose();
+    for (const registry of registries.splice(0)) {
+      // Each session ends on its own first: `dispose` would close every PTY in one go, which crashes node-pty 1.1.0
+      // now and then (#160, seen here in 1 of 8 runs).
+      for (const session of registry.list()) {
+        if (session.state === "Running" || session.state === "Detached") {
+          await registry.kill(session.id).catch(() => {});
+        }
+      }
+      registry.dispose();
+    }
     for (const backend of backends.splice(0)) await backend.dispose();
     for (const distro of usedDistros) await killWslTestServer(distro, SOCKET).catch(() => {});
   });

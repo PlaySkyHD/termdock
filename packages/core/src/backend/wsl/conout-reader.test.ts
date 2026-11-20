@@ -245,6 +245,43 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     expect(outcome).toBe("no connection");
   }, 60_000);
 
+  it("ends only the PTY whose relay connection fails, once and with an exit code, without crashing the core", async () => {
+    // node-pty's terminal objects, caught in their constructor (`Terminal.prototype._forwardEvents`, node-pty 1.1.0).
+    const base = createRequire(import.meta.url)("node-pty/lib/terminal.js") as {
+      Terminal: { prototype: { _forwardEvents(this: unknown, ...args: unknown[]): unknown } };
+    };
+    const original = base.Terminal.prototype._forwardEvents;
+    const terminals: unknown[] = [];
+    base.Terminal.prototype._forwardEvents = function (this: unknown, ...args: unknown[]) {
+      terminals.push(this);
+      return original.apply(this, args);
+    };
+    let broken: Opened;
+    let healthy: Opened;
+    try {
+      broken = await openCmd();
+      healthy = await openCmd();
+    } finally {
+      base.Terminal.prototype._forwardEvents = original;
+    }
+    await waitFor(() => broken.output().includes(">") && healthy.output().includes(">"), "prompts");
+    const outSocket = (
+      terminals[0] as { _agent: { _outSocket: { emit(event: string, error: Error): void } } }
+    )._agent._outSocket;
+
+    // What node-pty's connect to `<pipe>-worker` reports when another client took the pipe first.
+    outSocket.emit("error", Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
+
+    await broken.exited;
+    expect(broken.exitSeen[0]!.processAlive).toBe(false);
+    expect(broken.exitSeen[0]!.exitCode).toBeTypeOf("number");
+    await sleep(500);
+    expect(broken.exits()).toBe(1);
+    healthy.pty.write("echo still-%NUMBER_OF_PROCESSORS%-here\r");
+    await waitFor(() => /still-\d+-here/.test(healthy.output()), "output of the other PTY");
+    expect(healthy.exits()).toBe(0);
+  }, 60_000);
+
   it("leaves no pipe in the worker when a PTY cannot start", async () => {
     const reader = (await conoutReader())!;
     await reader.ready();

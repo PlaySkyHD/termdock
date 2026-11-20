@@ -59,7 +59,8 @@ export interface TerminalMeasure {
 /** A key event as xterm.js hands it to the custom handler. */
 export type KeyEvent = KeyLike & { preventDefault(): void };
 
-export type ViewRole = "connecting" | "writer" | "reader" | "closed" | "error";
+/** `restarting`: the core connection ended and the main process starts the core again (#130); like `closed`, final. */
+export type ViewRole = "connecting" | "writer" | "reader" | "restarting" | "closed" | "error";
 
 export interface ViewStatus {
   role: ViewRole;
@@ -79,6 +80,11 @@ export interface ControllerOptions {
    * other key does. Without it the terminal takes all keys.
    */
   commands?: KeyCommands;
+  /**
+   * Asked once the view is attached: true makes a reading view take the writer (the active pane of the focused
+   * window after a restart of the core, #130). The core hands the writer over atomically.
+   */
+  claimOnOpen?: () => boolean;
 }
 
 function delayLayout(run: () => void): () => void {
@@ -108,6 +114,7 @@ export class TerminalController {
   private readonly scheduleLayout: (run: () => void) => () => void;
   /** Set while a fit after a change of the element is planned. */
   private cancelLayout: (() => void) | undefined;
+  private readonly claimOnOpen: (() => boolean) | undefined;
 
   constructor(
     private readonly api: ViewApi,
@@ -116,6 +123,7 @@ export class TerminalController {
     options: ControllerOptions = {},
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
+    this.claimOnOpen = options.claimOnOpen;
     const { commands } = options;
     if (commands) this.surface.onKey((event) => handleKey(event, commands));
   }
@@ -187,6 +195,7 @@ export class TerminalController {
     this.pending = undefined;
     if (this.closed) return;
     this.applyRole();
+    if (!this.isWriter() && this.claimOnOpen?.()) await this.claimWriter();
   }
 
   /** Asks the core for the writer; the role changes when `writerChanged` arrives. A refusal shows in the status. */
@@ -235,8 +244,9 @@ export class TerminalController {
 
   private onEvent(event: BridgeEvent): void {
     if (event.kind === "coreClosed") {
+      // Final for this view: after a restart (#130) the pane mounts a new one, input meanwhile is lost.
       this.closed = true;
-      this.setStatus({ ...this.status, role: "closed" });
+      this.setStatus({ ...this.status, role: event.restarting ? "restarting" : "closed" });
       return;
     }
     // Events of the window (new, updated or removed sessions, workspaces, quit) are not this view's.

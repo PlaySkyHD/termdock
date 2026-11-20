@@ -1,7 +1,7 @@
 // Status bar of the window: backend and distro, the active session and its state, the role of its view,
 // and notes about the core. Its colour follows the role of the active view, as in the first desktop shell.
 import type { SessionInfo } from "@termdock/protocol";
-import { backendText, stateText } from "./session-display.js";
+import { backendText, CORE_CLOSED_TEXT, CORE_RESTARTING_TEXT, stateText } from "./session-display.js";
 import type { ViewStatus } from "./terminal-controller.js";
 
 export interface StatusBarProps {
@@ -14,9 +14,11 @@ export interface StatusBarProps {
   /** Short message of the window itself, e.g. the limit of tabs. */
   notice: string | undefined;
   onClaimWriter: () => void;
+  /** "Core neu starten" once the automatic restarts gave up (#130); undefined hides the button. */
+  onRestartCore?: (() => void) | undefined;
 }
 
-export function StatusBar({ session, view, hints, notice, onClaimWriter }: StatusBarProps) {
+export function StatusBar({ session, view, hints, notice, onClaimWriter, onRestartCore }: StatusBarProps) {
   const reader = view?.role === "reader";
   return (
     <footer className={`status-bar status-bar--${view?.role ?? "none"}`} role="status">
@@ -59,6 +61,16 @@ export function StatusBar({ session, view, hints, notice, onClaimWriter }: Statu
           Eingabe übernehmen
         </button>
       )}
+      {onRestartCore && (
+        <button
+          className="status-bar__button"
+          type="button"
+          data-action="restart-core-status"
+          onClick={onRestartCore}
+        >
+          Core neu starten
+        </button>
+      )}
     </footer>
   );
 }
@@ -71,8 +83,10 @@ function roleText(status: ViewStatus): string {
       return "Schreibt";
     case "reader":
       return "Liest";
+    case "restarting":
+      return CORE_RESTARTING_TEXT;
     case "closed":
-      return "Verbindung zum Core getrennt";
+      return CORE_CLOSED_TEXT;
     case "error":
       return `Fehler: ${status.error ?? "unbekannt"}`;
   }

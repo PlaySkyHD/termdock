@@ -58,10 +58,21 @@ export function backendText(launch: LaunchSpec): string {
   return launch.shell === undefined ? name : `${name} · ${launch.shell}`;
 }
 
-/** Notes of the status bar about the core: the lost connection and backends it could not reach. */
-export function coreHints(status: CoreStatusResult | undefined, closed: boolean): string[] {
+/** What a pane and the status bar say while the core connection is gone (#130). */
+export const CORE_RESTARTING_TEXT = "Core startet neu …";
+export const CORE_CLOSED_TEXT = "Verbindung zum Core getrennt";
+
+/**
+ * Notes of the status bar about the core: the lost connection (or its restart, #130) and backends it could not
+ * reach.
+ */
+export function coreHints(
+  status: CoreStatusResult | undefined,
+  closed: boolean,
+  restarting = false,
+): string[] {
   return [
-    ...(closed ? ["Verbindung zum Core getrennt"] : []),
+    ...(closed ? [restarting ? CORE_RESTARTING_TEXT : CORE_CLOSED_TEXT] : []),
     ...(status?.backendUnavailable ?? []).map((backend) => `${backendName(backend)} nicht erreichbar`),
   ];
 }

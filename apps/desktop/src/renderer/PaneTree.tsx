@@ -16,7 +16,7 @@ import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/Dra
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
 import { PANE_KIND, paneTarget } from "./layout-drop.js";
-import { layoutWindow } from "./pane-layout.js";
+import { claimsAfterRestart, layoutWindow } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
 import { paneCount } from "./pane-tree.js";
@@ -54,6 +54,10 @@ export interface PaneTreeProps {
   dismissedWarnings: readonly SessionId[];
   /** "Hinweis schließen" of a pane's warning hint (#113). */
   onDismissWarnings: (sessionId: SessionId) => void;
+  /** Raised on every restart of the core: each pane mounts its view anew and attaches again (#130). */
+  coreGeneration: number;
+  /** "Core neu starten" in a pane once the automatic restarts gave up; undefined otherwise (#130). */
+  onRestartCore: (() => void) | undefined;
 }
 
 export function PaneTree({
@@ -73,9 +77,18 @@ export function PaneTree({
   onPaneMenu,
   dismissedWarnings,
   onDismissWarnings,
+  coreGeneration,
+  onRestartCore,
 }: PaneTreeProps) {
   const area = useRef<HTMLDivElement>(null);
+  // The generation each pane was last committed with (#130). Only a pane that existed before the restart re-attaches
+  // and may take the writer; a pane created later joins like any new view. Updated after the commit, so the views
+  // mounted by the restart see the old value (child effects run before this one).
+  const mountedIn = useRef(new Map<string, number>());
   const { panes, dividers } = layoutWindow(tabs, activeTabId);
+  useEffect(() => {
+    mountedIn.current = new Map(panes.map((pane) => [pane.paneId, coreGeneration]));
+  });
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
   return (
     <div className="pane-tree" ref={area}>
@@ -101,7 +114,11 @@ export function PaneTree({
             // Capture phase: xterm.js handles mouse events itself when a program (vim, htop) asks for them.
             onMouseDownCapture={() => onPanePress(tabId, paneId)}
           >
+            {/* The pane element keeps its key (#67); only its view starts over after a restart of the core. */}
             <PaneView
+              key={coreGeneration}
+              claimOnOpen={claimsAfterRestart(mountedIn.current.get(paneId), coreGeneration)}
+              onRestartCore={onRestartCore}
               api={api}
               sessionId={sessionId}
               session={session}
@@ -333,6 +350,8 @@ interface PaneViewProps {
   onClosePane: () => void;
   commands: KeyCommands;
   onContextPaste: () => void;
+  claimOnOpen: boolean;
+  onRestartCore: (() => void) | undefined;
 }
 
 /**
@@ -351,6 +370,8 @@ function PaneView({
   onClosePane,
   commands,
   onContextPaste,
+  claimOnOpen,
+  onRestartCore,
 }: PaneViewProps) {
   const attachable = session !== undefined && isAttachable(session.state);
   const [attached, setAttached] = useState(attachable);
@@ -369,6 +390,8 @@ function PaneView({
         onController={onController}
         commands={commands}
         onContextPaste={onContextPaste}
+        claimOnOpen={claimOnOpen}
+        {...(onRestartCore ? { onRestartCore } : {})}
       />
     );
   }

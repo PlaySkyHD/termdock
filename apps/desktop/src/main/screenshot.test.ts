@@ -130,9 +130,11 @@ describe("screenshotScenes", () => {
   it("runs the listed groups, in the fixed order and once each", () => {
     expect(screenshotScenes([...base, "--scenes", "settings,search"])).toEqual(["search", "settings"]);
     expect(screenshotScenes([...base, "--scenes", " snap , snap"])).toEqual(["snap"]);
-    // The missing working directory (#113) is the last group and runs alone.
-    expect(SCENE_GROUPS.at(-1)).toBe("cwd");
+    // The missing working directory (#113) runs alone; the restart of the core (#130) is the last group, because
+    // it ends the core every other group runs against.
     expect(screenshotScenes([...base, "--scenes", "cwd"])).toEqual(["cwd"]);
+    expect(SCENE_GROUPS.at(-1)).toBe("restart");
+    expect(screenshotScenes([...base, "--scenes", "restart,cwd"])).toEqual(["cwd", "restart"]);
   });
 
   it("reads the option wherever it stands", () => {

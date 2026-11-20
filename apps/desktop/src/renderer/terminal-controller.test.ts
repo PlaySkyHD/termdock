@@ -506,7 +506,7 @@ describe("TerminalController", () => {
   it("reports a lost core", async () => {
     const { api, statuses } = await opened({ writerViewId: "v1" });
 
-    api.emit({ kind: "coreClosed" });
+    api.emit({ kind: "coreClosed", restarting: false });
     expect(statuses.at(-1)).toMatchObject({ role: "closed" });
   });
 
@@ -514,7 +514,7 @@ describe("TerminalController", () => {
     const { api, surface, controller, statuses, delay } = await opened({ writerViewId: "v1" });
     const resizesBefore = api.resizes.length;
 
-    api.emit({ kind: "coreClosed" });
+    api.emit({ kind: "coreClosed", restarting: false });
     api.emit({ kind: "writerChanged", sessionId: "s1", writerViewId: "v1" });
     surface.area = { cols: 60, rows: 20 };
     controller.layoutChanged();
@@ -526,6 +526,49 @@ describe("TerminalController", () => {
     expect(api.inputs).toEqual([]);
     expect(api.resizes.length).toBe(resizesBefore);
     expect(api.claims).toEqual([]);
+  });
+
+  it("shows a restart of the core and drops input meanwhile, also after coreRestarted (#130)", async () => {
+    const { api, surface, controller, statuses } = await opened({ writerViewId: "v1" });
+
+    api.emit({ kind: "coreClosed", restarting: true });
+    surface.emitData("lost");
+    expect(statuses.at(-1)).toMatchObject({ role: "restarting" });
+    // A new view replaces this one; the old one never sends again.
+    api.emit({ kind: "coreRestarted" });
+    surface.emitData("still lost");
+    await controller.claimWriter();
+
+    expect(api.inputs).toEqual([]);
+    expect(api.claims).toEqual([]);
+    expect(api.attachCalls).toHaveLength(1);
+  });
+
+  it("takes the writer after the attach when claimOnOpen says so and it reads (#130)", async () => {
+    const api = new FakeApi();
+    const controller = new TerminalController(api, new FakeSurface(), () => {}, { claimOnOpen: () => true });
+
+    const opening = controller.open("s1");
+    api.answerAttach({ writerViewId: "v0" });
+    await opening;
+
+    expect(api.claims).toEqual(["v1"]);
+  });
+
+  it("claims nothing when it writes already or claimOnOpen says no", async () => {
+    const writer = new FakeApi();
+    const first = new TerminalController(writer, new FakeSurface(), () => {}, { claimOnOpen: () => true });
+    const opening = first.open("s1");
+    writer.answerAttach({ writerViewId: "v1" });
+    await opening;
+    const reader = new FakeApi();
+    const second = new TerminalController(reader, new FakeSurface(), () => {}, { claimOnOpen: () => false });
+    const reading = second.open("s1");
+    reader.answerAttach({ writerViewId: "v0" });
+    await reading;
+
+    expect(writer.claims).toEqual([]);
+    expect(reader.claims).toEqual([]);
   });
 
   it("shows a refused writer claim in its status instead of losing it", async () => {
@@ -649,7 +692,7 @@ describe("TerminalController", () => {
       const { api, controller } = await opened({ writerViewId: "v1" });
 
       expect(controller.paste("")).toBe(false);
-      api.emit({ kind: "coreClosed" });
+      api.emit({ kind: "coreClosed", restarting: false });
       expect(controller.paste("text")).toBe(false);
 
       expect(api.inputs).toEqual([]);

@@ -1,6 +1,10 @@
-// "Neu starten" of an ended or interrupted session (#156): what the pane's placeholder and the sidebar's menu do
-// with the core's answer. Pure, no DOM; the session's new state comes with the core's events.
+// "Neu starten" of an ended or interrupted session (#156): what the pane's placeholder, the bar of an attached view
+// (#164) and the sidebar's menu do with the core's answer. Pure, no DOM; the session's new state comes with the
+// core's events.
+import type { SessionInfo, SessionState } from "@termdock/protocol";
 import { failureText } from "./dialog-state.js";
+import { canRestart, endedNotice, isAttachable } from "./session-display.js";
+import type { ViewRole } from "./terminal-controller.js";
 
 /** The placeholder's button: a restart in flight disables it, a refusal stays shown until the next click. */
 export interface RestartStatus {
@@ -27,6 +31,47 @@ export function restartFromPlaceholder(
     () => update(RESTART_IDLE),
     (error: unknown) => update({ running: false, error: failureText(error) }),
   );
+}
+
+/** Text of a reader's hint: only the writing view restarts, like only it types (ADR 0003). */
+export const READER_RESTART_HINT = "Neu starten kann das schreibende Pane.";
+
+/**
+ * The bar of an attached view whose session ended (#164): the writer gets the button, a reader only the hint.
+ * Nothing while the session lives or starts, and nothing in a view without a role yet or without the core (its
+ * own notice covers the pane then).
+ */
+export type RestartBar =
+  | { kind: "button"; title: string; detail: string; running: boolean; error: string | undefined }
+  | { kind: "hint"; title: string; detail: string };
+
+export function restartBar(
+  session: SessionInfo | undefined,
+  role: ViewRole | undefined,
+  status: RestartStatus,
+): RestartBar | undefined {
+  if (session === undefined || !canRestart(session.state)) return undefined;
+  const notice = endedNotice(session);
+  const title = notice?.title ?? session.state;
+  if (role === "writer")
+    return {
+      kind: "button",
+      title,
+      detail: notice?.detail ?? "",
+      running: status.running,
+      error: status.error,
+    };
+  if (role === "reader") return { kind: "hint", title, detail: READER_RESTART_HINT };
+  return undefined;
+}
+
+/**
+ * Whether the session's new state ends the last refusal (#164): it lives again or is archived. A failed restart runs
+ * `Starting → Interrupted`, and that event may reach the pane in the same render as the refusal, so these states and
+ * `Exited` keep it; a new click clears it anyway.
+ */
+export function clearsRestartError(state: SessionState): boolean {
+  return isAttachable(state) || state === "Archived";
 }
 
 /** The sidebar's menu entry: a refusal goes to the status bar (`notice`). Never rejects. */

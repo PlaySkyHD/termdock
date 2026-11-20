@@ -271,6 +271,86 @@ input {
   pointer-events: none;
 }
 
+/*
+ * The session of an attached view ended (#164): one line at the top of the pane, left of its grip, above the
+ * terminal and below the note of a lost core. Only the button takes the mouse; a reader's hint takes none.
+ */
+.restart-bar {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  right: 46px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 3px;
+  background: var(--td-status-neutral);
+  color: var(--td-status-foreground);
+  font-family: var(--td-font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.restart-bar[data-restart-bar="hint"] {
+  background: var(--td-status-reader);
+}
+
+.restart-bar__title {
+  flex: none;
+  font-weight: 600;
+}
+
+.restart-bar__detail,
+.restart-bar__error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.restart-bar__detail {
+  flex: 0 1 auto;
+}
+
+.restart-bar__error {
+  flex: 1 1 auto;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--td-status-error);
+}
+
+.restart-bar__button {
+  flex: none;
+  margin-left: auto;
+  height: 20px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 3px;
+  background: var(--td-status-writer);
+  color: var(--td-status-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.restart-bar__button:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.restart-bar__button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.restart-bar__button:focus-visible {
+  outline: 1px solid #ffffff;
+  outline-offset: 1px;
+}
+
 /* The core is gone (#130): the terminal stays readable but dimmed, the note and the button sit in its middle. */
 .core-lost {
   position: absolute;

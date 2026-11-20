@@ -12,8 +12,8 @@ import type {
 } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { RESTART_IDLE, restartFromPlaceholder } from "./restart-session.js";
-import type { RestartStatus } from "./restart-session.js";
+import { clearsRestartError, RESTART_IDLE, restartBar, restartFromPlaceholder } from "./restart-session.js";
+import type { RestartBar, RestartStatus } from "./restart-session.js";
 import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
@@ -24,7 +24,7 @@ import { paneContent } from "./pane-placeholder.js";
 import { paneCount } from "./pane-tree.js";
 import { isAttachable, warningTexts } from "./session-display.js";
 import type { WarningText } from "./session-display.js";
-import type { TerminalController, ViewStatus } from "./terminal-controller.js";
+import type { TerminalController, ViewRole, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
 import { MIN_SHARE } from "./ui-store.js";
 
@@ -194,6 +194,40 @@ function WarningHint({ texts, onDismiss }: { texts: readonly WarningText[]; onDi
   );
 }
 
+/**
+ * The bar of an attached view whose session ended (#164), at the top of the pane next to its grip. Only the button
+ * takes the mouse (`pointer-events`): selection and the reader's double click still reach the terminal. The press
+ * keeps the focus in the terminal, so the new run takes the keys at once. A reader's hint sends nothing.
+ */
+function RestartBarView({ bar, onRestart }: { bar: RestartBar | undefined; onRestart: () => void }) {
+  if (bar === undefined) return null;
+  return (
+    <div className="restart-bar" role="status" data-restart-bar={bar.kind}>
+      <span className="restart-bar__title">{bar.title}</span>
+      <span className="restart-bar__detail" title={bar.detail}>
+        {bar.detail}
+      </span>
+      {bar.kind === "button" && bar.error !== undefined && (
+        <span className="restart-bar__error" role="alert" data-restart-error="" title={bar.error}>
+          {bar.error}
+        </span>
+      )}
+      {bar.kind === "button" && (
+        <button
+          className="restart-bar__button"
+          type="button"
+          data-action="restart-in-view"
+          disabled={bar.running}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onRestart}
+        >
+          Neu starten
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** The handle of a pane (#67): dragging it moves the pane, a click or the menu key opens its menu. */
 function PaneGrip({
   paneId,
@@ -358,7 +392,8 @@ interface PaneViewProps {
 
 /**
  * One pane. A session that cannot be attached (starting, exited, interrupted) shows a notice instead of a view.
- * Once attached, the view stays when the session ends, so its last output remains readable.
+ * Once attached, the view stays when the session ends, so its last output remains readable; its bar then offers
+ * "Neu starten" (#164).
  */
 function PaneView({
   api,
@@ -380,30 +415,46 @@ function PaneView({
   useEffect(() => {
     if (attachable) setAttached(true);
   }, [attachable]);
-  // A refusal stays until the next click: a failed restart changes the state itself (Starting, Interrupted), and a
-  // restart that worked replaces the placeholder with the view (review PR #156).
+  // A refusal stays until the next click or until the session lives again (#164): a failed restart changes the state
+  // itself (Starting, Interrupted), and a restart that worked replaces the placeholder with the view (review PR #156).
   const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);
+  const state = session?.state;
+  useEffect(() => {
+    if (state !== undefined && clearsRestartError(state))
+      setRestartStatus((current) =>
+        current.error === undefined ? current : { ...current, error: undefined },
+      );
+  }, [state]);
+  // The role of the attached view decides between the button and the hint of its bar (#164).
+  const [role, setRole] = useState<ViewRole>();
+  // "Neu starten" (#156): once the session lives again, the pane attaches like after any start; an attached view
+  // keeps its view and gets the new run (#164).
+  const restart = (): void =>
+    void restartFromPlaceholder(restartStatus, () => api.restartSession(sessionId), setRestartStatus);
 
   if (attached || attachable) {
     return (
-      <TerminalView
-        api={api}
-        sessionId={sessionId}
-        active={active}
-        focusSignal={focusSignal}
-        onStatus={onStatus}
-        onController={onController}
-        commands={commands}
-        onContextPaste={onContextPaste}
-        claimOnOpen={claimOnOpen}
-        {...(onRestartCore ? { onRestartCore } : {})}
-      />
+      <>
+        <TerminalView
+          api={api}
+          sessionId={sessionId}
+          active={active}
+          focusSignal={focusSignal}
+          onStatus={(status) => {
+            setRole(status?.role);
+            onStatus(status);
+          }}
+          onController={onController}
+          commands={commands}
+          onContextPaste={onContextPaste}
+          claimOnOpen={claimOnOpen}
+          {...(onRestartCore ? { onRestartCore } : {})}
+        />
+        <RestartBarView bar={restartBar(session, role, restartStatus)} onRestart={restart} />
+      </>
     );
   }
   const content = paneContent(session, sessionsLoaded);
-  // "Neu starten" (#156): once the session lives again, the pane attaches like after any start.
-  const restart = (): void =>
-    void restartFromPlaceholder(restartStatus, () => api.restartSession(sessionId), setRestartStatus);
   const restartError = restartStatus.error;
   if (content.kind !== "placeholder")
     return (

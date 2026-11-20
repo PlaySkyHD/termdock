@@ -1,6 +1,28 @@
+import type { SessionInfo, SessionState } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { RESTART_IDLE, restartFromMenu, restartFromPlaceholder } from "./restart-session.js";
+import {
+  clearsRestartError,
+  RESTART_IDLE,
+  restartBar,
+  restartFromMenu,
+  restartFromPlaceholder,
+} from "./restart-session.js";
 import type { RestartStatus } from "./restart-session.js";
+import type { ViewRole } from "./terminal-controller.js";
+
+function session(state: SessionState, lastExitCode?: number): SessionInfo {
+  return {
+    id: "s1",
+    name: "Build",
+    state,
+    launch: { backend: "wsl", cwd: "/" },
+    size: { cols: 80, rows: 24 },
+    loggingEnabled: false,
+    createdAt: "2026-11-20T10:00:00Z",
+    updatedAt: "2026-11-20T10:00:00Z",
+    ...(lastExitCode === undefined ? {} : { lastExitCode }),
+  };
+}
 
 /** The bridge rejects with the core's code in front of its message. */
 const refused = () => Promise.reject(new Error("[backend_unavailable] Session s1 could not be started"));
@@ -74,5 +96,93 @@ describe("restartFromMenu (#156)", () => {
     );
 
     expect(notices).toEqual([]);
+  });
+});
+
+describe("restartBar of an attached view (#164)", () => {
+  it.each<SessionState>(["Running", "Detached", "Starting", "Archived"])(
+    "shows no bar while the session is %s",
+    (state) => {
+      expect(restartBar(session(state), "writer", RESTART_IDLE)).toBeUndefined();
+      expect(restartBar(session(state), "reader", RESTART_IDLE)).toBeUndefined();
+    },
+  );
+
+  it("shows no bar before the session list knows the session", () => {
+    expect(restartBar(undefined, "writer", RESTART_IDLE)).toBeUndefined();
+  });
+
+  it("gives the writer of an Exited session the button with state and exit code", () => {
+    expect(restartBar(session("Exited", 0), "writer", RESTART_IDLE)).toEqual({
+      kind: "button",
+      title: "Beendet",
+      detail: "Der Prozess ist mit Exit-Code 0 beendet.",
+      running: false,
+      error: undefined,
+    });
+  });
+
+  it("gives the writer of an Interrupted session the button", () => {
+    expect(restartBar(session("Interrupted"), "writer", RESTART_IDLE)).toMatchObject({
+      kind: "button",
+      title: "Unterbrochen",
+    });
+  });
+
+  it.each<SessionState>(["Exited", "Interrupted"])("gives a reader of a %s session only a hint", (state) => {
+    const bar = restartBar(session(state), "reader", RESTART_IDLE);
+
+    expect(bar).toMatchObject({ kind: "hint" });
+    expect(bar).not.toHaveProperty("running");
+    expect(bar?.detail).toMatch(/schreibende Pane/);
+  });
+
+  it.each<ViewRole | undefined>([undefined, "connecting", "error", "restarting", "closed"])(
+    "shows nothing in a view that is %s",
+    (role) => {
+      expect(restartBar(session("Interrupted"), role, RESTART_IDLE)).toBeUndefined();
+    },
+  );
+
+  it("disables the button while the restart runs", () => {
+    expect(restartBar(session("Exited", 1), "writer", { running: true, error: undefined })).toMatchObject({
+      kind: "button",
+      running: true,
+    });
+  });
+
+  it("shows a refusal of the core in the bar and frees the button again", async () => {
+    let status: RestartStatus = RESTART_IDLE;
+    await restartFromPlaceholder(
+      status,
+      () => Promise.reject(new Error("[backend_unavailable] Session s1 could not be started")),
+      (next) => (status = next),
+    );
+
+    expect(restartBar(session("Interrupted"), "writer", status)).toMatchObject({
+      kind: "button",
+      running: false,
+      error: "Session s1 could not be started",
+    });
+  });
+
+  it("does not show the writer's refusal in a reader", () => {
+    const refusedStatus = { running: false, error: "Session s1 could not be started" };
+
+    expect(restartBar(session("Interrupted"), "reader", refusedStatus)).not.toHaveProperty("error");
+  });
+});
+
+describe("clearsRestartError (#164)", () => {
+  it.each<[SessionState, boolean]>([
+    ["Running", true],
+    ["Detached", true],
+    ["Archived", true],
+    // A failed restart passes Starting and ends Interrupted; its refusal may arrive in the same render.
+    ["Starting", false],
+    ["Exited", false],
+    ["Interrupted", false],
+  ])("a session that is %s clears the refusal: %s", (state, clears) => {
+    expect(clearsRestartError(state)).toBe(clears);
   });
 });

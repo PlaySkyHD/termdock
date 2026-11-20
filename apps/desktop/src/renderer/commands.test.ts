@@ -641,7 +641,7 @@ describe("startProjectSession (#104)", () => {
     return { ...base, opened, deps };
   }
 
-  it("creates the session in the project directory and opens it by the mode of the click", async () => {
+  it("[V1-01] creates the session in the project directory and opens it by the mode of the click", async () => {
     const { deps, created, opened, store } = projectSetup();
 
     await startProjectSession(deps, project, "tab");

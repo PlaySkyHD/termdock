@@ -44,6 +44,10 @@ jobs:
       - name: Script tests
         run: python -I -m unittest discover -s scripts -p "*_test.py"
 
+      # Every V1 acceptance criterion has a proof in docs/acceptance.md, and every named test exists (#132).
+      - name: Acceptance overview
+        run: npm run acceptance
+
       # WSL integration tests need a distro with tmux and run only locally (TERMDOCK_WSL_TESTS=1).
       - name: Test
         run: npm test

@@ -61,7 +61,7 @@ function storedSession(id: string, state: SessionState, profileId: string): Sess
 }
 
 describe("runAutostart", () => {
-  it("starts exactly the profiles marked autostart, with name, workspace, logging and launch of the profile", async () => {
+  it("[V1-07] starts exactly the profiles marked autostart, with name, workspace, logging and launch of the profile", async () => {
     const t = setup();
     await t.registry.restore();
     const workspace = t.workspaces.createWorkspace({ name: "web" });

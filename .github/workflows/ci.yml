@@ -47,3 +47,58 @@ jobs:
       # WSL integration tests need a distro with tmux and run only locally (TERMDOCK_WSL_TESTS=1).
       - name: Test
         run: npm test
+
+  # Windows installer (ADR 0007): unsigned NSIS setup per user, no publishing. The same commands run locally.
+  package:
+    name: Installer bauen und prüfen
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The electron package downloads its binary on first use, not on install; electron-builder needs it in
+      # node_modules/electron/dist (`electronDist`).
+      - name: Fetch the Electron binary
+        shell: bash
+        run: node_modules/.bin/electron --version
+
+      - name: Build installer
+        run: npm run dist -w apps/desktop
+
+      # node-pty must load from app.asar.unpacked with the ABI of the packaged Electron.
+      - name: Load native modules of the packaged app
+        shell: bash
+        working-directory: apps/desktop/release/win-unpacked
+        env:
+          ELECTRON_RUN_AS_NODE: "1"
+        run: >-
+          ./TermDock.exe -e "const u = require(require('path').resolve('resources/app.asar.unpacked/node_modules/node-pty/lib/utils.js'));
+          for (const m of ['conpty', 'pty']) console.log(m, u.loadNativeModule(m).dir)"
+
+      # Starts the packaged core on its own pipe, `hello` and `core.status`, then shuts it down. Without WSL on the
+      # runner the core reports the backend as unavailable; that is expected.
+      - name: Smoke test of the unpacked app
+        shell: bash
+        working-directory: apps/desktop/release/win-unpacked
+        env:
+          TERMDOCK_DATA_DIR: ${{ runner.temp }}\termdock-smoke
+        run: ./TermDock.exe --smoke-test
+
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: TermDock-Setup
+          path: apps/desktop/release/TermDock-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7

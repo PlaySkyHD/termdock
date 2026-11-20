@@ -13,7 +13,100 @@ import {
   stopIsolatedCore,
   wslSocketDeps,
 } from "./screenshot.js";
-import type { ExecFileFn } from "./screenshot.js";
+import type { ExecFileFn, SceneGroup } from "./screenshot.js";
+import { describeError, runGroupsWithRetry, SceneGroupError } from "./screenshot.js";
+
+describe("describeError", () => {
+  it("names errors, strings and plain objects, never [object Object]", () => {
+    expect(describeError(new Error("boom"))).toBe("boom");
+    expect(describeError(new TypeError("bad"))).toBe("TypeError: bad");
+    expect(describeError("text")).toBe("text");
+    // A DOMException of the renderer arrives as a plain object.
+    expect(describeError({ name: "NotAllowedError", message: "Document is not focused" })).toBe(
+      "NotAllowedError: Document is not focused",
+    );
+    expect(describeError({ code: 3, detail: "x" })).toBe('{"code":3,"detail":"x"}');
+    expect(describeError({})).toBe("non-Error object (Object)");
+    expect(describeError(undefined)).toBe("undefined");
+  });
+});
+
+describe("runGroupsWithRetry", () => {
+  const setup = (failures: Partial<Record<SceneGroup, number>>) => {
+    const played: string[] = [];
+    const left = { ...failures };
+    const logs: string[] = [];
+    let resets = 0;
+    const play = async (groups: readonly SceneGroup[]): Promise<void> => {
+      for (const group of groups) {
+        played.push(group);
+        if ((left[group] ?? 0) > 0) {
+          left[group] = (left[group] ?? 0) - 1;
+          throw new SceneGroupError(group, { name: "Boom", message: `${group} broke` });
+        }
+      }
+    };
+    return {
+      played,
+      logs,
+      resets: () => resets,
+      run: () =>
+        runGroupsWithRetry(
+          ["scenario", "tabs", "search"],
+          play,
+          async () => {
+            resets++;
+          },
+          (text) => logs.push(text),
+        ),
+    };
+  };
+
+  it("plays every group once without a failure", async () => {
+    const t = setup({});
+    expect(await t.run()).toEqual([]);
+    expect(t.played).toEqual(["scenario", "tabs", "search"]);
+    expect(t.resets()).toBe(0);
+  });
+
+  it("repeats a failed group once, then plays the rest, and reports it", async () => {
+    const t = setup({ tabs: 1 });
+    expect(await t.run()).toEqual([{ group: "tabs", error: "Boom: tabs broke" }]);
+    expect(t.played).toEqual(["scenario", "tabs", "tabs", "search"]);
+    expect(t.resets()).toBe(1);
+    expect(t.logs).toEqual(["retry tabs: Boom: tabs broke"]);
+  });
+
+  it("throws when the repetition fails too, without a third try", async () => {
+    const t = setup({ tabs: 2 });
+    await expect(t.run()).rejects.toThrow(/scene group tabs failed: Boom: tabs broke/);
+    expect(t.played).toEqual(["scenario", "tabs", "tabs"]);
+  });
+
+  it("repeats each failing group once", async () => {
+    const t = setup({ scenario: 1, search: 1 });
+    const retries = await t.run();
+    expect(retries.map((retry) => retry.group)).toEqual(["scenario", "search"]);
+    expect(t.played).toEqual(["scenario", "scenario", "tabs", "search", "search"]);
+  });
+
+  it("does not repeat a failure without a group", async () => {
+    let resets = 0;
+    await expect(
+      runGroupsWithRetry(
+        ["tabs"],
+        async () => {
+          throw new Error("no core");
+        },
+        async () => {
+          resets++;
+        },
+        () => {},
+      ),
+    ).rejects.toThrow("no core");
+    expect(resets).toBe(0);
+  });
+});
 
 describe("screenshotDir", () => {
   it("reads the directory after --screenshot", () => {

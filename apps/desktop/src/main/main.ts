@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { connect, defaultPipeName } from "@termdock/core";
+import { connect, defaultPipeName, resolveDataDir } from "@termdock/core";
 import type { CoreClient } from "@termdock/core";
 import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
 import type { LayoutWindow } from "@termdock/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
 import type { WindowLayouts } from "./bridge.js";
@@ -24,12 +24,20 @@ import {
 import { coreEntryPath, startDetachedCore } from "./core-process.js";
 import { CoreSupervisor } from "./core-supervisor.js";
 import type { SupervisorState } from "./core-supervisor.js";
+import {
+  createDesktopLogger,
+  flushWithin,
+  helpMenuTemplate,
+  openLogFolder,
+  removeAfterFlush,
+} from "./diagnostics.js";
 import { LayoutCoordinator } from "./layout-coordinator.js";
 import { decideQuit, QuitFlow } from "./quit-flow.js";
 import type { DecideDeps } from "./quit-flow.js";
 import { QuitPrompt } from "./quit-prompt.js";
 import {
   cleanStaleSockets,
+  describeError,
   isolatedCore,
   QuietWatch,
   SCENE_GROUPS,
@@ -43,6 +51,8 @@ import {
 } from "./screenshot.js";
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
+import { runSmokeTest, smokeTestDataDir, smokeTestRequested } from "./smoke-test.js";
+import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { fitBounds, screenshotOrigin } from "./window-geometry.js";
 
@@ -53,8 +63,19 @@ const RENDERER = path.join(here, "..", "renderer", "index.html");
 const SCREENSHOT_TIMEOUT_MS = 480_000;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
+/** Longest wait for the log file before the app exits. */
+const LOG_FLUSH_TIMEOUT_MS = 1_000;
+/** Upper bound of `--smoke-test` until the first answer: the core start plus `core.status` (reconcile). */
+const SMOKE_TIMEOUT_MS = 90_000;
 
-const log = (text: string): void => console.error(`termdock-desktop: ${text}`);
+// Stderr only until the data directory is known (a screenshot run uses its own); then `desktop.log` as well.
+let logger = createDesktopLogger(undefined);
+const log = (text: string): void => logger.error(text);
+
+// One Electron profile (and single-instance lock) for the repo and the installed app (ADR 0007); the screenshot
+// and check modes below replace it with their own. The installed app gets its AppUserModelID for one taskbar icon.
+app.setPath("userData", appUserDataDir(app.getPath("appData")));
+if (app.isPackaged) app.setAppUserModelId(APP_USER_MODEL_ID);
 
 let shotDir: string | undefined;
 let shotScenes: readonly SceneGroup[] = SCENE_GROUPS;
@@ -99,11 +120,40 @@ if (shotDir !== undefined) {
   // tmux servers of aborted runs (sockets of ended processes); never rejects, `finish()` waits for it.
   staleSocketCleanup = cleanStaleSockets(process.pid, { ...wslSocketDeps(), isAlive, log });
 }
+
+// The check mode of the built app (ADR 0007) is isolated the same way: own pipe, tmux socket and Electron
+// profile, the data folder from TERMDOCK_DATA_DIR (never the productive one), no window.
+let smokeDataDir: string | undefined;
+if (badArguments === undefined && smokeTestRequested(process.argv)) {
+  try {
+    if (shotDir !== undefined) throw new Error("--smoke-test and --screenshot exclude each other");
+    smokeDataDir = smokeTestDataDir(process.env);
+    isolated = isolatedCore(smokeDataDir, process.pid, randomBytes(4).toString("hex"));
+    app.setPath("userData", path.join(smokeDataDir, "electron-profile"));
+  } catch (error) {
+    log(error instanceof Error ? error.message : String(error));
+    smokeDataDir = undefined;
+    badArguments = 2;
+  }
+}
 const pipePath = isolated?.pipePath ?? defaultPipeName();
+/** Where `termdock.db` and `logs/` lie: the isolated one of a screenshot run, else as the core resolves it. */
+const dataDir: string | undefined = shotTemp ?? smokeDataDir ?? safeDataDir();
+logger = createDesktopLogger(dataDir);
+
+function safeDataDir(): string | undefined {
+  try {
+    return resolveDataDir();
+  } catch {
+    return undefined;
+  }
+}
 
 if (badArguments !== undefined) {
   // Without a directory the run would fall back to the productive core; stop before anything starts.
   app.exit(badArguments);
+} else if (smokeDataDir !== undefined) {
+  void smokeTest();
 } else if (shotDir === undefined && !app.requestSingleInstanceLock()) {
   // Another app runs; it opens a window in its own main process (see "second-instance").
   app.exit(0);
@@ -134,7 +184,7 @@ async function main(): Promise<void> {
           startCore: () => {
             corePid = startDetachedCore({
               execPath: process.execPath,
-              entry: coreEntryPath(),
+              entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
               // The core always gets the pipe this app connects to.
               env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
               onError: (error) => log(`core process: ${error.message}`),
@@ -176,8 +226,9 @@ async function main(): Promise<void> {
       });
       log(`isolated core: ${outcome}`);
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
-      cleanTemp();
+      await cleanTemp();
     }
+    await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
     app.exit(1);
     return;
   }
@@ -309,7 +360,8 @@ async function main(): Promise<void> {
         quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
       }
     });
-    contents.on("render-process-gone", () => {
+    contents.on("render-process-gone", (_event, details) => {
+      log(`render-process-gone: window ${id}, reason ${details.reason}, exit code ${details.exitCode}`);
       void bridge.resetWindow(id);
       quitPrompt.windowGone(id);
     });
@@ -396,6 +448,11 @@ async function main(): Promise<void> {
           { label: "Entwicklerwerkzeuge", role: "toggleDevTools" },
         ],
       },
+      // "Log-Ordner öffnen": the folder with core.log and desktop.log (spec diagnostics).
+      helpMenuTemplate(() => {
+        if (dataDir !== undefined)
+          void openLogFolder(dataDir, { openPath: (folder) => shell.openPath(folder), log });
+      }),
     ]),
   );
 
@@ -444,9 +501,65 @@ async function main(): Promise<void> {
     supervisor.stop(); // the app quits: no restart (#130)
     quitFlow.windowsClosed();
   });
+  // The last log lines (the incident before the end) are written before the process ends.
+  let logFlushed = false;
+  app.on("will-quit", (event) => {
+    if (logFlushed) return;
+    event.preventDefault();
+    void flushWithin(logger, LOG_FLUSH_TIMEOUT_MS).then(() => {
+      logFlushed = true;
+      app.quit();
+    });
+  });
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
+}
+
+/** `--smoke-test` (ADR 0007): start the isolated core, `hello` and `core.status`, shut it down, exit 0 or 1. */
+async function smokeTest(): Promise<void> {
+  // Whatever throws, the process must end: a check that hangs would block the CI job until its timeout.
+  let code: 0 | 1 = 1;
+  try {
+    code = await smokeTestRun();
+  } catch (error) {
+    log(`smoke test failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  } finally {
+    await flushWithin(logger, LOG_FLUSH_TIMEOUT_MS);
+    app.exit(code);
+  }
+}
+
+async function smokeTestRun(): Promise<0 | 1> {
+  await app.whenReady();
+  let corePid: number | undefined;
+  return runSmokeTest({
+    connectOrStart: () =>
+      connectOrStartCore({
+        connect: () => connect(pipePath, { clientKind: "desktop", requestTimeoutMs: READY_TIMEOUT_MS }),
+        startCore: () => {
+          corePid = startDetachedCore({
+            execPath: process.execPath,
+            entry: coreEntryPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+            env: { ...process.env, ...isolated?.env, TERMDOCK_PIPE: pipePath },
+            onError: (error) => log(`core process: ${error.message}`),
+          });
+        },
+        sleep: (ms) => sleep(ms),
+        now: () => Date.now(),
+      }),
+    stopCore: () =>
+      stopIsolatedCore(corePid, {
+        connect: () =>
+          connect(pipePath, { clientKind: "desktop", connectTimeoutMs: 2_000, requestTimeoutMs: 15_000 }),
+        kill: (pid) => process.kill(pid),
+        isAlive: (pid) => isAlive(pid),
+        sleep: (ms) => sleep(ms),
+      }),
+    coreAlive: () => corePid !== undefined && isAlive(corePid),
+    log,
+    timeoutMs: SMOKE_TIMEOUT_MS,
+  });
 }
 
 function isAlive(pid: number): boolean {
@@ -491,27 +604,48 @@ async function runScreenshot(
       await supervisor.close();
       await settleWithin(staleSocketCleanup, STALE_SOCKET_WAIT_MS);
       for (const window of BrowserWindow.getAllWindows()) window.destroy();
-      cleanTemp();
+      await cleanTemp();
       app.exit(exitCode);
     })());
 
   try {
     const tmuxSocket = isolated?.env.TERMDOCK_TMUX_SOCKET;
     if (tmuxSocket === undefined) throw new Error("The screenshot run has no isolated core");
-    await runScenario({ dir, bridge, watch, log, tmuxSocket, core, ...control }, groups);
+    // A failed group is repeated once (#127); the lines `retry <group>: <error>` also go into the summary.
+    const retried: string[] = [];
+    const scenarioLog = (text: string): void => {
+      if (text.startsWith("retry ")) retried.push(text);
+      log(text);
+    };
+    try {
+      await runScenario({ dir, bridge, watch, log: scenarioLog, tmuxSocket, core, ...control }, groups);
+    } finally {
+      log(
+        retried.length === 0
+          ? "screenshot run: no retries"
+          : `screenshot run: retries\n  ${retried.join("\n  ")}`,
+      );
+    }
   } catch (error) {
-    log(`screenshot failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+    log(`screenshot failed: ${describeError(error, true)}`);
     exitCode = 1;
   }
   await finish();
 }
 
-function cleanTemp(): void {
-  if (shotTemp === undefined) return;
-  try {
-    // The core may still hold its database for a moment after the shutdown answer.
-    rmSync(shotTemp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch (error) {
-    log(`could not remove ${shotTemp}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+/** Flushes the log first (it lives in the temp directory), then removes the directory; no log line after that. */
+async function cleanTemp(): Promise<void> {
+  const dir = shotTemp;
+  if (dir === undefined) return;
+  await removeAfterFlush(logger, LOG_FLUSH_TIMEOUT_MS, () => {
+    try {
+      // The core may still hold its database for a moment after the shutdown answer.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      // Not through the logger: its write would create the folder again.
+      process.stderr.write(
+        `termdock-desktop: could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  });
 }

@@ -65,7 +65,7 @@ describe.skipIf(!enabled)("CoreSupervisor against a real core (#130)", () => {
             startCore: () => {
               const pid = startDetachedCore({
                 execPath: process.execPath,
-                entry: coreEntryPath(),
+                entry: coreEntryPath({ packaged: false, resourcesPath: "" }),
                 env: {
                   ...process.env,
                   TERMDOCK_PIPE: pipePath,

@@ -4,15 +4,16 @@
 // (clicks through `webContents.executeJavaScript`, `data-` attributes of the sidebar) and the sessions through the
 // bridge, so what is captured is what the app shows. Needs Electron, WSL and the isolated core; no unit test.
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
-import { SCENE_GROUPS } from "./screenshot.js";
-import type { QuietWatch, SceneGroup } from "./screenshot.js";
+import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from "./screenshot.js";
+import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { cwdScenes } from "./screenshot-cwd.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restartScenes } from "./screenshot-restart.js";
@@ -80,14 +81,79 @@ const stateSelector = (name: string, state: string): string =>
 const NEEDS_SESSIONS: readonly SceneGroup[] = ["scenario", "sidebar", "restore", "quit"];
 
 /**
- * Plays the scene `groups` (all by default) in the order of `SCENE_GROUPS`. Every group builds its own state, so
- * each also runs alone (`--scenes <group>`): `sidebar`, `restore` and `quit` share the sessions Build, Logs, Notes,
- * Done (Exited) and Lost (Interrupted) of the first section, `restore` adds Editor, Shell and Misc itself, and
- * `tabs`, `snap`, `search` and `settings` create their own sessions.
+ * Plays the scene `groups` (all by default) and repeats a failed group once (#127): the windows, sessions,
+ * workspaces and profiles are cleared first, because every group builds its own state. Returns the repeated groups.
  */
 export async function runScenario(
   deps: ScenarioDeps,
   groups: readonly SceneGroup[] = SCENE_GROUPS,
+): Promise<GroupRetry[]> {
+  return runGroupsWithRetry(
+    groups,
+    async (pending) => {
+      let current: SceneGroup | undefined;
+      try {
+        await playGroups(deps, pending, (group) => (current = group));
+      } catch (error) {
+        throw current === undefined ? error : new SceneGroupError(current, error);
+      }
+    },
+    () => resetRun(deps),
+    deps.log,
+  );
+}
+
+/**
+ * Back to the start state of a run without a new core: no window, no session (its tmux session ends with it), no
+ * workspace, no profile and the quit settings as the core starts. A step that fails is logged; the repeat of the
+ * group then shows whether it mattered.
+ */
+async function resetRun({ core, closeAllWindows, log, dir }: ScenarioDeps): Promise<void> {
+  const attempt = async (what: string, action: () => Promise<unknown>): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      log(`reset ${what}: ${describeError(error)}`);
+    }
+  };
+  // Pictures of the failed first try (`failed-*.png`) move to `<dir>/retry/`, so an upload of `<dir>` after a
+  // green repeat does not carry them; a failure of the repeat writes new ones next to the scenes.
+  await attempt("failed pictures", async () => {
+    const failed = readdirSync(dir).filter((file) => /^failed-.*\.png$/.test(file));
+    if (failed.length === 0) return;
+    mkdirSync(path.join(dir, "retry"), { recursive: true });
+    for (const file of failed) renameSync(path.join(dir, file), path.join(dir, "retry", file));
+  });
+  await attempt("windows", () => closeAllWindows(true));
+  await attempt("sessions", async () => {
+    for (const { id } of (await core.request("session.list", {})).result.sessions) {
+      await attempt(`kill ${id}`, () => core.request("session.kill", { sessionId: id }));
+      await attempt(`delete ${id}`, () => core.request("session.delete", { sessionId: id }));
+    }
+  });
+  await attempt("workspaces", async () => {
+    for (const { id } of (await core.request("workspace.list", {})).result.workspaces)
+      await attempt(`workspace ${id}`, () => core.request("workspace.delete", { workspaceId: id }));
+  });
+  await attempt("profiles", async () => {
+    for (const { id } of (await core.request("profile.list", {})).result.profiles)
+      await attempt(`profile ${id}`, () => core.request("profile.delete", { profileId: id }));
+  });
+  await attempt("settings", () =>
+    core.request("settings.set", { settings: { confirmQuitWhileRunning: true, quitAction: null } }),
+  );
+}
+
+/**
+ * Plays the scene `groups` in the order of `SCENE_GROUPS`; `mark` names the group that runs. Every group builds
+ * its own state, so each also runs alone (`--scenes <group>`): `sidebar`, `restore` and `quit` share the sessions
+ * Build, Logs, Notes, Done (Exited) and Lost (Interrupted) of the first section, `restore` adds Editor, Shell and
+ * Misc itself, and `tabs`, `snap`, `search` and `settings` create their own sessions.
+ */
+async function playGroups(
+  deps: ScenarioDeps,
+  groups: readonly SceneGroup[],
+  mark: (group: SceneGroup) => void,
 ): Promise<void> {
   const { dir, bridge, watch, createWindow, log, tmuxSocket } = deps;
   mkdirSync(dir, { recursive: true });
@@ -145,7 +211,9 @@ export async function runScenario(
   const capture = (win: BrowserWindow, name: string, options?: CaptureOptions): Promise<void> =>
     captureWindow(win, dir, name, options);
 
-  if (NEEDS_SESSIONS.some(want)) {
+  const firstShared = NEEDS_SESSIONS.find(want);
+  if (firstShared !== undefined) {
+    mark(firstShared); // the shared setup counts to the first group that needs it
     const main = createWindow(1100, 680);
     const mainId = main.webContents.id;
     // --- Sessions in every state ---------------------------------------------------------------
@@ -190,6 +258,7 @@ export async function runScenario(
     await waitFor(main, `document.querySelector('.tab--active[data-tab-title="Build"]')`, "the Build tab");
 
     if (want("scenario")) {
+      mark("scenario");
       await capture(main, "01-sidebar-sessions-tabs.png");
 
       // --- Collapsed sidebar ---------------------------------------------------------------------
@@ -230,15 +299,21 @@ export async function runScenario(
       await keymapScenes(deps, capture);
     }
   }
-  if (want("sidebar")) await sidebarScenes(deps);
-  if (want("tabs")) await tabScenes(deps);
-  if (want("snap")) await snapScenes(deps);
-  if (want("restore")) await restoreScenes(deps, wsl);
-  if (want("quit")) await quitScenes(deps, capture);
-  if (want("search")) await searchScenes(deps);
-  if (want("settings")) await settingsScenes(deps);
-  if (want("cwd")) await cwdScenes(deps);
-  if (want("restart")) await restartScenes(deps);
+  /** Marks the group, then plays it when it was asked for. */
+  const play = async (group: SceneGroup, scenes: () => Promise<void>): Promise<void> => {
+    if (!want(group)) return;
+    mark(group);
+    await scenes();
+  };
+  await play("sidebar", () => sidebarScenes(deps));
+  await play("tabs", () => tabScenes(deps));
+  await play("snap", () => snapScenes(deps));
+  await play("restore", () => restoreScenes(deps, wsl));
+  await play("quit", () => quitScenes(deps, capture));
+  await play("search", () => searchScenes(deps));
+  await play("settings", () => settingsScenes(deps));
+  await play("cwd", () => cwdScenes(deps));
+  await play("restart", () => restartScenes(deps));
 }
 
 // --- Quit dialog (#60) ------------------------------------------------------------------------------
@@ -317,6 +392,7 @@ async function quitScenes(
 /** What the renderer shows of one pane: its role, the text of its rows and where the cursor is drawn. */
 interface PaneShot {
   id: string;
+  sessionId: string | null;
   active: boolean;
   role: string | null;
   hint: string | null;
@@ -348,6 +424,7 @@ const PANES_EXPRESSION = `[...document.querySelectorAll('.pane[data-tab-active="
     fontSize: firstRow ? parseFloat(getComputedStyle(firstRow).fontSize) : 0,
     screen: { width: screen?.width ?? 0, height: screen?.height ?? 0 },
     id: pane.dataset.paneId,
+    sessionId: pane.dataset.sessionId ?? null,
     active: pane.dataset.activePane === 'true',
     role: pane.querySelector('[data-role]')?.dataset.role ?? null,
     hint: pane.querySelector('[data-hint]')?.textContent ?? null,
@@ -366,6 +443,10 @@ async function splitScenes(
 ): Promise<void> {
   const win = createWindow(1280, 800);
   const windowId = win.webContents.id;
+  // As in the key scenes: a covered or background window stops painting, and the rows read from the DOM stay empty.
+  win.webContents.setBackgroundThrottling(false);
+  win.show();
+  win.moveTop();
   const evaluate = <T>(expression: string): Promise<T> =>
     win.webContents.executeJavaScript(expression, true) as Promise<T>;
   const waitFor = async (expression: string, what: string, timeoutMs = 30_000): Promise<void> => {
@@ -421,10 +502,44 @@ async function splitScenes(
       await type(name, "PS1='$ '; clear\r");
       await sleep(600);
     }
+    const before = command.includes("stty size") ? (await sttyScreen(name)).text : undefined;
     await type(name, `${command}\r`);
     // A timeout fails the run: a picture of a half-drawn screen must not pass.
     await watch.quiet(800, 15_000);
     await sleep(300);
+    // Under load the answer can reach the drawn rows after the output paused, or the input went in before the
+    // shell was ready: wait until the screen changed and ends in an answer and the prompt (so the answer is new,
+    // however many older ones scrolled away), and send the (harmless) command again at 8 s.
+    if (before !== undefined) {
+      const start = Date.now();
+      let resent = false;
+      let now = await sttyScreen(name);
+      while (!now.answered || now.text === before) {
+        if (Date.now() - start > 20_000) {
+          await capture(win, "failed-no-stty-answer.png").catch(() => {});
+          const rows = (await panes()).map((pane) => pane.rows.filter((row) => row.trim() !== "").slice(-4));
+          throw new Error(
+            `no new stty answer in ${name} within 20 s (answered: ${now.answered}, screen changed: ${now.text !== before}); last rows per pane: ${JSON.stringify(rows)}`,
+          );
+        }
+        if (!resent && Date.now() - start > 8_000) {
+          resent = true;
+          await type(name, `${command}\r`);
+        }
+        await sleep(200);
+        now = await sttyScreen(name);
+      }
+    }
+  };
+  /**
+   * The screen of the session's pane and whether it ends in an `stty size` answer followed by the bare prompt
+   * (`$`). That shape does not depend on how many older answers are still on screen, so scrolling cannot hide it.
+   */
+  const sttyScreen = async (name: string): Promise<{ text: string; answered: boolean }> => {
+    const pane = (await panes()).find((each) => each.sessionId === session(name).id);
+    const rows = (pane?.rows ?? []).map((row) => row.trim()).filter((row) => row !== "");
+    const answered = rows.at(-1) === "$" && /^\d+ \d+$/.test(rows.at(-2) ?? "");
+    return { text: rows.join("\n"), answered };
   };
 
   /** Clicks with real mouse events of the window (so pointer capture and focus behave as for a user). */
@@ -503,18 +618,27 @@ async function splitScenes(
   const sttyOf = (pane: PaneShot): string => {
     const answers = pane.rows.map((row) => row.trim()).filter((row) => /^\d+ \d+$/.test(row));
     const last = answers.at(-1);
-    if (last === undefined) throw new Error(`no stty answer in pane ${pane.id}`);
+    if (last === undefined)
+      throw new Error(
+        `no stty answer in pane ${pane.id}; rows: ${JSON.stringify(pane.rows.filter((row) => row.trim() !== ""))}`,
+      );
     return last;
   };
-  /** Compares the cursor drawn in pane `index` with tmux; xterm.js draws it a frame late, so it retries briefly. */
+  /**
+   * Compares the cursor drawn in pane `index` with tmux. xterm.js draws it a frame late and under load much later,
+   * and tmux itself may still be moving it: both are read again on every attempt until they agree (20 s at most).
+   */
   const expectCursor = async (name: string, index: number, what: string): Promise<void> => {
-    const tmux = await tmuxInfo(name);
+    let tmux = await tmuxInfo(name);
     let at = "none";
-    for (let attempt = 0; attempt < 20; attempt++) {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
       const pane = (await panes())[index];
       at = pane?.cursor ? `${pane.cursor.x},${pane.cursor.y}` : "none";
       if (pane?.cursor?.x === tmux.x && pane.cursor.y === tmux.y) break;
+      if (Date.now() > deadline) break;
       await sleep(250);
+      tmux = await tmuxInfo(name);
     }
     log(`${what}: xterm cursor ${at}, tmux cursor ${tmux.x},${tmux.y} (${tmux.cols}x${tmux.rows})`);
     if (at !== `${tmux.x},${tmux.y}`) {
@@ -524,6 +648,27 @@ async function splitScenes(
       throw new Error(
         `${what}: cursor at ${at}, tmux has ${tmux.x},${tmux.y}; cursor elements ${JSON.stringify(classes)}`,
       );
+    }
+  };
+
+  /** Polls the rows of pane `index` until `found` holds; the error shows the last rows seen. */
+  const waitPaneRows = async (
+    index: number,
+    found: (rows: string[]) => boolean,
+    what: string,
+    timeoutMs = 20_000,
+  ): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const rows = (await panes())[index]?.rows ?? [];
+      if (found(rows)) return;
+      if (Date.now() > deadline) {
+        await capture(win, "failed-waiting-for-rows.png").catch(() => {});
+        throw new Error(
+          `Timed out waiting for ${what} in pane ${index}: ${JSON.stringify(rows.filter((row) => row.trim() !== ""))}`,
+        );
+      }
+      await sleep(200);
     }
   };
 
@@ -732,6 +877,14 @@ async function splitScenes(
   await typeCommand("Vim", "seq 1 300 | vim -u NONE -c 'set number ruler laststatus=2' -");
   await type("Vim", "150Gww");
   await watch.quiet(800, 15_000);
+  // The end state is vim on line 152 (`150G`, then `w` twice moves on to the line after next): its ruler
+  // (`ruler`, `laststatus=2`) names the line. Until then the screen may still hold the shell or vim's first
+  // frame, with the cursor at 0,0.
+  await waitPaneRows(
+    0,
+    (rows) => rows.some((row) => /\b152,\d+/.test(row)),
+    "vim to show line 152 in its ruler",
+  );
   await expectCursor("Vim", 0, "vim before");
   await capture(win, "12-vim-before.png");
 
@@ -791,9 +944,26 @@ async function keymapScenes(
   const ACTIVE_PANE = `.pane[data-tab-active="true"][data-active-pane="true"]`;
   const notice = (): Promise<string | null> =>
     evaluate(`document.querySelector('.status-bar__item--warning')?.textContent ?? null`);
+  /**
+   * The async clipboard API refuses while the document is not focused ("NotAllowedError"), which the window loses
+   * under load or to a window of another run. Focus the window and try again; the error names what was refused.
+   */
+  const withFocus = async <T>(what: string, action: string): Promise<T> => {
+    let last: unknown;
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      win.focus();
+      try {
+        return await evaluate<T>(action);
+      } catch (error) {
+        last = error;
+        await sleep(300);
+      }
+    }
+    throw new Error(`${what} failed after 10 attempts: ${describeError(last)}`);
+  };
   const writeClipboard = (text: string): Promise<void> =>
-    evaluate(`navigator.clipboard.writeText(${JSON.stringify(text)})`);
-  const readClipboard = (): Promise<string> => evaluate(`navigator.clipboard.readText()`);
+    withFocus("clipboard write", `navigator.clipboard.writeText(${JSON.stringify(text)})`);
+  const readClipboard = (): Promise<string> => withFocus("clipboard read", `navigator.clipboard.readText()`);
 
   const created = await bridge.call(windowId, {
     method: "createSession",
@@ -869,7 +1039,15 @@ async function keymapScenes(
   await waitRows((current) => current.some((row) => row.startsWith("$ ")), "the prompt after clear");
   await sleep(700);
   await writeClipboard("echo Grüße äöü ß\necho zweite Zeile");
-  await key("V", ctrlShift, 1_000);
+  await key("V", ctrlShift, 300);
+  // The end state: both pasted lines stand in the rows (the shell redraws them for editing).
+  await waitRows(
+    (current) =>
+      current.some((row) => row.includes("echo Grüße äöü ß")) &&
+      current.some((row) => row.includes("echo zweite Zeile")),
+    "the pasted lines",
+    10_000,
+  ).catch((error: unknown) => log(`paste wait: ${describeError(error)}`)); // the checks below fail the run
   const pasted = await rows();
   log(`after paste: ${JSON.stringify(pasted.filter((row) => row.trim() !== ""))}`);
   if (

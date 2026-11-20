@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BrowserWindow } from "electron";
+import { describeError } from "./screenshot.js";
 import { assertVisible } from "./screenshot-visible.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -28,8 +29,29 @@ export async function captureWindow(
       options.visible,
     );
   const file = path.join(dir, name);
-  writeFileSync(file, (await win.webContents.capturePage()).toPNG());
+  writeFileSync(file, (await capturePageWithRetry(win)).toPNG());
   console.log(file);
+}
+
+/**
+ * `capturePage()` fails with `UnknownVizError` while the GPU process is busy or a window has just opened (#127).
+ * It is transient: wait and ask again, up to 5 times; the last error is named.
+ */
+async function capturePageWithRetry(win: BrowserWindow): Promise<Electron.NativeImage> {
+  let last: unknown;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const image = await win.webContents.capturePage();
+      // Not a line starting with `retry `: that prefix is for repeated scene groups (the run summary).
+      if (last !== undefined)
+        console.error(`termdock-desktop: capturePage attempt ${attempt} after: ${describeError(last)}`);
+      return image;
+    } catch (error) {
+      last = error;
+      if (attempt < 5) await sleep(1_000);
+    }
+  }
+  throw new Error(`capturePage failed 5 times: ${describeError(last)}`);
 }
 
 export function pageDriver(win: BrowserWindow, dir: string) {

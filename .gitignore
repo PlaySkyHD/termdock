@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+# Installer and unpacked app of `npm run dist -w apps/desktop` (electron-builder)
+release/
 *.tsbuildinfo
 coverage/
 graphify-out/

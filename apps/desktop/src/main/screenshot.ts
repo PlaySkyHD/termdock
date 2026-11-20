@@ -50,6 +50,80 @@ export function screenshotScenes(argv: readonly string[]): readonly SceneGroup[]
   return SCENE_GROUPS.filter((group) => listed.includes(group));
 }
 
+/**
+ * Readable text for anything that was thrown. A `DOMException` or a plain object that crossed
+ * `executeJavaScript` is no `Error` here, and `String(...)` of it is `[object Object]`.
+ */
+export function describeError(error: unknown, withStack = false): string {
+  if (error instanceof Error) {
+    const text = error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
+    return withStack && error.stack !== undefined ? error.stack : text;
+  }
+  if (typeof error === "string") return error;
+  if (typeof error === "object" && error !== null) {
+    const { name, message } = error as { name?: unknown; message?: unknown };
+    if (typeof message === "string" && message !== "")
+      return typeof name === "string" ? `${name}: ${message}` : message;
+    try {
+      const json = JSON.stringify(error);
+      if (json !== undefined && json !== "{}") return json;
+    } catch {
+      // Circular or otherwise not serializable: fall through to the constructor name.
+    }
+    return `non-Error object (${error.constructor?.name ?? "Object"})`;
+  }
+  return String(error);
+}
+
+/** A failure of one scene group, so the runner knows which group to repeat. */
+export class SceneGroupError extends Error {
+  constructor(
+    readonly group: SceneGroup,
+    readonly reason: unknown,
+  ) {
+    super(`scene group ${group} failed: ${describeError(reason)}`);
+    this.name = "SceneGroupError";
+    if (reason instanceof Error && reason.stack !== undefined)
+      this.stack = `${this.message}\n${reason.stack}`;
+  }
+}
+
+/** A group that failed once and was played again. */
+export interface GroupRetry {
+  group: SceneGroup;
+  error: string;
+}
+
+/**
+ * Plays `groups` with `play`. When `play` fails with a `SceneGroupError`, the group is repeated exactly once: `reset`
+ * clears windows and sessions, then the failed group and all after it are played again. A second failure of the
+ * same group, or a failure without a group (the setup of the run), is thrown. Returns the repeated groups.
+ */
+export async function runGroupsWithRetry(
+  groups: readonly SceneGroup[],
+  play: (groups: readonly SceneGroup[]) => Promise<void>,
+  reset: () => Promise<void>,
+  log: (text: string) => void,
+): Promise<GroupRetry[]> {
+  const retries: GroupRetry[] = [];
+  let pending = groups;
+  while (pending.length > 0) {
+    try {
+      await play(pending);
+      return retries;
+    } catch (error) {
+      if (!(error instanceof SceneGroupError) || retries.some((retry) => retry.group === error.group))
+        throw error;
+      const text = describeError(error.reason);
+      log(`retry ${error.group}: ${text}`);
+      retries.push({ group: error.group, error: text });
+      await reset();
+      pending = pending.slice(Math.max(0, pending.indexOf(error.group)));
+    }
+  }
+  return retries;
+}
+
 export interface IsolatedCore {
   pipePath: string;
   /** Environment for the started core; nothing of it reaches the productive core or socket `termdock`. */

@@ -345,7 +345,12 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   let restore: RestoreResult;
   try {
     if (dataDir === undefined) throw dataDirError;
-    storage = (options.openStorage ?? openStorage)({ dataDir, onLayoutInvalid: log, onProfileInvalid: log });
+    storage = (options.openStorage ?? openStorage)({
+      dataDir,
+      onLayoutInvalid: log,
+      onProfileInvalid: log,
+      onMigrationWarning: (text) => logger.warn(text),
+    });
     history = new HistoryStore({
       dataDir,
       getSettings,

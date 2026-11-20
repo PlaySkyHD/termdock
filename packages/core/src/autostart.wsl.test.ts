@@ -1,29 +1,31 @@
 // Autostart against real WSL and tmux with a Core restart (issue #61): an autostart profile gets one tmux
 // session, a restarted Core re-attaches it instead of starting a second, and a lost tmux session is started
 // again under the same session id. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI); own socket
-// `termdock-test-autostart-<nonce>`.
+// `termdock-test-<pid>-<nonce>`.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { runWsl } from "./backend/wsl/processes.js";
 import { runCore } from "./bin/run-core.js";
 import type { RunCoreResult } from "./bin/run-core.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
+import { cleanStaleWslTestServers, wslTestSocket } from "./test/wsl-socket.js";
 
-// A socket of its own below `termdock-test`, like the screenshot runs: other worktrees running the WSL tests at
-// the same time clean up every `td-*` session on `termdock-test`, which would end ours between two Cores.
-const SOCKET = `termdock-test-autostart-${randomUUID().slice(0, 8)}`;
+// A socket of its own (#147), like the screenshot runs: other worktrees running the WSL tests at the same time
+// must not remove our sessions between two Cores.
+const SOCKET = wslTestSocket();
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
 
 const cores: RunCoreResult[] = [];
 const clients: CoreClient[] = [];
 const tempDirs: string[] = [];
 const distros = new Set<string>();
+const usedDistros = new Set<string>();
 
 async function tmux(distro: string, args: string[]) {
   return runWsl(["-d", distro, "--cd", "~", "--exec", "tmux", "-L", SOCKET, ...args], { timeoutMs: 15_000 });
@@ -82,6 +84,10 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
   // (docs/agent-lessons-learned.md, section 2). The test keeps the default distro awake for its whole run.
   let keepalive: ChildProcess | undefined;
 
+  afterAll(async () => {
+    for (const distro of usedDistros) await cleanStaleWslTestServers(distro);
+  });
+
   afterEach(async () => {
     keepalive?.kill();
     keepalive = undefined;
@@ -95,6 +101,7 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     if (distros.size === 0) {
       await runWsl(["--cd", "~", "--exec", "tmux", "-L", SOCKET, "kill-server"], { timeoutMs: 15_000 });
     }
+    for (const distro of distros) usedDistros.add(distro);
     distros.clear();
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
@@ -148,5 +155,6 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     expect(restarted.map((s) => [s.id, s.state])).toEqual([[session!.id, "Detached"]]);
     expect(fourth.autostart?.restarted.map((s) => s.id)).toEqual([session!.id]);
     await waitForSession(distro, session!.id);
-  });
+    // Four Core starts; two runs at the same time (other worktrees) need more than the default 5 s.
+  }, 60_000);
 });

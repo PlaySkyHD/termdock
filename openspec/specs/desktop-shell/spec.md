@@ -1528,7 +1528,7 @@ Der Screenshot-Modus SHALL mit echten Mausereignissen (`webContents.sendInputEve
 
 ### Requirement: Screenshot-Modus wählt Szenengruppen
 
-Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL der Lauf nach dem Zurücksetzen genau einmal wiederholen (Log `retry <gruppe>: <fehler>`); scheitert auch das, endet er mit Code 1.
+Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
 
 #### Scenario: Eine Gruppe allein
 

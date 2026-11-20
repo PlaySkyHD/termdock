@@ -267,6 +267,9 @@ export class DesktopBridge {
       case "deleteSession":
         await core.request("session.delete", { sessionId: call.sessionId });
         return null;
+      case "restartSession":
+        await core.request("session.restart", { sessionId: call.sessionId });
+        return null;
       case "windowLayout": {
         const window = this.layouts?.windowOf(windowId);
         if (!window) throw new IpcError("not_found", "This window has no layout");
@@ -459,6 +462,8 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "archiveSession", sessionId: text(raw["sessionId"], "sessionId") };
     case "deleteSession":
       return { method: "deleteSession", sessionId: text(raw["sessionId"], "sessionId") };
+    case "restartSession":
+      return { method: "restartSession", sessionId: text(raw["sessionId"], "sessionId") };
     case "windowLayout":
       return { method: "windowLayout" };
     case "reportLayout":

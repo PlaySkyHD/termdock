@@ -283,5 +283,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * their events); `session.create` may omit `launch` when it names a `profileId`.
  * 1.4: method `wsl.distros` (settings dialog, #64).
  * 1.5: optional `warnings` in `SessionInfo` and `session.stateChanged` (missing working directory, #113).
+ * 1.6: method `session.restart` (restart an ended or interrupted session from the app, #156).
  */
-export const PROTOCOL_VERSION = "1.5" as const;
+export const PROTOCOL_VERSION = "1.6" as const;

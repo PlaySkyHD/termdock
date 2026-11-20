@@ -217,6 +217,23 @@ describe("sessionMenu", () => {
     );
   });
 
+  it.each<[SessionState, boolean]>([
+    ["Exited", true],
+    ["Interrupted", true],
+    ["Starting", false],
+    ["Running", false],
+    ["Detached", false],
+    ["Archived", false],
+  ])("offers Neu starten right after Öffnen for a %s session: %s (#156)", (state, offered) => {
+    const entries = sessionMenu(session("a", { state }), workspaces);
+    const restart = entries.find((e) => e.key === "restart");
+
+    if (offered) {
+      expect(keys(entries).slice(0, 2)).toEqual(["open", "restart"]);
+      expect(restart).toEqual({ key: "restart", label: "Neu starten", action: { kind: "restart" } });
+    } else expect(restart).toBeUndefined();
+  });
+
   it("offers only the workspaces for an ungrouped session", () => {
     expect(keys(sessionMenu(session("a"), workspaces))).toEqual([
       "open",

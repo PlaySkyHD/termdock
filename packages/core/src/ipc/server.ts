@@ -575,6 +575,10 @@ export class CoreServer {
       // Settings dialog: issue #64. Reads only; WSL failing is an answer, not an error.
       case "wsl.distros":
         return { result: await this.wslDistros() };
+      // Restart from the app (#156). The registry refuses other states and a second call while one starts;
+      // the states go out through the state listener.
+      case "session.restart":
+        return { result: { session: await registry.restart(request.params.sessionId) } };
     }
   }
 

@@ -186,6 +186,14 @@ type Listener<T> = (event: T) => void;
 
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
+/**
+ * First output of a restarted run (issue #156): marks in views and history where the new run begins. Plain text
+ * without escape sequences; the time in UTC like `updatedAt`.
+ */
+export function restartSeparator(at: Date): Uint8Array {
+  return new TextEncoder().encode(`\r\n--- Neu gestartet ${at.toISOString()} ---\r\n`);
+}
+
 /** A requested redraw while it runs (issue #34). */
 interface RedrawRun {
   /** Another redraw was requested meanwhile; it follows this one. */
@@ -408,7 +416,7 @@ export class SessionRegistry {
     if (this.repository) this.savedAgain();
     // Before the start: listeners see `Starting`, and every later state change of the session follows this event.
     this.createdListeners.emit({ session: snapshotInfo(info) });
-    await this.launch(entry, { reuseExisting: false, clearOutput: false });
+    await this.launch(entry, { reuseExisting: false, clearOutput: false, separator: false });
     return snapshotInfo(entry.info);
   }
 
@@ -482,8 +490,10 @@ export class SessionRegistry {
   }
 
   /**
-   * Starts an `Exited` or `Interrupted` session again under the same id. Re-attaches when the backend
-   * session still exists, so no second process is started. Views and writer stay.
+   * Starts an `Exited` or `Interrupted` session again under the same id (`session.restart`, autostart). Re-attaches
+   * when the backend session still exists, so no second process is started. Views and writer stay. The first
+   * output of a newly started run is a separator line (issue #156), so views and history show where it begins. Runs up
+   * to `launch` marking the session busy without awaiting, so a second call meanwhile is `invalid_state`.
    */
   async restart(sessionId: SessionId): Promise<SessionInfo> {
     this.assertNotRestoring();
@@ -491,7 +501,7 @@ export class SessionRegistry {
     this.assertIdle(entry);
     this.setState(entry, "Starting");
     // The old output stays until the new PTY is bound, so a failed restart keeps it for the snapshot.
-    await this.launch(entry, { reuseExisting: true, clearOutput: true });
+    await this.launch(entry, { reuseExisting: true, clearOutput: true, separator: true });
     return snapshotInfo(entry.info);
   }
 
@@ -899,12 +909,13 @@ export class SessionRegistry {
 
   /**
    * Runs `Starting → Running | Detached`, or `Starting → Interrupted` on failure.
-   * With `reuseExisting`, a backend session that still exists is re-attached instead of started.
+   * With `reuseExisting`, a backend session that still exists is re-attached instead of started; with `separator`,
+   * a newly started run begins with `restartSeparator` as output (a re-attached one continues and gets none).
    * If the registry is disposed meanwhile, nothing more is started, changed or saved (see `dispose`).
    */
   private async launch(
     entry: SessionEntry,
-    options: { reuseExisting: boolean; clearOutput: boolean },
+    options: { reuseExisting: boolean; clearOutput: boolean; separator: boolean },
   ): Promise<void> {
     const { info } = entry;
     const backend = this.backendFor(info.launch);
@@ -914,6 +925,7 @@ export class SessionRegistry {
         sessionId: info.id,
       });
     let pty: PtyHandle;
+    let reuse = false;
     entry.busy = "start";
     let startSize: TerminalSize = { ...info.size };
     try {
@@ -927,7 +939,7 @@ export class SessionRegistry {
           this.persist(entry);
         }
       }
-      const reuse = options.reuseExisting && (await backend.exists(info.id, info.launch));
+      reuse = options.reuseExisting && (await backend.exists(info.id, info.launch));
       if (this.disposed) throw shutDown();
       startSize = { ...info.size };
       pty = reuse
@@ -951,6 +963,9 @@ export class SessionRegistry {
       entry.output.clear();
       entry.modes.reset();
     }
+    // Still synchronous after the bind, so it comes before any output of the new PTY. A re-attached backend session
+    // runs on: no new run begins, so no separator (review PR #156).
+    if (options.separator && !reuse) this.emitOutput(entry, restartSeparator(this.now()), false);
     // Warnings of this run (issue #113); a re-attached PTY started nothing, so it has none. `setState` drops them
     // again once the session leaves Running and Detached.
     const warnings = pty.warnings?.slice(0, MAX_SESSION_WARNINGS).map((warning) => ({ ...warning }));
@@ -1029,17 +1044,8 @@ export class SessionRegistry {
     entry.ptySubscriptions = [
       pty.onData((data) => {
         if (entry.pty !== pty) return;
-        entry.output.append(data);
-        entry.modes.feed(data);
-        entry.outputSeq += 1;
-        this.outputListeners.emit({
-          sessionId: entry.info.id,
-          seq: entry.outputSeq,
-          data,
-          viewIds: [...entry.views],
-          // The bytes carry no origin; the repaint arrives before the backend call returns (design, issue #88).
-          fromRedraw: entry.redraw?.pty === pty,
-        });
+        // The bytes carry no origin; the repaint arrives before the backend call returns (design, issue #88).
+        this.emitOutput(entry, data, entry.redraw?.pty === pty);
       }),
       pty.onExit(({ exitCode }) => {
         if (entry.pty !== pty) return;
@@ -1056,6 +1062,20 @@ export class SessionRegistry {
         else this.setState(entry, "Exited");
       }),
     ];
+  }
+
+  /** Output of the session: into the buffer and the modes, numbered, to the views and the history. */
+  private emitOutput(entry: SessionEntry, data: Uint8Array, fromRedraw: boolean): void {
+    entry.output.append(data);
+    entry.modes.feed(data);
+    entry.outputSeq += 1;
+    this.outputListeners.emit({
+      sessionId: entry.info.id,
+      seq: entry.outputSeq,
+      data,
+      viewIds: [...entry.views],
+      fromRedraw,
+    });
   }
 
   /**

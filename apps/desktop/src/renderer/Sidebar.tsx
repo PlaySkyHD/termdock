@@ -11,6 +11,7 @@ import type { NameField } from "./Dialogs.js";
 import { useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
+import { restartFromMenu } from "./restart-session.js";
 import { NO_GROUP_LABEL, stateText } from "./session-display.js";
 import {
   ARCHIVE_TARGET,
@@ -48,6 +49,8 @@ export interface SidebarActions {
   renameSession(sessionId: SessionId, name: string): Promise<void>;
   archiveSession(sessionId: SessionId): Promise<void>;
   deleteSession(sessionId: SessionId): Promise<void>;
+  /** "Neu starten" of an ended or interrupted session (#156). */
+  restartSession(sessionId: SessionId): Promise<void>;
   createWorkspace(name: string): Promise<void>;
   renameWorkspace(workspaceId: string, name: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
@@ -241,6 +244,11 @@ export function Sidebar(props: SidebarProps) {
         return;
       case "delete":
         remove(session);
+        return;
+      case "restart":
+        // The row stays where it is; its state follows the core's events, a refusal goes to the status bar.
+        setPendingFocus(sessionFocus(session.id));
+        void restartFromMenu(() => actions.restartSession(session.id), onNotice);
         return;
     }
   };

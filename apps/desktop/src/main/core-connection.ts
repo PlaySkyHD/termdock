@@ -107,12 +107,14 @@ export function isCoreMissing(error: unknown): boolean {
 }
 
 /**
- * Requests that may wait for WSL: creating a session can start the distro, attaching takes a tmux snapshot.
- * With the short timeout the renderer would report an error while the core still creates the session.
+ * Requests that may wait for WSL: creating or restarting a session can start the distro (a restart typically comes
+ * after a Windows restart, #156), attaching takes a tmux snapshot. With the short timeout the renderer would report
+ * an error while the core still starts the session, and keep it instead of the core's real answer.
  */
 export const SLOW_REQUEST_TIMEOUTS_MS: Readonly<Partial<Record<Method, number>>> = {
   "session.create": READY_TIMEOUT_MS,
   "session.attach": READY_TIMEOUT_MS,
+  "session.restart": READY_TIMEOUT_MS,
 };
 
 /**

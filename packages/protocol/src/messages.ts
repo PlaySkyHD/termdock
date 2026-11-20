@@ -250,6 +250,11 @@ export interface MethodMap {
   "settings.set": { params: { settings: SettingsPatch }; result: { settings: Settings } };
   "history.search": { params: HistorySearchParams; result: HistorySearchResult };
   "wsl.distros": { params: Empty; result: WslDistrosResult };
+  /**
+   * Starts an `Exited` or `Interrupted` session again under its id (since 1.6, #156); the states come as
+   * `session.stateChanged`. Other states are `invalid_state`.
+   */
+  "session.restart": { params: { sessionId: SessionId }; result: { session: SessionInfo } };
 }
 
 export type Method = keyof MethodMap;
@@ -291,6 +296,7 @@ export const METHODS = [
   "layout.save",
   ...PHASE_3_METHODS,
   "wsl.distros",
+  "session.restart",
 ] as const satisfies readonly Method[];
 
 // --- Events ---------------------------------------------------------------------------------
@@ -399,6 +405,7 @@ export const REQUEST_PAYLOAD: Record<Method, PayloadRule> = {
   "layout.get": "none",
   "layout.save": "none",
   "wsl.distros": "none",
+  "session.restart": "none",
 };
 
 export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
@@ -417,6 +424,7 @@ export const RESPONSE_PAYLOAD: Record<Method, PayloadRule> = {
   "layout.get": "none",
   "layout.save": "none",
   "wsl.distros": "none",
+  "session.restart": "none",
 };
 
 export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {

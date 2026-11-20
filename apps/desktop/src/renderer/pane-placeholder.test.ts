@@ -28,7 +28,21 @@ describe("paneContent", () => {
       detail: "Der Prozess ist mit Exit-Code 130 beendet.",
       state: "Exited",
       exitCode: "130",
+      restartable: true,
     });
+  });
+
+  it.each<[SessionState, boolean]>([
+    ["Exited", true],
+    ["Interrupted", true],
+    ["Starting", false],
+    ["Archived", false],
+  ])("offers Neu starten in the placeholder of a %s session: %s (#156)", (state, restartable) => {
+    expect(paneContent(session(state), true)).toMatchObject({ kind: "placeholder", restartable });
+  });
+
+  it("offers no restart for a session the core does not know", () => {
+    expect(paneContent(undefined, true)).toMatchObject({ kind: "placeholder", restartable: false });
   });
 
   it("says the exit code is unknown when the core has none", () => {
@@ -52,6 +66,7 @@ describe("paneContent", () => {
       detail: "Der Core kennt diese Session nicht (mehr).",
       state: "Fehlt",
       exitCode: "unbekannt",
+      restartable: false,
     });
   });
 

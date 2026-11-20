@@ -19,6 +19,14 @@ export function isAttachable(state: SessionState): boolean {
   return state === "Running" || state === "Detached";
 }
 
+/**
+ * `session.restart` takes the session (#156): its process ended or was lost. The core refuses every other state
+ * with `invalid_state` (ADR 0005); the pane's button and the sidebar's menu entry share this rule.
+ */
+export function canRestart(state: SessionState): boolean {
+  return state === "Exited" || state === "Interrupted";
+}
+
 /** Text of a tab whose session cannot be attached; undefined when it can. */
 export function endedNotice(session: SessionInfo): { title: string; detail: string } | undefined {
   switch (session.state) {

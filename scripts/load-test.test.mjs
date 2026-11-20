@@ -43,13 +43,19 @@ test("percentile uses the nearest rank", () => {
 
 test("evaluate compares each value with the limits of issue #134", () => {
   assert.deepEqual(LIMITS, { reconcileMs: 3000, rssMiB: 300, echoP95Ms: 100 });
-  const checks = evaluate({ reconcileMs: 2999, rssMiB: 300, echo: { p95Ms: 12 } });
+  const checks = evaluate({
+    reconcileMs: 2999,
+    rssMiB: 300,
+    echo: { p95Ms: 12 },
+    coreShutdown: { code: 0, signal: null },
+  });
   assert.deepEqual(
     checks.map((check) => [check.name, check.ok]),
     [
       ["reconcile", true],
       ["rss", false],
       ["echo p95", true],
+      ["core shutdown", true],
     ],
   );
   assert.equal(evaluate({ reconcileMs: 1, rssMiB: 1 })[2].ok, false);
@@ -58,6 +64,31 @@ test("evaluate compares each value with the limits of issue #134", () => {
     checks,
   );
   assert.match(table, /rss\s+300 MiB\s+< 300 MiB OVER/);
+  assert.match(table, /core shutdown\s+exit 0\s+exit 0 ok/);
+});
+
+const shutdownCheck = (coreShutdown) =>
+  evaluate({ reconcileMs: 1, rssMiB: 1, echo: { p95Ms: 1 }, coreShutdown }).find(
+    (check) => check.name === "core shutdown",
+  );
+
+test("evaluate passes the core shutdown only with exit code 0", () => {
+  assert.equal(shutdownCheck({ code: 0, signal: null }).ok, true);
+});
+
+test("evaluate fails the core shutdown after a crash, as in the access violation of issue #160", () => {
+  const check = shutdownCheck({ code: 3221225477, signal: null });
+  assert.equal(check.ok, false);
+  assert.equal(check.value, 3221225477);
+  assert.match(formatTable({ echo: {} }, [check]), /core shutdown\s+exit 3221225477\s+exit 0 FAILED/);
+});
+
+test("evaluate fails the core shutdown after a signal or without a record", () => {
+  const killed = shutdownCheck({ code: null, signal: "SIGKILL" });
+  assert.equal(killed.ok, false);
+  assert.equal(killed.text, "exit -, signal SIGKILL");
+  assert.equal(shutdownCheck(undefined).ok, false);
+  assert.equal(shutdownCheck({ code: null, signal: "timeout" }).ok, false);
 });
 
 test("the socket follows the run scheme of the WSL tests and is never the production one", () => {

@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
-import { captureWindow } from "./screenshot-page.js";
+import { bringToFront, captureWindow } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -268,6 +268,9 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   await capture(againSecond, "19-layout-restored-exited-placeholder.png");
 
   // "Pane schließen" removes the placeholder pane; the tab keeps its other pane and the layout is saved again.
+  // In front: an occluded window paints no frames and Chromium throttles its timers, so its layout report (50 ms
+  // delay in the renderer) could come after the flush below (#156, the check failed on main as well).
+  bringToFront(againSecond);
   await click(againSecond, '[data-tab-title="Crash"] .tab__main');
   await click(againSecond, `[data-session-id="${crash.id}"] [data-action="close-pane-placeholder"]`);
   await waitFor(
@@ -275,9 +278,177 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
     `!document.querySelector('[data-session-id="${crash.id}"]')`,
     "the placeholder pane to close",
   );
-  await flushLayout();
-  const saved = (await core.request("layout.get", {})).result.layout;
-  const ids = JSON.stringify(saved);
-  if (ids.includes(crash.id)) throw new Error("the closed pane is still in the saved layout");
+  // The renderer reports after its delay; flush and read until the saved layout has lost the pane, or fail.
+  const savedDeadline = Date.now() + 10_000;
+  for (;;) {
+    await flushLayout();
+    const saved = JSON.stringify((await core.request("layout.get", {})).result.layout);
+    if (!saved.includes(crash.id)) break;
+    if (Date.now() > savedDeadline) throw new Error("the closed pane is still in the saved layout");
+    await sleep(250);
+  }
   log("placeholder closed and saved");
+
+  await restartScenes(crash, againSecond, { core, bridge, log, evaluate, waitFor, capture, click });
+}
+
+interface RestartSceneTools {
+  core: ScenarioDeps["core"];
+  bridge: ScenarioDeps["bridge"];
+  log: ScenarioDeps["log"];
+  evaluate: <T>(win: BrowserWindow, expression: string) => Promise<T>;
+  waitFor: (win: BrowserWindow, expression: string, what: string, timeoutMs?: number) => Promise<void>;
+  capture: (win: BrowserWindow, name: string, options?: CaptureOptions) => Promise<void>;
+  click: (win: BrowserWindow, selector: string) => Promise<void>;
+}
+
+/**
+ * Restart of a session from the app (#156): the Interrupted `crash` opens again as a placeholder, its button
+ * "Neu starten" brings it back in the same pane, and the history marks the new run. Then, ended, the sidebar's
+ * menu restarts it; at the end it is `Exited` again, so later groups find no extra running session.
+ */
+async function restartScenes(
+  crash: SessionInfo,
+  win: BrowserWindow,
+  tools: RestartSceneTools,
+): Promise<void> {
+  const { core, bridge, log, evaluate, waitFor, capture, click } = tools;
+  const row = `[data-row-session-id="${crash.id}"]`;
+  const pane = `.pane[data-session-id="${crash.id}"]`;
+  const stateOf = async (): Promise<string | undefined> =>
+    (await core.request("session.list", {})).result.sessions.find((session) => session.id === crash.id)
+      ?.state;
+  const waitForState = async (states: readonly string[], what: string): Promise<void> => {
+    const deadline = Date.now() + 60_000;
+    let state = await stateOf();
+    while (state === undefined || !states.includes(state)) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}; Crash is ${state}`);
+      await sleep(250);
+      state = await stateOf();
+    }
+  };
+  const living = ["Running", "Detached"] as const;
+
+  // --- The placeholder's button --------------------------------------------------------------------------
+  await click(win, row);
+  await waitFor(
+    win,
+    `document.querySelector('${pane} [data-view="notice"][data-state="Interrupted"] [data-action="restart-session"]')`,
+    "the Neu starten button in the placeholder of Crash",
+  );
+  await click(win, `${pane} [data-action="restart-session"]`);
+  await waitForState(living, "Crash to live again after Neu starten");
+  await waitFor(win, `document.querySelector('${pane} .xterm-rows')`, "the terminal of the restarted Crash");
+  const deadline = Date.now() + 30_000;
+  while (
+    !bridge
+      .viewsOf(win.webContents.id)
+      .some((viewId) => bridge.sessionOf(win.webContents.id, viewId) === crash.id)
+  ) {
+    if (Date.now() > deadline) throw new Error("the restarted Crash got no view in its pane");
+    await sleep(100);
+  }
+  const separatorFound = async (): Promise<number> =>
+    (await core.request("history.search", { query: "Neu gestartet", sessionIds: [crash.id] })).result.hits
+      .length;
+  const searchDeadline = Date.now() + 10_000;
+  while ((await separatorFound()) === 0) {
+    if (Date.now() > searchDeadline) throw new Error("the history of Crash has no separator line");
+    await sleep(200);
+  }
+  await sleep(1_000); // snapshot and the first fit
+  await capture(win, "19a-session-restarted.png", { visible: `${pane} .terminal-view` });
+  log("Crash restarted from its placeholder");
+
+  // --- The sidebar's menu --------------------------------------------------------------------------------
+  await core.request("session.kill", { sessionId: crash.id });
+  await waitForState(["Exited"], "Crash to end");
+  await waitFor(win, `document.querySelector('${row}[data-state="Exited"]')`, "the Exited row of Crash");
+  bringToFront(win);
+  await evaluate(
+    win,
+    `(() => {
+      const element = document.querySelector('${row}');
+      const box = element.getBoundingClientRect();
+      element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+    })()`,
+  );
+  const entry = `[role="menu"] [data-menu-item="restart"]`;
+  await waitFor(win, `document.querySelector('${entry}')`, "Neu starten in the menu of Crash");
+  await capture(win, "19b-sidebar-restart-menu.png", { visible: entry });
+  await click(win, entry);
+  await waitForState(living, "Crash to live again after the menu entry");
+  log("Crash restarted from the sidebar menu");
+
+  await restartInViewScenes(crash, win, { ...tools, waitForState });
+}
+
+/**
+ * "Neu starten" in the bar of an attached view (#164): the pane of `crash` keeps its view while the session ends,
+ * the bar's button restarts it, and the same view shows the new run. At the end `crash` is `Exited` again.
+ */
+async function restartInViewScenes(
+  crash: SessionInfo,
+  win: BrowserWindow,
+  tools: RestartSceneTools & {
+    waitForState: (states: readonly string[], what: string) => Promise<void>;
+  },
+): Promise<void> {
+  const { core, bridge, log, evaluate, waitFor, capture, click, waitForState } = tools;
+  const pane = `.pane[data-session-id="${crash.id}"]`;
+  const button = `${pane} [data-restart-bar="button"] [data-action="restart-in-view"]`;
+  const living = ["Running", "Detached"] as const;
+  const viewsOfCrash = (): string =>
+    JSON.stringify(
+      bridge
+        .viewsOf(win.webContents.id)
+        .filter((viewId) => bridge.sessionOf(win.webContents.id, viewId) === crash.id),
+    );
+  const rowsText = (): Promise<string> =>
+    evaluate<string>(win, `document.querySelector('${pane} .xterm-rows')?.textContent ?? ''`);
+
+  await waitFor(
+    win,
+    `document.querySelector('${pane} .terminal-pane[data-role="writer"]')`,
+    "the writing view of Crash",
+  );
+  const viewsBefore = viewsOfCrash();
+  if (viewsBefore === "[]") throw new Error("the pane of Crash has no view before it ends");
+  await core.request("session.kill", { sessionId: crash.id });
+  await waitForState(["Exited"], "Crash to end in its attached view");
+  await waitFor(win, `document.querySelector('${button}')`, "Neu starten in the bar of the attached view");
+  // The terminal lies below the bar: the button's middle must be the button itself, not a layer of xterm.js.
+  const onTop = await evaluate<string>(
+    win,
+    `(() => {
+      const button = document.querySelector('${button}');
+      const box = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return hit === button ? 'button' : (hit?.className || hit?.tagName || 'nothing');
+    })()`,
+  );
+  if (onTop !== "button") throw new Error(`the bar's button is covered by ${onTop}`);
+  await capture(win, "19c-restart-bar-in-view.png", { visible: button });
+
+  const ended = await rowsText();
+  await click(win, button);
+  await waitForState(living, "Crash to live again after Neu starten in the view");
+  await waitFor(win, `!document.querySelector('${pane} [data-restart-bar]')`, "the bar of Crash to go");
+  const viewsAfter = viewsOfCrash();
+  if (viewsAfter !== viewsBefore)
+    throw new Error(`the pane of Crash changed its view: ${viewsBefore} before, ${viewsAfter} after`);
+  // The same view gets the new run: its rows change from the ended screen.
+  const deadline = Date.now() + 30_000;
+  let shown = await rowsText();
+  while (shown === ended || shown.trim() === "") {
+    if (Date.now() > deadline) throw new Error(`the view of Crash shows no new run; rows: ${shown}`);
+    await sleep(200);
+    shown = await rowsText();
+  }
+  await sleep(1_000); // the new run's first screen
+  await capture(win, "19d-restarted-in-view.png", { visible: `${pane} .terminal-view` });
+  log("Crash restarted from the bar of its attached view");
+
+  await core.request("session.kill", { sessionId: crash.id });
+  await waitForState(["Exited"], "Crash to end again");
 }

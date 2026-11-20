@@ -17,6 +17,7 @@ Windows-Desktop-App zur Verwaltung langlebiger Terminal-Sessions (WSL-first, tmu
 ## Befehle
 
 - `npm ci`, `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test -w packages/<name>`.
+- Lasttest (#134, nur lokal, braucht WSL und den Core-Build `packages/core/dist` aus `npm run typecheck`): `node scripts/load-test.mjs`. Unter Electron wie im Paket (ADR 0007): im Worktree einmal `unset ELECTRON_RUN_AS_NODE && node_modules/.bin/electron --version` (lädt ein fehlendes `electron.exe` nach), dann `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/load-test.mjs`. Er nutzt einen eigenen Socket und einen temporären Datenordner.
 - WSL-Integrationstests: `TERMDOCK_WSL_TESTS=1 npm test -w packages/core`.
 - Desktop-App (ADR 0006): `npm start -w apps/desktop`; Screenshots gegen einen isolierten Core: `npm run screenshot -w apps/desktop -- <dir>`. In Agent-Shells vorher `unset ELECTRON_RUN_AS_NODE`.
 - Installer (ADR 0007): `npm run dist -w apps/desktop` baut nach `apps/desktop/release/`; Prüfmodus der entpackten App (vorher `unset ELECTRON_RUN_AS_NODE`): `TERMDOCK_DATA_DIR=<temp-ordner> apps/desktop/release/win-unpacked/TermDock.exe --smoke-test`.

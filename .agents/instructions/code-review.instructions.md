@@ -16,7 +16,7 @@ Antworte auf Deutsch. Prüfe zuerst den Diff, dann den betroffenen Code drumheru
 - Vertragsbrüche zwischen `packages/protocol`, Core und Desktop.
 - Shell-Strings mit Nutzereingaben statt Argument-Arrays, IPC ohne Benutzerbeschränkung.
 - Unbegrenztes Wachstum: Verlauf über dem Limit, Puffer ohne Obergrenze, Listener ohne Abbau.
-- Fehlende Tests für neues Verhalten oder einen Bugfix.
+- Fehlende Tests für neues Verhalten oder einen Bugfix. Renderer (`apps/desktop/src/renderer`): Ein Test der reinen Modellfunktion plus eine Screenshot-Szene mit Sichtbarkeitsselektor gilt als Test; ohne DOM-Testumgebung keinen Komponententest verlangen. Ein Befund ist Logik, die im `.tsx` steht statt in einer getesteten reinen Funktion.
 - Sichtbare UI-Änderung ohne Screenshots im PR (Kommentar von `scripts/attach-screenshots.sh`), oder Screenshots, die nicht zum Diff passen.
 - Neue Screenshot-Szene, die einen Fehler, ein Menü oder einen Dialog zeigt, ohne Sichtbarkeitsselektor (`capture(name, { visible: "<selector>" })`).
 - Verstöße gegen `typescript.instructions.md`, `security.instructions.md`, die ADRs in `docs/adr/` oder `docs/agent-lessons-learned.md`.

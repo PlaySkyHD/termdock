@@ -732,6 +732,8 @@ describe("DesktopBridge workspaces and session management (#63)", () => {
     [{ method: "deleteProject", projectId: "p1" }, "project.delete", { projectId: "p1" }],
     [{ method: "archiveSession", sessionId: "s1" }, "session.archive", { sessionId: "s1" }],
     [{ method: "deleteSession", sessionId: "s1" }, "session.delete", { sessionId: "s1" }],
+    // Issue #156: the window learns the new states from the core's events.
+    [{ method: "restartSession", sessionId: "s1" }, "session.restart", { sessionId: "s1" }],
   ])("passes %j to the core as %s", async (call, method, params) => {
     const { core, bridge, a } = setup();
 
@@ -784,6 +786,8 @@ describe("DesktopBridge workspaces and session management (#63)", () => {
     ["updateWorkspace without an id", { method: "updateWorkspace", name: "a" }],
     ["deleteSession without an id", { method: "deleteSession" }],
     ["archiveSession with an empty id", { method: "archiveSession", sessionId: "" }],
+    ["restartSession without an id", { method: "restartSession" }],
+    ["restartSession with an empty id", { method: "restartSession", sessionId: "" }],
     ["deleteProject without an id", { method: "deleteProject" }],
   ])("refuses %s with bad_request and no core request", async (_name, call) => {
     const { core, bridge, a } = setup();

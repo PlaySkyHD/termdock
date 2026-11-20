@@ -301,6 +301,28 @@ Verweigert die Datenbank jedes Schreiben (Platte voll, Ordner schreibgeschützt)
 - **WHEN** ein Client `layout.save` sendet
 - **THEN** antwortet der Core mit Revision 1
 
+### Requirement: Nicht gespeicherte Session-Änderungen nachholen
+
+Scheitert das Speichern einer Session-Änderung, SHALL die Registry die Session vormerken und den Fehler einmal je Fehlerstrecke melden. Vorgemerkte Sessions MUST beim nächsten gelungenen Speichern einer Session, durch einen Wiederholungs-Timer (einer zur Zeit, Standard 5 s) und beim Abbau des Core vor dem Schließen der Datenbank gespeichert werden; eine gelöschte Session wird nicht wieder gespeichert.
+
+#### Scenario: Ende bei voller Platte
+
+- **GIVEN** eine Session, deren PTY mit Exit-Code 0 endete, während die Datenbank nicht schrieb
+- **WHEN** die Datenbank wieder schreibt, ein Client eine neue Session anlegt und der Core danach neu startet
+- **THEN** steht die Session schon vor dem Neustart als `Exited` mit Exit-Code 0 in der Datenbank, der nächste Core meldet sie so, und `logs/core.log` nennt den Speicherfehler genau einmal
+
+#### Scenario: Abbau holt nach
+
+- **GIVEN** eine Session, deren Ende mit Exit-Code 7 nicht gespeichert werden konnte, und eine Datenbank, die wieder schreibt
+- **WHEN** der Core ohne weiteres Speichern beendet und neu gestartet wird
+- **THEN** meldet der nächste Core die Session als `Exited` mit Exit-Code 7
+
+#### Scenario: Wiederholung per Timer
+
+- **GIVEN** eine Session, deren Speichern scheiterte, und keine weitere Änderung
+- **WHEN** die Datenbank wieder schreibt
+- **THEN** speichert der Timer die Session ohne weiteren Anstoß
+
 ### Requirement: Daten nach hartem Ende des Core
 
 Wird der Core-Prozess hart beendet (ohne `core.shutdown`, z. B. Task-Manager), während Ausgabe in den Verlauf geschrieben und das Layout gespeichert wird, SHALL der nächste Start eine intakte Datenbank, einen lesbaren Verlauf im Limit und ein Layout vorfinden, dessen Revision zu seinem Dokument gehört. Gespeicherte Sessions in `Detached` MUST der Abgleich wie jedes Ende des Core behandeln.

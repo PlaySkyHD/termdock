@@ -41,7 +41,11 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
   }
 }
 
-/** Linux processes whose command line names the socket of this file: tmux clients, keepalives, the server. */
+/**
+ * Linux processes whose command line names the socket of this file: tmux clients, keepalives, the server. Only
+ * pgrep's exit codes 0 (matches) and 1 (none) count; anything else (WSL or pgrep failed) throws, so an empty
+ * answer never comes from a failed call.
+ */
 async function linuxProcessesOnSocket(distro: string): Promise<string[]> {
   const result = await runWsl(
     ["-d", distro, "--cd", "~", "--exec", "pgrep", "-a", "-f", "--", `-L ${SOCKET}`],
@@ -49,6 +53,11 @@ async function linuxProcessesOnSocket(distro: string): Promise<string[]> {
       timeoutMs: 15_000,
     },
   );
+  if (result.code !== 0 && result.code !== 1) {
+    throw new Error(
+      `pgrep failed (${result.timedOut ? "timed out" : `exit ${result.code}`}): ${result.stderr}`,
+    );
+  }
   return result.stdout.split("\n").filter((line) => line.trim() !== "");
 }
 
@@ -119,7 +128,9 @@ describe.skipIf(!enabled)("the tmux server dies while sessions run (issue #133)"
     c.on("session.output", (_event, payload) => (output += decoder.decode(payload)));
     await c.request("session.input", { viewId: views[0]! }, encoder.encode("echo alive-$((6*7))\r"));
     await waitFor(() => output.includes("alive-42"), "output of the first session");
+    // Both checks see the processes before the kill, so their empty answers afterwards mean something.
     expect(await windowsProcessesOnSocket()).not.toEqual([]);
+    expect(await linuxProcessesOnSocket(distro)).not.toEqual([]);
 
     await killWslTestServer(distro, SOCKET);
 

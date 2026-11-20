@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { LAYOUT_VERSION } from "@termdock/protocol";
 import type { LaunchSpec, LayoutDocument, SessionId, SessionState } from "@termdock/protocol";
@@ -12,7 +13,7 @@ import { FakeBackend } from "../backend/fake.js";
 import { connect, IpcError } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
 import { logDir } from "../log/index.js";
-import { openStorage } from "../storage/database.js";
+import { DATABASE_FILE, openStorage } from "../storage/database.js";
 import type { Storage } from "../storage/database.js";
 import { CORE_LOG_FILE, runCore } from "./run-core.js";
 import type { RunCoreOptions, RunCoreResult } from "./run-core.js";
@@ -192,15 +193,61 @@ describe("the data directory cannot be written (issue #133)", () => {
       ["build", "Exited"],
     ]);
 
-    // Room again: writes work without a restart.
+    // Room again: writes work without a restart, and the end the full disk kept from the database is stored with
+    // the next save of a session.
     full = false;
     expect((await c.request("layout.save", { layout })).result).toEqual({ revision: 1 });
+    await c.request("session.create", { name: "after", launch });
+    const reader = new DatabaseSync(join(dataDir, DATABASE_FILE), { readOnly: true });
+    try {
+      expect(
+        reader.prepare("SELECT state, last_exit_code FROM sessions WHERE id = ?").get(session.id),
+      ).toEqual({
+        state: "Exited",
+        last_exit_code: 0,
+      });
+    } finally {
+      reader.close();
+    }
 
     await c.close();
     await core.close?.();
     const log = readFileSync(join(logDir(dataDir), CORE_LOG_FILE), "utf8");
-    // One line for the history, however many flushes failed (it would otherwise fill the log, issue #133).
+    // One line each for the history and the database, however many writes failed (issue #133).
     expect(log.match(/could not write history of session/g)).toHaveLength(1);
+    expect(log.match(/could not save session/g)).toHaveLength(1);
     expect(log).toContain(`could not save session ${session.id}: database or disk is full`);
+
+    // The next core finds the session as it ended, with its exit code.
+    const next = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    expect(next.exitCode).toBe(0);
+    const again = await client(pipePath);
+    const listed = (await again.request("session.list", {})).result.sessions;
+    expect(listed.find((s) => s.id === session.id)).toMatchObject({ state: "Exited", lastExitCode: 0 });
+  });
+
+  it("stores a change the full disk kept from the database when the core ends (issue #133)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    let full = false;
+    const backend = new FakeBackend();
+    const core = await start({
+      pipePath,
+      dataDir,
+      backends: [backend],
+      openStorage: (options) => fillingStorage(openStorage(options), () => full),
+    });
+    const c = await client(pipePath);
+    const { session } = (await c.request("session.create", { name: "build", launch })).result;
+    full = true;
+    backend.pty(session.id).emitExit(7);
+    full = false;
+    await c.close();
+    await core.close?.();
+
+    await start({ pipePath, dataDir, backends: [new FakeBackend()] });
+    const again = await client(pipePath);
+    const listed = (await again.request("session.list", {})).result.sessions;
+    expect(listed).toEqual([expect.objectContaining({ id: session.id, state: "Exited", lastExitCode: 7 })]);
   });
 });

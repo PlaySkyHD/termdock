@@ -201,5 +201,15 @@ describe.skipIf(process.platform !== "win32")("ACL of the real core pipe (Window
     // The security statement: no trustee besides the user, SYSTEM, Administrators and Creator Owner may
     // write (or change the DACL or owner). Read-only trustees (Everyone, Anonymous) are the Windows default.
     expect(foreignAllowEntries(sddl!, ownSid!).filter(grantsWrite), context).toEqual([]);
+    // Issue #135: besides that default, no other account or group (Authenticated Users, Users, another user's
+    // SID) is named at all, and the owner is the user (or Administrators when elevated).
+    expect(
+      foreignAllowEntries(sddl!, ownSid!)
+        .map((entry) => entry.sid)
+        .filter((sid) => sid !== "WD" && sid !== "AN"),
+      context,
+    ).toEqual([]);
+    const owner = /^O:([^:]+?)(?=[GDS]:|$)/.exec(sddl!)?.[1];
+    expect([ownSid, ...(elevated ? ["BA"] : [])], context).toContain(owner);
   }, 30000);
 });

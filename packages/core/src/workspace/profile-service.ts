@@ -15,6 +15,7 @@ import type {
 } from "@termdock/protocol";
 import { CoreError } from "../session/errors.js";
 import type { CreateSessionInput } from "../session/registry.js";
+import { assertNoSecretEnv } from "../session/secret-env.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
 import { defaultCwd } from "./default-cwd.js";
 import { launchDefaults } from "./launch-defaults.js";
@@ -22,9 +23,6 @@ import type { WorkspaceService } from "./service.js";
 
 /** `launch.cwd` of a profile that names no directory of its own: the session takes `defaultCwd(...)`. */
 export const PROFILE_DEFAULT_CWD = "~";
-
-/** Names of `launch.env` variables that obviously hold a secret; a profile does not store them in plain text. */
-const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)$/i;
 
 /** The settings a session from a profile depends on: directory, distro and shell defaults. */
 export type LaunchSettings = Pick<Settings, "defaultCwd" | "defaultDistro" | "defaultShell">;
@@ -180,15 +178,8 @@ export class ProfileService {
     }
     const checked = validateLaunchProfile(profile);
     if (!checked.ok) throw new CoreError("bad_request", checked.error.message);
-    for (const key of Object.keys(profile.launch.env ?? {})) {
-      if (SECRET_ENV_KEY.test(key)) {
-        // The key only, never the value (security.instructions.md).
-        throw new CoreError(
-          "bad_request",
-          `launch.env key "${key.slice(0, 64)}" looks like a secret; credentials come from the CLI login or a protected environment variable, not from a profile`,
-        );
-      }
-    }
+    // The key only, never the value (security.instructions.md).
+    assertNoSecretEnv(profile.launch.env, "profile");
     this.repository.save(profile);
     return profile;
   }

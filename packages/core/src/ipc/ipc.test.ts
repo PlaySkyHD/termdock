@@ -1670,6 +1670,27 @@ describe("launch profiles (issue #58)", () => {
     expect((await a.request("profile.list", {})).result.profiles).toEqual([profile]);
   });
 
+  it("refuses the same keys in session.create, also next to a profile, before storing or starting (issue #135)", async () => {
+    const { a, backend } = await setup();
+    const { profile } = (await a.request("profile.create", { name: "p", launch: claude })).result;
+    const withEnv = { ...claude, env: { GITHUB_TOKEN: "td-test-secret-0000" } };
+    for (const params of [
+      { name: "s", launch: withEnv },
+      { name: "s", profileId: profile.id, launch: withEnv },
+    ]) {
+      const failure = await a.request("session.create", params).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(IpcError);
+      expect((failure as IpcError).code).toBe("bad_request");
+      expect((failure as IpcError).message).toContain("GITHUB_TOKEN");
+      expect((failure as IpcError).message).not.toContain("td-test-secret-0000");
+    }
+    expect((await a.request("session.list", {})).result.sessions).toEqual([]);
+    expect(backend.starts).toEqual([]);
+    const allowed = { ...claude, env: { LANG: "C", TOKENS_PER_MIN: "5" } };
+    const { session } = (await a.request("session.create", { name: "ok", launch: allowed })).result;
+    expect(session.launch.env).toEqual(allowed.env);
+  });
+
   it("fills a profile cwd of ~ in the order project, workspace, setting, ~", async () => {
     const { a } = await setup();
     const home = { backend: "wsl", cwd: "~", command: ["bash"] } as const;

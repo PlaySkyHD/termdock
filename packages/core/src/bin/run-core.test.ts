@@ -154,6 +154,43 @@ describe("runCore", () => {
     expect(existsSync(historyDir(dataDir, silent.id))).toBe(false);
   });
 
+  it("removes history/<id> on delete after a restart in between, and a third start finds neither (issue #135)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const first = await start({ pipePath, dataDir, backends: [backend] });
+    const c1 = await client(pipePath);
+    const gone = (await c1.request("session.create", { name: "gone", launch })).result.session;
+    const kept = (await c1.request("session.create", { name: "kept", launch })).result.session;
+    backend.pty(gone.id).emitData("td-test output of gone\r\n");
+    backend.pty(kept.id).emitData("td-test output of kept\r\n");
+    await c1.close();
+    // The history is on the disk once the core has closed; the sessions keep running in the backend.
+    await first.close?.();
+    expect(existsSync(historyDir(dataDir, gone.id))).toBe(true);
+
+    const second = await start({ pipePath, dataDir, backends: [backend] });
+    const c2 = await client(pipePath);
+    // Output after the restart goes into the same folder.
+    backend.pty(gone.id).emitData("td-test more output\r\n");
+    await c2.request("session.kill", { sessionId: gone.id });
+    await c2.request("session.delete", { sessionId: gone.id });
+    expect(existsSync(historyDir(dataDir, gone.id))).toBe(false);
+    expect(
+      (await c2.request("history.search", { query: "td-test" })).result.hits.map((h) => h.sessionId),
+    ).toEqual([kept.id]);
+    await c2.close();
+    await second.close?.();
+
+    // No flush of the closed core and no reconcile brings the folder or the session back.
+    expect(existsSync(historyDir(dataDir, gone.id))).toBe(false);
+    expect(existsSync(historyDir(dataDir, kept.id))).toBe(true);
+    await start({ pipePath, dataDir, backends: [backend] });
+    const c3 = await client(pipePath);
+    expect((await c3.request("session.list", {})).result.sessions.map((s) => s.id)).toEqual([kept.id]);
+    expect(existsSync(historyDir(dataDir, gone.id))).toBe(false);
+  });
+
   it("searches the history of all sessions, not those without logging or deleted ones (issue #62)", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

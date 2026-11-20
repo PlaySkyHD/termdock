@@ -17,7 +17,7 @@ Das WSL-Backend SHALL eine Session `<id>` als tmux-Session `td-<id>` auf dem eig
 
 ### Requirement: Befehle als Argument-Arrays
 
-Alle Aufrufe von `wsl.exe` und `tmux` SHALL Argument-Arrays sein, ohne Login-Shell. Ohne `command` MUST die Login-Shell der Distro in der Session laufen, mit `command` dieses Programm mit genau diesen Argumenten, ohne dass eine Shell sie interpretiert.
+Alle Aufrufe von `wsl.exe` und `tmux` SHALL Argument-Arrays sein, ohne Login-Shell. Ohne `command` MUST die Login-Shell der Distro in der Session laufen, mit `command` dieses Programm mit genau diesen Argumenten, ohne dass eine Shell sie interpretiert. Ein Test in der CI MUST die Quellen von Core und Desktop prüfen: kein `exec`, keine `shell`-Option außer `false`, kein zusammengesetzter Programmname; Ausnahmen nur in einer Allowlist mit Grund.
 
 #### Scenario: Argumente bleiben wörtlich
 
@@ -35,6 +35,12 @@ Alle Aufrufe von `wsl.exe` und `tmux` SHALL Argument-Arrays sein, ohne Login-She
 
 - **WHEN** eine Session mit einer ID gestartet werden soll, die andere Zeichen als Buchstaben, Ziffern, `-` und `_` enthält
 - **THEN** lehnt das Backend ab, ohne `wsl.exe` aufzurufen
+
+#### Scenario: Quell-Scan der Prozessaufrufe
+
+- **GIVEN** die Quellen von `packages/core/src` und `apps/desktop/src` ohne Tests
+- **WHEN** der Scan alle Aufrufe von `child_process` und `node-pty` (auch über Aliase und `import("node-pty")`) prüft
+- **THEN** findet er die Aufrufe in `processes.ts`, `core-process.ts` und den Screenshot-Modulen und keinen Befund, und Beispiele mit `exec(`, `shell: true`, einem Template oder `+` als Befehl und Argumenten als String meldet er
 
 ### Requirement: Ein- und Ausgabe, Größe und Terminal-Abfrage beim Start
 
@@ -303,3 +309,25 @@ Bevor ein Backend den ersten Keepalive einer Distro startet, SHALL es die Keepal
 - **GIVEN** eine laufende Übernahme, während der die einzige Session freigegeben und wieder gehalten wird
 - **WHEN** die Übernahme endet
 - **THEN** startet genau ein Keepalive, und es folgt keine zweite Übernahme
+
+### Requirement: WSL-Integrationstests mit eigenem tmux-Socket
+
+Jede Datei der WSL-Integrationstests (`*.wsl.test.ts`) SHALL einen tmux-Socket `termdock-test-<pid>-<nonce>` für sich allein nutzen, beim Ende ihren Server beenden (`tmux -L <socket> kill-server`, nur für den eigenen Socket) und Server von Sockets beendeter Prozesse aufräumen. Der feste Socket `termdock-test` und der Socket `termdock` MUST unberührt bleiben. Ein Test in der CI MUST sicherstellen, dass keine `*.wsl.test.ts` den festen Namen `termdock-test` enthält.
+
+#### Scenario: Parallele Läufe
+
+- **GIVEN** zwei Worktrees führen die WSL-Integrationstests gleichzeitig aus
+- **WHEN** der Test einer Datei seine `td-*`-Sessions aufräumt
+- **THEN** beendet er nur Sessions auf seinem Socket, und kein Test des anderen Laufs verliert eine Session
+
+#### Scenario: Aufräumen verwaister Server
+
+- **GIVEN** Sockets `termdock-test-<pid>-<nonce>` eines beendeten und eines laufenden Prozesses sowie `termdock` und `termdock-test`
+- **WHEN** ein Testlauf aufräumt
+- **THEN** beendet er nur den Server auf dem Socket des beendeten Prozesses
+
+#### Scenario: Fester Socketname
+
+- **GIVEN** die Quellen der `*.wsl.test.ts` in `packages/` und `apps/`
+- **WHEN** der Test auf den Namen `termdock-test` als Zeichenkette prüft
+- **THEN** findet er keine Datei, die ihn enthält

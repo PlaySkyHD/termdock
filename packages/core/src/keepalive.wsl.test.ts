@@ -1,7 +1,7 @@
 // The WSL keepalive survives a killed core and is taken over by the next one (issue #140). Only with
 // TERMDOCK_WSL_TESTS=1 (local, not in CI). Each core runs as its own process from `dist/bin/termdock-core.js` (built
 // by `npm run typecheck`, like the desktop app runs it) on its own pipe, data directory and tmux socket
-// `termdock-test-keepalive-<nonce>`; the test kills it by its process id like the installer or the Task Manager.
+// (`wslTestSocket()`, #147); the test kills it by its process id like the installer or the Task Manager.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -14,9 +14,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runWsl } from "./backend/wsl/processes.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
+import { cleanStaleWslTestServers, killWslTestServer, wslTestSocket } from "./test/wsl-socket.js";
 
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
-const SOCKET = `termdock-test-keepalive-${randomUUID().slice(0, 8)}`;
+const SOCKET = wslTestSocket();
 const ENTRY = fileURLToPath(new URL("../dist/bin/termdock-core.js", import.meta.url));
 const KEEPALIVE = `tmux -L ${SOCKET} wait-for termdock-keepalive`;
 
@@ -91,8 +92,13 @@ describe.skipIf(!enabled)("WSL keepalive after the end of the core (issue #140)"
     for (const client of clients.splice(0)) client.close();
     for (const core of cores.splice(0)) if (core.exitCode === null && core.signalCode === null) core.kill();
     // The socket belongs to this file alone; its server ends together with every keepalive waiting on it.
-    if (distro) await tmux(["kill-server"]);
-    else await wsl(["tmux", "-L", SOCKET, "kill-server"]);
+    if (distro) {
+      await killWslTestServer(distro, SOCKET);
+      await cleanStaleWslTestServers(distro);
+    } else {
+      // A run that failed before it learned the distro still leaves the server of the default distro behind.
+      await wsl(["tmux", "-L", SOCKET, "kill-server"]);
+    }
     rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 

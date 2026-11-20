@@ -1716,3 +1716,65 @@ Im Screenshot-Modus SHALL ein Fenster ohne gespeicherte Position 40 px innerhalb
 
 - **WHEN** ein Screenshot-Lauf mit `TERMDOCK_SCREENSHOT_DISPLAY=primary` ein Fenster öffnet
 - **THEN** liegt es 40 px innerhalb des Arbeitsbereichs des Hauptmonitors
+
+### Requirement: Screenshot-Läufe laufen rechnerweit nacheinander
+
+Vor dem Start seines Cores SHALL ein Screenshot-Lauf `termdock-screenshot.lock` im Temp-Verzeichnis exklusiv mit seiner PID anlegen. Ist sie belegt, SHALL er warten, `waiting for screenshot run <pid>` loggen und nach 15 min ohne Core mit Code 1 enden. Frei SHALL eine Sperre sein, deren Prozess beendet ist, deren Inhalt unlesbar und älter als 5 s ist oder die älter als 12 min ist. Er SHALL nur die eigene Sperre entfernen; das Warten zählt nicht ins Laufzeitlimit.
+
+#### Scenario: Zweiter Lauf wartet
+
+- **GIVEN** ein Screenshot-Lauf mit PID 100 hält die Sperre
+- **WHEN** ein zweiter Screenshot-Lauf startet
+- **THEN** loggt er `waiting for screenshot run 100`, startet keinen Core, solange die Sperre gehalten wird, und beginnt seine Szenen erst, wenn der erste Lauf die Sperre entfernt hat
+
+#### Scenario: Verwaiste Sperre
+
+- **GIVEN** die Sperrdatei enthält die PID eines beendeten Prozesses
+- **WHEN** ein Screenshot-Lauf startet
+- **THEN** ersetzt er die Sperre durch seine eigene und läuft ohne zu warten
+
+#### Scenario: Unlesbare Sperre
+
+- **GIVEN** die Sperrdatei enthält keine PID (ihr Lauf starb zwischen Anlegen und Schreiben)
+- **WHEN** ein Screenshot-Lauf startet
+- **THEN** wartet er, solange die Datei höchstens 5 s alt ist, und ersetzt sie danach durch seine eigene
+
+#### Scenario: Sperre älter als 12 min
+
+- **GIVEN** die Sperrdatei ist älter als 12 min und ihre PID gehört einem lebenden Prozess (wiederverwendete PID)
+- **WHEN** ein Screenshot-Lauf startet
+- **THEN** ersetzt er die Sperre durch seine eigene und läuft ohne zu warten
+
+#### Scenario: Zeitlimit des Wartens
+
+- **GIVEN** ein wartender Lauf und andere Läufe, die die Sperre nacheinander halten, sodass ihn 15 min lang keine freie Sperre erreicht
+- **WHEN** der wartende Lauf sein Zeitlimit erreicht
+- **THEN** endet er mit Code 1, ohne einen Core gestartet zu haben, und lässt die fremde Sperre liegen
+
+#### Scenario: Vorübergehender Dateifehler
+
+- **GIVEN** das Anlegen, Lesen oder Entfernen der Sperrdatei scheitert mit `EPERM`, `EACCES` oder `EBUSY` (Löschen ausstehend, Virenscanner)
+- **WHEN** ein Screenshot-Lauf die Sperre nehmen will
+- **THEN** gilt die Sperre in dieser Runde als belegt, er versucht es weiter bis zum Zeitlimit von 15 min, und andere Dateifehler beenden ihn mit Code 1
+
+#### Scenario: Freigabe am Ende
+
+- **GIVEN** ein Screenshot-Lauf hält die Sperre
+- **WHEN** er endet, mit Code 0 oder 1, auch weil das Verbinden mit seinem Core scheitert
+- **THEN** entfernt er die Sperrdatei, aber nur, wenn sie noch seine PID enthält
+
+### Requirement: Escape-Sequenzen nur im Terminal-Emulator
+
+Der Main-Prozess SHALL Terminal-Ausgabe unverändert als `output`-Event an die Fenster der Session geben und MUST auf keine Sequenz reagieren. Die App MUST keinen eigenen OSC-Handler, kein Clipboard-Addon (OSC 52 ist nicht umgesetzt), keinen Link-Öffner, kein `openExternal` und keinen Fenstertitel aus der Ausgabe haben. Ein OSC-8-Link aus xterm.js MUST kein Fenster öffnen und nicht navigieren (`setWindowOpenHandler` verweigert, `will-navigate` verhindert).
+
+#### Scenario: Sequenzen durch die Brücke
+
+- **GIVEN** ein Fenster mit einer View einer Session
+- **WHEN** die Session OSC 52, einen OSC-8-Link und Titel-Sequenzen ausgibt
+- **THEN** erhält das Fenster genau diese Bytes in `output`-Events und kein anderes Event, die PTY keine Eingabe, und kein Log enthält ihren Inhalt
+
+#### Scenario: Kein Weg aus der Ausgabe
+
+- **GIVEN** die Quellen von Main, Preload, Shared und Renderer
+- **WHEN** sie geprüft werden
+- **THEN** enthalten sie kein `registerOscHandler`, kein Clipboard- oder Web-Links-Addon, keinen `linkHandler`, kein `onTitleChange`, kein `openExternal` und keinen Import von `clipboard` aus Electron, und `main.ts` verweigert neue Fenster und Navigation

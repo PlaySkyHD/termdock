@@ -17,6 +17,7 @@ import type { SessionRepository } from "../storage/session-repository.js";
 import { CoreError } from "./errors.js";
 import { transition } from "./lifecycle.js";
 import { OutputBuffer } from "./output-buffer.js";
+import { assertNoSecretEnv } from "./secret-env.js";
 import { TerminalModes } from "./terminal-modes.js";
 
 /** Raw output kept per session as snapshot fallback (ADR 0003). */
@@ -358,10 +359,14 @@ export class SessionRegistry {
     this.timers.clear();
   }
 
-  /** Registers a new session in `Starting` and starts its process. */
+  /**
+   * Registers a new session in `Starting` and starts its process. A `launch.env` key that names a secret is refused
+   * before anything is stored: the session row would keep its value in plain text (issue #135).
+   */
   async create(input: CreateSessionInput): Promise<SessionInfo> {
     this.assertNotRestoring();
     if (input.size) assertSize(input.size);
+    assertNoSecretEnv(input.launch.env, "session");
     const timestamp = this.now().toISOString();
     const info: SessionInfo = {
       id: randomUUID(),

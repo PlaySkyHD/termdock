@@ -1,0 +1,51 @@
+{
+  "$schema": "../../node_modules/app-builder-lib/scheme.json",
+  "appId": "io.github.playskyhd.termdock",
+  "productName": "TermDock",
+  "artifactName": "TermDock-Setup-${version}.${ext}",
+  "directories": {
+    "output": "release",
+    "buildResources": "resources"
+  },
+  "electronDist": "../../node_modules/electron/dist",
+  "files": [
+    "package.json",
+    "dist/main/**/*.js",
+    "dist/preload/**/*.cjs",
+    "dist/shared/**/*.js",
+    "dist/renderer/**",
+    "!dist/**/*.test.js",
+    "!**/node_modules/@termdock/*/src/**",
+    "!**/node_modules/@termdock/*/dist/**/*.test.*",
+    "!**/node_modules/@termdock/*/dist/**/*.map",
+    "!**/node_modules/@termdock/*/dist/**/*.d.ts",
+    "!**/node_modules/@termdock/*/{tsconfig.json,tsconfig.tsbuildinfo,vitest.config.ts}",
+    "!**/node_modules/{react,react-dom,scheduler,@xterm}/**"
+  ],
+  "electronLanguages": ["de", "en-US"],
+  "asarUnpack": ["node_modules/@termdock/**", "node_modules/node-pty/**"],
+  "npmRebuild": false,
+  "nodeGypRebuild": false,
+  "publish": null,
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "icon": "resources/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "packElevateHelper": false,
+    "allowToChangeInstallationDirectory": false,
+    "createStartMenuShortcut": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "TermDock",
+    "uninstallDisplayName": "TermDock",
+    "deleteAppDataOnUninstall": false,
+    "installerIcon": "resources/icon.ico",
+    "uninstallerIcon": "resources/icon.ico",
+    "installerLanguages": ["de_DE"],
+    "language": "1031",
+    "include": "resources/installer.nsh"
+  }
+}

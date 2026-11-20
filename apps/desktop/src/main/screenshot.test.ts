@@ -146,6 +146,8 @@ describe("screenshotScenes", () => {
     expect(screenshotScenes([...base, "--scenes", "cwd"])).toEqual(["cwd"]);
     expect(SCENE_GROUPS.at(-1)).toBe("restart");
     expect(screenshotScenes([...base, "--scenes", "restart,cwd"])).toEqual(["cwd", "restart"]);
+    // The crashed renderer (#133) leaves the core running and comes before the restart.
+    expect(screenshotScenes([...base, "--scenes", "restart,crash"])).toEqual(["crash", "restart"]);
   });
 
   it("reads the option wherever it stands", () => {

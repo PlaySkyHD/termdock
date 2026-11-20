@@ -36,10 +36,14 @@ export interface SessionRegistryOptions {
    */
   repository?: SessionRepository;
   /**
-   * Called when saving a session change fails. The change still takes effect in memory and is reported;
-   * the next successful save of the session stores it. Defaults to `console.error`.
+   * Called when saving a session change fails, once per streak of failures (issue #133): further failures are not
+   * reported until a save works again. The change still takes effect in memory and is reported; the session is
+   * saved again with the next successful save of any session, by a retry every `persistRetryMs` and on `dispose`.
+   * Defaults to `console.error`.
    */
   onPersistError?: (error: unknown, session: SessionInfo) => void;
+  /** Wait before saving the sessions whose save failed again; one timer at a time. Defaults to 5 s. */
+  persistRetryMs?: number;
   /**
    * Called when the redraw after an attach fails twice; the new view keeps its snapshot and may show output
    * twice or miss some until the screen is drawn again. Defaults to `console.error`.
@@ -75,6 +79,9 @@ export interface SessionPatch {
 
 /** States `delete` accepts: no process runs (ADR 0005, issue #57). */
 const DELETABLE_STATES: ReadonlySet<SessionState> = new Set(["Exited", "Interrupted", "Archived"]);
+
+/** Default of `SessionRegistryOptions.persistRetryMs`. */
+export const DEFAULT_PERSIST_RETRY_MS = 5_000;
 
 /** Three attempts to re-attach a lost backend client: at once, after 0.5 s and after 2 s. */
 export const DEFAULT_REATTACH_DELAYS_MS: readonly number[] = [0, 500, 2000];
@@ -271,6 +278,12 @@ export class SessionRegistry {
   private readonly redrawOutputMaxMs: number;
   private readonly removeHistory: (sessionId: SessionId) => Promise<void>;
   private readonly defaultLoggingEnabled: () => boolean;
+  private readonly persistRetryMs: number;
+  /** Sessions whose last save failed; at most one entry per registered session (issue #133). */
+  private readonly unsaved = new Set<SessionId>();
+  /** A save failed and was reported; further failures are not reported until a save works again. */
+  private persistFailing = false;
+  private persistRetry: NodeJS.Timeout | undefined;
   private restored = false;
   private restoring = false;
   private unavailableAtRestore: BackendKind[] = [];
@@ -294,6 +307,7 @@ export class SessionRegistry {
     this.redrawOutputMaxMs = options.redrawOutputMaxMs ?? DEFAULT_REDRAW_OUTPUT_MAX_MS;
     this.removeHistory = options.removeHistory ?? (async () => {});
     this.defaultLoggingEnabled = options.defaultLoggingEnabled ?? (() => true);
+    this.persistRetryMs = options.persistRetryMs ?? DEFAULT_PERSIST_RETRY_MS;
     this.onPersistError =
       options.onPersistError ??
       ((error, session) => console.error(`TermDock: could not save session ${session.id}`, error));
@@ -342,11 +356,13 @@ export class SessionRegistry {
    * Releases all PTYs when the Core ends without stopping the sessions: states stay as they are (also in the
    * repository), so the next Core reconciles them; nothing is reported. Running starts, re-attaches and the
    * reconcile stop at their next step without changing or saving a session; a PTY the backend delivers
-   * afterwards is released at once. Afterwards `create` and `restart` are rejected with `invalid_state` and
-   * nothing is saved any more. Safe to call more than once.
+   * afterwards is released at once. Sessions whose save failed get one more try first (issue #133). Afterwards
+   * `create` and `restart` are rejected with `invalid_state` and nothing is saved any more. Safe to call more than once.
    */
   dispose(): void {
     if (this.disposed) return;
+    // A last try for changes a full disk kept from the storage (issue #133); the caller closes it only afterwards.
+    if (this.unsaved.size > 0) this.saveUnsaved();
     this.disposed = true;
     for (const entry of this.sessions.values()) {
       if (entry.reattachRun) {
@@ -389,6 +405,7 @@ export class SessionRegistry {
       throw new CoreError("internal", `Session ${info.id} could not be saved`, { cause });
     }
     this.sessions.set(info.id, entry);
+    if (this.repository) this.savedAgain();
     // Before the start: listeners see `Starting`, and every later state change of the session follows this event.
     this.createdListeners.emit({ session: snapshotInfo(info) });
     await this.launch(entry, { reuseExisting: false, clearOutput: false });
@@ -593,6 +610,7 @@ export class SessionRegistry {
     entry.views.clear();
     entry.output.clear();
     this.sessions.delete(sessionId);
+    this.unsaved.delete(sessionId);
   }
 
   /**
@@ -1248,8 +1266,63 @@ export class SessionRegistry {
     } catch (error) {
       // The in-memory state stays authoritative and is still reported; a throw here would also escape
       // into the backend's event emitter when called from the PTY exit handler.
+      this.unsaved.add(entry.info.id);
+      this.schedulePersistRetry();
+      if (this.persistFailing) return;
+      this.persistFailing = true;
       this.onPersistError(error, snapshotInfo(entry.info));
+      return;
     }
+    this.unsaved.delete(entry.info.id);
+    this.savedAgain();
+  }
+
+  /**
+   * A save worked: the storage writes again, so the sessions whose save failed are saved now (issue #133). Ends the
+   * failure streak once all of them are stored; otherwise the retry timer tries again.
+   */
+  private savedAgain(): void {
+    if (this.unsaved.size > 0 && !this.saveUnsaved()) return;
+    this.persistFailing = false;
+    if (this.persistRetry) {
+      clearTimeout(this.persistRetry);
+      this.timers.delete(this.persistRetry);
+      this.persistRetry = undefined;
+    }
+  }
+
+  /** Saves every session whose save failed; stops at the first failure. True when none is left. */
+  private saveUnsaved(): boolean {
+    const repository = this.repository;
+    if (!repository) return true;
+    for (const id of [...this.unsaved]) {
+      const entry = this.sessions.get(id);
+      // Gone (deleted) meanwhile: its row must not come back.
+      if (entry) {
+        try {
+          repository.save(entry.info);
+        } catch {
+          return false;
+        }
+      }
+      this.unsaved.delete(id);
+    }
+    return true;
+  }
+
+  /** One timer at a time, cleared by `dispose`; it keeps trying while saves fail, without reporting again. */
+  private schedulePersistRetry(): void {
+    if (this.persistRetry || this.disposed) return;
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      this.persistRetry = undefined;
+      if (this.disposed) return;
+      if (this.saveUnsaved()) this.savedAgain();
+      else this.schedulePersistRetry();
+    }, this.persistRetryMs);
+    timer.unref();
+    this.persistRetry = timer;
+    this.timers.add(timer);
   }
 
   /**

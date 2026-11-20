@@ -64,6 +64,18 @@ describe("electron-builder.json", () => {
     // node-pty brings N-API prebuilds; a rebuild from source fails on the host (agent-lessons-learned.md).
     expect(config.npmRebuild).toBe(false);
   });
+
+  it("leaves the test helpers of the core out of the app, but keeps its entry (issue #133)", () => {
+    const excludes = config.files.filter((pattern) => pattern.startsWith("!")).map((p) => p.slice(1));
+    // A leading `**/` also matches no directory at all, as in electron-builder.
+    const excluded = (file: string) =>
+      excludes.some((pattern) => matches(pattern, file) || matches(pattern, `app/${file}`));
+
+    expect(excluded("node_modules/@termdock/core/dist/test/flooding-core.js")).toBe(true);
+    expect(excluded("node_modules/@termdock/core/dist/test/wsl-socket.js")).toBe(true);
+    expect(excluded("node_modules/@termdock/core/dist/bin/termdock-core.js")).toBe(false);
+    expect(excluded("node_modules/@termdock/core/dist/index.js")).toBe(false);
+  });
 });
 
 describe("installer.nsh", () => {

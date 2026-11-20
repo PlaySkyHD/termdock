@@ -17,6 +17,7 @@
     "!dist/**/*.test.js",
     "!**/node_modules/@termdock/*/src/**",
     "!**/node_modules/@termdock/*/dist/**/*.test.*",
+    "!**/node_modules/@termdock/core/dist/test/**",
     "!**/node_modules/@termdock/*/dist/**/*.map",
     "!**/node_modules/@termdock/*/dist/**/*.d.ts",
     "!**/node_modules/@termdock/*/{tsconfig.json,tsconfig.tsbuildinfo,vitest.config.ts}",

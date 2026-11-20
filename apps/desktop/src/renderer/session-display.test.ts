@@ -97,7 +97,7 @@ describe("coreHints", () => {
     expect(coreHints(undefined, false)).toEqual([]);
   });
 
-  it("warns about each backend the core could not reach", () => {
+  it("[V1-09] warns about each backend the core could not reach", () => {
     expect(coreHints({ backendUnavailable: ["wsl", "windows"] }, false)).toEqual([
       "WSL nicht erreichbar",
       "Windows nicht erreichbar",

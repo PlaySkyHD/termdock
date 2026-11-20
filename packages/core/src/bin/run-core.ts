@@ -27,7 +27,7 @@ import { recordHistory } from "../storage/history-recorder.js";
 import { searchHistory, storeSource } from "../storage/history-search.js";
 import { HistoryStore } from "../storage/history-store.js";
 import type { HistorySettings } from "../storage/history-store.js";
-import type { Storage } from "../storage/database.js";
+import type { OpenStorageOptions, Storage } from "../storage/database.js";
 import type { LayoutRepository, StoredLayout } from "../storage/layout-repository.js";
 import type { ProfileRepository } from "../storage/profile-repository.js";
 import type { SettingsRepository } from "../storage/settings-repository.js";
@@ -61,6 +61,8 @@ export interface RunCoreOptions {
   signals?: SignalSource;
   /** Called when the core ends on purpose (shutdown request, signal). The entry point maps it to `process.exit`. */
   onExit?: (exitCode: number) => void;
+  /** Opens the database; defaults to `openStorage`. Tests wrap it to inject write errors (full disk, issue #133). */
+  openStorage?: (options: OpenStorageOptions) => Storage;
 }
 
 /** The part of `process` the core uses for its signal handlers. */
@@ -343,7 +345,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   let restore: RestoreResult;
   try {
     if (dataDir === undefined) throw dataDirError;
-    storage = openStorage({
+    storage = (options.openStorage ?? openStorage)({
       dataDir,
       onLayoutInvalid: log,
       onProfileInvalid: log,

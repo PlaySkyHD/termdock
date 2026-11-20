@@ -133,6 +133,10 @@ Status: automatisiert
 - Test `packages/core/src/e2e.wsl.test.ts`: `[V1-09] survives a core restart and reports a session killed from outside as Interrupted`
 - Test `packages/core/src/session/restore.test.ts`: `[V1-09] makes a WSL session whose tmux session is gone Interrupted`
 - Test `packages/core/src/session/restore.test.ts`: `[V1-09] makes WSL sessions Interrupted and reports backend_unavailable when WSL is not available`
+- Test `packages/core/src/failure.wsl.test.ts`: `[V1-09] makes every session Interrupted, tells the attached views and leaves no PTY behind`
+- Test `packages/core/src/failure.wsl.test.ts`: `[V1-09] starts an Interrupted session again after the server died, with its view as writer`
+- Test `packages/core/src/bin/failure-scenarios.test.ts`: `[V1-09] makes the stored sessions Interrupted and reports backend_unavailable without touching WSL`
+- Test `apps/desktop/src/renderer/session-display.test.ts`: `[V1-09] warns about each backend the core could not reach`
 - Szene `apps/desktop/src/main/screenshot-scenario.ts` (Gruppe `scenario`): `04-interrupted-notice.png`
 - Szene `apps/desktop/src/main/screenshot-restore.ts` (Gruppe `restore`): `18-layout-restored-window-2-interrupted.png`
 
@@ -152,6 +156,7 @@ Status: automatisiert
 - Test `packages/core/src/storage/history-store.test.ts`: `[V1-11] changes segments at limit / 2, never exceeds the limit and keeps at least limit / 2 of the newest output`
 - Test `packages/core/src/storage/history-store.test.ts`: `[V1-11] holds the limit under 50 MiB of output while the PTY keeps flowing (issue #59)`
 - Test `packages/core/src/e2e.wsl.test.ts`: `[V1-11] holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)`
+- Test `packages/core/src/bin/hard-kill.test.ts`: `[V1-11] leaves a readable database, a readable history within the limit and no half-saved layout`
 - Szene `apps/desktop/src/main/screenshot-settings.ts` (Gruppe `settings`): `61-settings-history.png`
 
 ### V1-12: Gruppenlose Sessions lassen sich anlegen, verschieben, archivieren und löschen.

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { hostname, userInfo } from "node:os";
 import { describe, expect, it } from "vitest";
 import { defaultPipeName, sanitizePipeUser } from "./pipe-name.js";
 
@@ -28,5 +30,13 @@ describe("pipe name", () => {
 
   it("uses the current OS account when none is given", () => {
     expect(defaultPipeName()).toMatch(/^\\\\\.\\pipe\\termdock-core-[A-Za-z0-9_.-]+-[0-9a-f]{12}$/);
+  });
+
+  it("binds the default name to user and domain of this process, so another account gets another pipe (#135)", () => {
+    const user = userInfo().username;
+    const domain = process.env["USERDOMAIN"] ?? hostname();
+    const hash = createHash("sha256").update(`${domain}\\${user}`).digest("hex").slice(0, 12);
+    expect(defaultPipeName()).toBe(`\\\\.\\pipe\\termdock-core-${sanitizePipeUser(user)}-${hash}`);
+    expect(defaultPipeName()).not.toBe(defaultPipeName(`${user}-other`, domain));
   });
 });

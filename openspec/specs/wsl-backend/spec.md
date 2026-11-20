@@ -179,7 +179,7 @@ Solange das Backend mindestens eine Session einer Distro kennt (gestartet, angeh
 
 ### Requirement: Keepalive-Neustart und Abbau
 
-Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit exponentiell wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen MUST je Distro mit bekannten Sessions einen laufenden Keepalive hinterlassen; danach startet keiner mehr.
+Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen MUST je Distro mit bekannten Sessions einen laufenden Keepalive hinterlassen; danach startet keiner mehr.
 
 #### Scenario: Keepalive stirbt
 
@@ -413,3 +413,87 @@ Endet der tmux-Server des Sockets (`kill-server`, Absturz), SHALL jede PTY des B
 - **GIVEN** zwei laufende Sessions auf dem Socket eines Tests, je mit PTY, und ihr Keepalive
 - **WHEN** `tmux -L <socket> kill-server` läuft
 - **THEN** werden beide Sessions `Interrupted`, in WSL läuft kein Prozess mit `-L <socket>` mehr und unter Windows kein `wsl.exe` mit dem Socket in der Befehlszeile, auch nicht 3 s später
+
+### Requirement: Gemeinsamer Leser für die ConPTY-Ausgabe
+
+Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lesen (ADR 0008). Eine PTY MUST erst starten, wenn dieser Worker läuft. Nach der Verbindung von node-pty MUST die Weiterleitung keinen weiteren Client annehmen (davor bleibt ein Wettlauf, ADR 0008). Endet eine PTY, MUST der Worker ihre Pipe schließen, auch ohne `kill`, nachdem ihre letzte Ausgabe angekommen ist. 20 PTYs MUST den RSS um weniger als 60 MiB erhöhen, `kill()` MUST unter voller Ausgabe sofort zurückkehren.
+
+#### Scenario: Viele PTYs
+
+- **GIVEN** ein Core-Prozess mit einer laufenden PTY
+- **WHEN** 20 weitere PTYs mit `cmd.exe` starten
+- **THEN** laufen alle über denselben Worker-Thread, und der RSS wächst um weniger als 60 MiB
+
+#### Scenario: Beenden unter voller Ausgabe
+
+- **GIVEN** fünf PTYs, deren Programme ohne Pause Zeilen ausgeben
+- **WHEN** der Core jede PTY mit `kill()` beendet
+- **THEN** kehrt jeder Aufruf in weniger als 1 s zurück, jede PTY meldet ihr Ende genau einmal, und der Worker hält keine Pipe mehr
+
+#### Scenario: Ende ohne kill
+
+- **GIVEN** eine PTY mit `cmd.exe /c echo marker-153`
+- **WHEN** das Programm endet
+- **THEN** enthält die Ausgabe beim gemeldeten Ende `marker-153`, der Exit-Code ist 0, und der Worker hat die Pipe geschlossen
+
+#### Scenario: Fremder Client an der Weiterleitung
+
+- **GIVEN** eine laufende PTY, deren Ausgabe bei node-pty ankommt
+- **WHEN** ein anderer Client sich mit `<pipe>-worker` verbinden will
+- **THEN** kommt keine Verbindung zustande
+
+#### Scenario: Lasttest
+
+- **GIVEN** WSL mit tmux und ein gebauter Core
+- **WHEN** `node scripts/load-test.mjs` mit 50 Sessions läuft
+- **THEN** liegt der RSS des Core unter 300 MiB, der Abgleich unter 3 s und das Echo p95 unter 100 ms
+
+### Requirement: Leser nur für node-pty 1.1.0
+
+Der Core SHALL den Leser nur in node-pty 1.1.0 einsetzen. Bei jeder anderen Version MUST er eine Zeile auf stderr melden und node-pty unverändert lassen. Ein Test MUST fehlschlagen, wenn die installierte Version nicht 1.1.0 ist. Ohne laufenden Worker MUST das Anlegen einer Verbindung mit einem Fehler scheitern, statt den Core anzuhalten.
+
+#### Scenario: Andere Version
+
+- **GIVEN** node-pty meldet die Version 1.2.0
+- **WHEN** der Core den Leser einsetzen will
+- **THEN** meldet er genau eine Zeile mit der gefundenen Version, und `ConoutConnection` bleibt die von node-pty
+
+#### Scenario: Installierte Version
+
+- **GIVEN** die Abhängigkeiten aus `package-lock.json`
+- **WHEN** der Test die Version von node-pty liest
+- **THEN** ist sie 1.1.0
+
+#### Scenario: Kein Worker
+
+- **GIVEN** ein eingesetzter Leser, dessen Worker nicht läuft
+- **WHEN** node-pty eine Verbindung anlegt
+- **THEN** wirft das Anlegen einen Fehler
+
+### Requirement: Absturz des Lesers
+
+Endet der Worker unerwartet oder scheitert die Verbindung einer PTY zur Weiterleitung, SHALL der Core den Prozess jeder betroffenen PTY beenden, je ConPTY höchstens ein `kill`, und ihr Ende genau einmal nach dem Prozessende melden, mit einer Zahl als Exit-Code (ohne Exit-Code nach höchstens 2 s mit -1). Die WSL-Session wird neu angehängt. Zustand, Views und Schreiber MUST bleiben, je Session MUST genau ein tmux-Client laufen. Die nächste PTY MUST einen neuen Worker starten.
+
+#### Scenario: PTYs ohne WSL
+
+- **GIVEN** drei PTYs mit `cmd.exe`
+- **WHEN** der Worker abstürzt
+- **THEN** melden alle drei ihr Ende genau einmal, jeweils erst nach dem Ende ihres Prozesses und mit einer Zahl als Exit-Code, und eine neue PTY läuft mit einem neuen Worker
+
+#### Scenario: Verbindung zur Weiterleitung scheitert
+
+- **GIVEN** zwei laufende PTYs mit `cmd.exe`
+- **WHEN** die Verbindung der ersten zu `<pipe>-worker` mit einem Fehler endet (etwa weil ein anderer Client die Pipe zuerst belegt hat)
+- **THEN** stürzt der Core nicht ab, die erste PTY meldet ihr Ende genau einmal nach dem Prozessende mit einer Zahl als Exit-Code, und die zweite läuft weiter
+
+#### Scenario: Zweites kill
+
+- **GIVEN** eine laufende PTY
+- **WHEN** der Core `kill()` zweimal aufruft
+- **THEN** schließt node-pty die ConPTY genau einmal, und die PTY meldet ihr Ende genau einmal
+
+#### Scenario: WSL-Sessions
+
+- **GIVEN** zwei laufende WSL-Sessions mit je einer schreibenden View
+- **WHEN** der Worker abstürzt
+- **THEN** hat jede Session einen neuen und nur einen tmux-Client, Eingaben kommen an, beide bleiben `Running` mit ihrem Schreiber, und die Zahl der `wsl.exe`-Prozesse ist dieselbe wie vorher

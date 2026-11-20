@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LAYOUT_VERSION } from "@termdock/protocol";
 import type { LaunchSpec, LayoutDocument } from "@termdock/protocol";
@@ -10,7 +11,8 @@ import { FakeBackend } from "../backend/fake.js";
 import { WslBackend } from "../backend/wsl/backend.js";
 import { connect } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
-import { openStorage } from "../storage/database.js";
+import { DATABASE_FILE, openStorage } from "../storage/database.js";
+import { MIGRATIONS, migrate } from "../storage/migrations.js";
 import { HistoryStore, historyDir, readHistory } from "../storage/history-store.js";
 import { runCore } from "./run-core.js";
 import type { RunCoreOptions, RunCoreResult } from "./run-core.js";
@@ -677,6 +679,72 @@ describe("runCore autostart (issue #61)", () => {
     expect(sessions.map((session) => [session.id, session.state])).toEqual([[old, "Detached"]]);
     expect(next.autostart?.sessions).toEqual([]);
     expect(backend.starts.map((call) => call.id)).toEqual([old, old]);
+  });
+
+  it("cleans secret keys of a profile stored before the rule and still autostarts and starts from it (issue #149)", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    const backend = new FakeBackend();
+    const fake = "td-test-secret-0000";
+    // A database of schema version 3: a profile with a secret key and a harmless SORT_KEY, and a session with SORT_KEY.
+    const old = new DatabaseSync(join(dataDir, DATABASE_FILE));
+    migrate(
+      old,
+      MIGRATIONS.filter((m) => m.version <= 3),
+    );
+    const at = "2026-11-13T10:00:00.000Z";
+    old
+      .prepare(
+        `INSERT INTO launch_profiles (id, name, backend, cwd, env, autostart, logging_enabled, created_at, updated_at)
+         VALUES ('pr-old', 'Old', 'wsl', '/home/dev', ?, 1, 1, '${at}', '${at}')`,
+      )
+      .run(JSON.stringify({ GITHUB_TOKEN: fake, SORT_KEY: "asc" }));
+    old
+      .prepare(
+        `INSERT INTO sessions (id, name, backend, cwd, env, state, cols, rows, created_at, updated_at, logging_enabled)
+         VALUES ('s-old', 'Sorted', 'wsl', '/home/dev', ?, 'Detached', 80, 24, '${at}', '${at}', 1)`,
+      )
+      .run(JSON.stringify({ SORT_KEY: "asc" }));
+    old.close();
+    backend.setExists("s-old", true);
+    const log = stderrSink();
+
+    const core = await start({ pipePath, dataDir, backends: [backend], stderr: log });
+    await core.autostart?.started;
+    const c = await client(pipePath);
+
+    const profile = (await c.request("profile.list", {})).result.profiles[0]!;
+    expect(profile.launch.env).toEqual({ SORT_KEY: "asc" });
+    // The autostart started a session from the cleaned profile; the old session keeps its harmless SORT_KEY.
+    const sessions = (await c.request("session.list", {})).result.sessions;
+    expect(sessions.map((session) => [session.profileId ?? session.name, session.launch.env])).toEqual(
+      expect.arrayContaining([
+        ["Sorted", { SORT_KEY: "asc" }],
+        ["pr-old", { SORT_KEY: "asc" }],
+      ]),
+    );
+    // Start from the profile and a rename work.
+    const started = (await c.request("session.create", { name: "again", profileId: "pr-old" })).result
+      .session;
+    expect(started.launch.env).toEqual({ SORT_KEY: "asc" });
+    const renamed = (await c.request("profile.update", { profileId: "pr-old", name: "Renamed" })).result;
+    expect(renamed.profile.name).toBe("Renamed");
+    // The value is gone from the file; the warning names profile and key.
+    await core.close?.();
+    const logFile = readFileSync(join(dataDir, "logs", "core.log"), "utf8");
+    const check = new DatabaseSync(join(dataDir, DATABASE_FILE));
+    try {
+      expect(
+        check.prepare("SELECT COUNT(*) AS n FROM launch_profiles WHERE env LIKE ?").get(`%${fake}%`),
+      ).toEqual({
+        n: 0,
+      });
+    } finally {
+      check.close();
+    }
+    expect(logFile).toContain('profile pr-old: removed env key "GITHUB_TOKEN"');
+    expect(logFile).not.toContain(fake);
+    expect(log.lines.join("")).not.toContain(fake);
   });
 
   it("[V1-14] holds requests until the autostart sessions are registered; two clients see one start", async () => {

@@ -384,19 +384,13 @@ describe("check of the working directory", () => {
   it("reads exit 0 as present, a silent exit 1 as missing and anything else as unknown", () => {
     expect(parseCwdCheck({ code: 0, stdout: "", stderr: "" })).toBe(true);
     expect(parseCwdCheck({ code: 1, stdout: "", stderr: "" })).toBe(false);
-    // What runWsl reports for a silent exit 1 (Node's message as stderr).
-    expect(
-      parseCwdCheck({
-        code: 1,
-        stdout: "",
-        stderr: "Command failed: wsl.exe -d Ubuntu --cd ~ --exec test -d /x\n",
-      }),
-    ).toBe(false);
+    // What runWsl reports for a silent exit 1 (its short failure text as stderr).
+    expect(parseCwdCheck({ code: 1, stdout: "", stderr: "wsl.exe failed: exit code 1\n" })).toBe(false);
     // A notice wsl.exe prints on every call in some setups (review PR #113).
     const notice = "wsl: Es wurde eine localhost-Proxykonfiguration erkannt, aber nicht gespiegelt.\n";
-    expect(
-      parseCwdCheck({ code: 1, stdout: "", stderr: `Command failed: wsl.exe -d Ubuntu\n${notice}` }),
-    ).toBe(false);
+    expect(parseCwdCheck({ code: 1, stdout: "", stderr: `wsl.exe failed: exit code 1\n${notice}` })).toBe(
+      false,
+    );
     expect(parseCwdCheck({ code: 1, stdout: "", stderr: "Wsl/Service/E_UNEXPECTED" })).toBeUndefined();
     expect(
       parseCwdCheck({ code: 1, stdout: "", stderr: `${notice}Wsl/Service/E_UNEXPECTED\n` }),

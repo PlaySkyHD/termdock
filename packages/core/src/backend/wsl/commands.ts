@@ -229,11 +229,13 @@ export function cwdCheckArgs(distro: string, cwd: string): string[] {
 export function parseCwdCheck(result: RunResult): boolean | undefined {
   if (result.timedOut) return undefined;
   if (result.code === 0) return true;
-  // `test` prints nothing. `runWsl` puts Node's "Command failed: <command line>" into an empty stderr, and some
+  // `test` prints nothing. `runWsl` puts "wsl.exe failed: exit code N" into an empty stderr, and some
   // setups make wsl.exe print a `wsl: …` notice on every call; any other line is an error of wsl.exe, so the
   // answer is unknown.
   const lines = result.stderr.replace(/\0/g, "").split(/\r?\n/);
-  const silent = lines.every((line) => line.trim() === "" || /^(Command failed: |wsl: )/.test(line.trim()));
+  const silent = lines.every(
+    (line) => line.trim() === "" || /^(wsl\.exe failed: exit code \d+$|wsl: )/.test(line.trim()),
+  );
   if (result.code === 1 && result.stdout.trim() === "" && silent) return false;
   return undefined;
 }

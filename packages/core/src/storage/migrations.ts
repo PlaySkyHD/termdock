@@ -1,10 +1,50 @@
 // Numbered schema migrations of termdock.db (ADR 0004). Never edit a released migration; add a new one.
 import type { DatabaseSync } from "node:sqlite";
+import { secretEnvReason } from "../session/secret-env.js";
 
 export interface Migration {
   /** Consecutive, starting at 1. */
   readonly version: number;
   readonly sql: string;
+  /** Runs after `sql` in the same transaction, for changes plain SQL cannot make. `warn` never gets a value. */
+  readonly run?: (db: DatabaseSync, warn: (message: string) => void) => void;
+}
+
+/**
+ * Issue #149: sessions and profiles stored before the refusal of secret keys (#87, #146, #149) keep the value in
+ * `env`, and a restart or an autostart would pass it on. Removes every entry the shared rule (`secret-env.ts`)
+ * takes for a secret and warns with the owner (`session` or `profile`), its id and the key, never the value. A row
+ * whose JSON cannot be read is left alone (the repository skips it).
+ */
+export function removeSecretEnv(db: DatabaseSync, warn: (message: string) => void): void {
+  for (const [table, owner] of [
+    ["sessions", "session"],
+    ["launch_profiles", "profile"],
+  ] as const) {
+    const rows = db.prepare(`SELECT id, env FROM ${table} WHERE env IS NOT NULL`).all();
+    const update = db.prepare(`UPDATE ${table} SET env = ? WHERE id = ?`);
+    for (const row of rows) {
+      const id = String(row.id);
+      let env: unknown;
+      try {
+        env = JSON.parse(String(row.env));
+      } catch {
+        continue;
+      }
+      if (typeof env !== "object" || env === null || Array.isArray(env)) continue;
+      const kept: Record<string, unknown> = {};
+      const removed: string[] = [];
+      for (const [key, value] of Object.entries(env)) {
+        if (secretEnvReason(key, String(value)) === undefined) kept[key] = value;
+        else removed.push(key);
+      }
+      if (removed.length === 0) continue;
+      update.run(Object.keys(kept).length === 0 ? null : JSON.stringify(kept), id);
+      for (const key of removed) {
+        warn(`${owner} ${id}: removed env key ${JSON.stringify(key.slice(0, 64))} (looks like a secret)`);
+      }
+    }
+  }
 }
 
 export const MIGRATIONS: readonly Migration[] = [
@@ -106,6 +146,12 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX sessions_profile ON sessions (profile_id);
     `,
   },
+  {
+    version: 4,
+    // Issue #149: remove secret-looking entries from stored sessions and profiles.
+    sql: "",
+    run: removeSecretEnv,
+  },
 ];
 
 /** Highest applied migration; 0 for an empty database. */
@@ -119,7 +165,11 @@ export function schemaVersion(db: DatabaseSync): number {
  * `schema_version` entry. The version is read again under the write lock, so a migration another
  * connection applied meanwhile is skipped. Refuses a database that is newer than this code.
  */
-export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): void {
+export function migrate(
+  db: DatabaseSync,
+  migrations: readonly Migration[] = MIGRATIONS,
+  warn: (message: string) => void = () => {},
+): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY) STRICT");
   const current = schemaVersion(db);
   const latest = migrations.at(-1)?.version ?? 0;
@@ -129,6 +179,8 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
   for (const migration of migrations) {
     if (migration.version <= current) continue;
     db.exec("BEGIN IMMEDIATE");
+    // Warnings of a migration are logged only after its COMMIT: a rolled-back migration logs nothing.
+    const warnings: string[] = [];
     try {
       // Another connection may have migrated between the first read and this lock.
       if (schemaVersion(db) >= migration.version) {
@@ -136,11 +188,13 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIG
         continue;
       }
       db.exec(migration.sql);
+      migration.run?.(db, (message) => warnings.push(message));
       db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(migration.version);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
     }
+    for (const message of warnings) warn(message);
   }
 }

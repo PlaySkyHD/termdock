@@ -31,7 +31,7 @@ export function resolveDataDir(env: Readonly<Record<string, string | undefined>>
 }
 
 /** Opens (and creates) a database file, or `:memory:`, in WAL mode with all migrations applied. */
-export function openDatabase(file: string): DatabaseSync {
+export function openDatabase(file: string, onMigrationWarning?: (message: string) => void): DatabaseSync {
   const db = new DatabaseSync(file);
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
@@ -39,7 +39,7 @@ export function openDatabase(file: string): DatabaseSync {
     // Safe with WAL: a power loss can lose the last commits but never corrupts the file; saves no fsync per write.
     db.exec("PRAGMA synchronous = NORMAL");
     db.exec("PRAGMA foreign_keys = ON");
-    migrate(db);
+    migrate(db, undefined, onMigrationWarning);
   } catch (error) {
     db.close();
     throw error;
@@ -66,12 +66,14 @@ export interface OpenStorageOptions {
   onLayoutInvalid?: (message: string) => void;
   /** Receives the reason when a stored profile cannot be used (it is skipped); defaults to stderr. */
   onProfileInvalid?: (message: string) => void;
+  /** Receives a warning of a migration (a removed secret key, never its value); defaults to nothing. */
+  onMigrationWarning?: (message: string) => void;
 }
 
 export function openStorage(options: OpenStorageOptions = {}): Storage {
   const dataDir = options.dataDir ?? resolveDataDir();
   mkdirSync(dataDir, { recursive: true });
-  const db = openDatabase(join(dataDir, DATABASE_FILE));
+  const db = openDatabase(join(dataDir, DATABASE_FILE), options.onMigrationWarning);
   let sessions: SessionRepository;
   let layouts: LayoutRepository;
   let settings: SettingsRepository;

@@ -1657,6 +1657,30 @@ describe("launch profiles (issue #58)", () => {
       expect(message).toContain(key);
       expect(message).not.toContain("hunter2");
     }
+    // Issue #149: more key forms and a URL with a password in the value.
+    for (const [key, value] of [
+      ["SECRET_KEY", "td-test-secret-0000"],
+      ["GITHUB_PAT", "td-test-secret-0000"],
+      ["DB_PASS", "td-test-secret-0000"],
+      ["DATABASE_URL", "postgres://app:td-test-secret-0000@db.example.invalid/x"],
+    ] as const) {
+      const failure = await a.request("profile.create", withEnv({ [key]: value })).catch((e: unknown) => e);
+      expect(failure, key).toBeInstanceOf(IpcError);
+      expect((failure as IpcError).code).toBe("bad_request");
+      expect((failure as IpcError).message).toContain(key);
+      expect((failure as IpcError).message).not.toContain("td-test-secret-0000");
+    }
+    const harmless = {
+      KEYBOARD: "us",
+      KEYMAP: "de",
+      SSH_AUTH_SOCK: "/tmp/agent.sock",
+      PATH: "/usr/bin",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DATABASE_URL: "postgres://db.example.invalid:5432/x",
+      SORT_KEY: "asc",
+    };
+    const harmlessProfile = (await a.request("profile.create", withEnv(harmless))).result.profile;
+    await a.request("profile.delete", { profileId: harmlessProfile.id });
     const { profile } = (await a.request("profile.create", withEnv({ LANG: "C", TOKENS_PER_MIN: "5" })))
       .result;
     expect(
@@ -1685,6 +1709,18 @@ describe("launch profiles (issue #58)", () => {
       expect((failure as IpcError).message).not.toContain("td-test-secret-0000");
     }
     expect((await a.request("session.list", {})).result.sessions).toEqual([]);
+    expect(backend.starts).toEqual([]);
+    for (const env of [
+      { GITHUB_PAT: "td-test-secret-0000" },
+      { DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" },
+    ]) {
+      const failure = await a
+        .request("session.create", { name: "s", launch: { ...claude, env } })
+        .catch((e: unknown) => e);
+      expect((failure as IpcError).code).toBe("bad_request");
+      expect((failure as IpcError).message).toContain(Object.keys(env)[0]!);
+      expect((failure as IpcError).message).not.toContain("td-test-secret-0000");
+    }
     expect(backend.starts).toEqual([]);
     const allowed = { ...claude, env: { LANG: "C", TOKENS_PER_MIN: "5" } };
     const { session } = (await a.request("session.create", { name: "ok", launch: allowed })).result;

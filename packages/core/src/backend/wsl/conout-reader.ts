@@ -52,6 +52,12 @@ function add(id, pipe) {
   });
   conout.connect(pipe, () => {
     const server = net.createServer((socket) => {
+      // node-pty connects once; no other client may read the terminal output (default DACL of the pipe).
+      server.close();
+      if (entry.connected) {
+        socket.destroy();
+        return;
+      }
       entry.connected = true;
       entry.accepted.add(socket);
       socket.on("error", () => {});
@@ -91,7 +97,8 @@ export class ConoutConnection {
 
   constructor(
     readonly id: number,
-    private readonly pipe: string,
+    /** The ConPTY output pipe; the relay listens on `<pipe>-worker` until node-pty has connected. */
+    readonly pipe: string,
     private readonly remove: (id: number) => void,
   ) {}
 

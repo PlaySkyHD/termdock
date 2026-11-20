@@ -416,7 +416,7 @@ Endet der tmux-Server des Sockets (`kill-server`, Absturz), SHALL jede PTY des B
 
 ### Requirement: Gemeinsamer Leser für die ConPTY-Ausgabe
 
-Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lesen statt über einen Worker je PTY (ADR 0008). Eine PTY MUST erst starten, wenn dieser Worker läuft. Endet eine PTY, MUST der Worker ihre Pipe schließen, auch ohne `kill`. 20 PTYs MUST den RSS des Core um weniger als 60 MiB erhöhen, und `kill()` MUST unter voller Ausgabe sofort zurückkehren.
+Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lesen (ADR 0008). Eine PTY MUST erst starten, wenn dieser Worker läuft. Die Weiterleitung MUST nach der Verbindung von node-pty keinen weiteren Client annehmen. Endet eine PTY, MUST der Worker ihre Pipe schließen, auch ohne `kill`, nachdem ihre letzte Ausgabe angekommen ist. 20 PTYs MUST den RSS um weniger als 60 MiB erhöhen, `kill()` MUST unter voller Ausgabe sofort zurückkehren.
 
 #### Scenario: Viele PTYs
 
@@ -429,6 +429,18 @@ Der Core SHALL die Ausgabe-Pipes aller PTYs über genau einen Worker-Thread lese
 - **GIVEN** fünf PTYs, deren Programme ohne Pause Zeilen ausgeben
 - **WHEN** der Core jede PTY mit `kill()` beendet
 - **THEN** kehrt jeder Aufruf in weniger als 1 s zurück, jede PTY meldet ihr Ende genau einmal, und der Worker hält keine Pipe mehr
+
+#### Scenario: Ende ohne kill
+
+- **GIVEN** eine PTY mit `cmd.exe /c echo marker-153`
+- **WHEN** das Programm endet
+- **THEN** enthält die Ausgabe beim gemeldeten Ende `marker-153`, der Exit-Code ist 0, und der Worker hat die Pipe geschlossen
+
+#### Scenario: Fremder Client an der Weiterleitung
+
+- **GIVEN** eine laufende PTY, deren Ausgabe bei node-pty ankommt
+- **WHEN** ein anderer Client sich mit `<pipe>-worker` verbinden will
+- **THEN** kommt keine Verbindung zustande
 
 #### Scenario: Lasttest
 
@@ -460,13 +472,19 @@ Der Core SHALL den Leser nur in node-pty 1.1.0 einsetzen. Bei jeder anderen Vers
 
 ### Requirement: Absturz des Lesers
 
-Endet der Worker unerwartet, SHALL der Core den Prozess jeder PTY beenden und ihr Ende genau einmal ohne Exit-Code melden; eine WSL-Session wird dann wie nach einem verlorenen Client neu angehängt. Zustand, Views und Schreiber MUST bleiben, je Session MUST genau ein tmux-Client laufen. Die nächste PTY MUST einen neuen Worker starten.
+Endet der Worker unerwartet, SHALL der Core den Prozess jeder PTY beenden, je ConPTY höchstens ein `kill`, und ihr Ende genau einmal melden, erst wenn der Prozess beendet ist und mit einer Zahl als Exit-Code. Eine WSL-Session wird dann wie nach einem verlorenen Client neu angehängt. Zustand, Views und Schreiber MUST bleiben, je Session MUST genau ein tmux-Client laufen. Die nächste PTY MUST einen neuen Worker starten.
 
 #### Scenario: PTYs ohne WSL
 
 - **GIVEN** drei PTYs mit `cmd.exe`
 - **WHEN** der Worker abstürzt
-- **THEN** melden alle drei ihr Ende genau einmal, ihre Prozesse sind beendet, und eine neue PTY läuft mit einem neuen Worker
+- **THEN** melden alle drei ihr Ende genau einmal, jeweils erst nach dem Ende ihres Prozesses und mit einer Zahl als Exit-Code, und eine neue PTY läuft mit einem neuen Worker
+
+#### Scenario: Zweites kill
+
+- **GIVEN** eine laufende PTY
+- **WHEN** der Core `kill()` zweimal aufruft
+- **THEN** schließt node-pty die ConPTY genau einmal, und die PTY meldet ihr Ende genau einmal
 
 #### Scenario: WSL-Sessions
 

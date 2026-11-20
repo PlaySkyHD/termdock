@@ -1,5 +1,7 @@
 // The shared ConPTY output reader (issue #153, ADR 0008). The PTY tests run `cmd.exe` through node-pty and need
 // no WSL, so they run on the Windows CI runner too.
+import { createRequire } from "node:module";
+import { connect as connectPipe } from "node:net";
 import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,27 +11,36 @@ import {
   nodePtyVersion,
   SUPPORTED_NODE_PTY_VERSION,
 } from "./conout-reader.js";
+import type { ConoutConnection } from "./conout-reader.js";
 import { conoutReader, spawnConpty } from "./processes.js";
 import type { ConptyProcess } from "./processes.js";
 
 const MiB = 1024 * 1024;
 
+/** What held when a PTY reported its end. */
+interface ExitSeen {
+  exitCode: unknown;
+  processAlive: boolean;
+  output: string;
+}
+
 interface Opened {
   pty: ConptyProcess;
   output: () => string;
   exits: () => number;
+  exitSeen: ExitSeen[];
   exited: Promise<void>;
 }
 
 const opened: Opened[] = [];
 const readers: ConoutReader[] = [];
 
-/** `cmd.exe` in a ConPTY; answers the DA1 query of the bundled ConPTY like a terminal would. */
-async function openCmd(): Promise<Opened> {
-  const pty = await spawnConpty("cmd.exe", [], { cols: 120, rows: 30 }, process.cwd());
+/** `cmd.exe <args>` in a ConPTY; answers the DA1 query of the bundled ConPTY like a terminal would. */
+async function openCmd(args: string[] = []): Promise<Opened> {
+  const pty = await spawnConpty("cmd.exe", args, { cols: 120, rows: 30 }, process.cwd());
   let text = "";
   let answered = false;
-  let exits = 0;
+  const exitSeen: ExitSeen[] = [];
   pty.onData((data) => {
     text += data;
     if (!answered && data.includes("\x1b[c")) {
@@ -38,12 +49,12 @@ async function openCmd(): Promise<Opened> {
     }
   });
   const exited = new Promise<void>((resolve) =>
-    pty.onExit(() => {
-      exits += 1;
+    pty.onExit(({ exitCode }) => {
+      exitSeen.push({ exitCode, processAlive: alive(pty.pid), output: text });
       resolve();
     }),
   );
-  const entry = { pty, output: () => text, exits: () => exits, exited };
+  const entry = { pty, output: () => text, exits: () => exitSeen.length, exitSeen, exited };
   opened.push(entry);
   return entry;
 }
@@ -162,6 +173,78 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     expect(ptys.map((entry) => entry.exits())).toEqual([1, 1, 1, 1, 1]);
   }, 120_000);
 
+  it("delivers the last output before the end, with the program's exit code, and closes the pipe", async () => {
+    const reader = (await conoutReader())!;
+    await reader.ready();
+    const before = reader.activeConnections;
+    const entry = await openCmd(["/c", "echo marker-153"]);
+    await entry.exited;
+    expect(entry.exitSeen[0]!.output).toContain("marker-153");
+    expect(entry.exitSeen[0]!.exitCode).toBe(0);
+    expect(entry.exitSeen[0]!.processAlive).toBe(false);
+    await waitFor(() => reader.activeConnections === before, "the worker closed the pipe");
+  }, 60_000);
+
+  it("closes the ConPTY only once when kill() is called twice", async () => {
+    const agentModule = createRequire(import.meta.url)("node-pty/lib/windowsPtyAgent.js") as {
+      WindowsPtyAgent: { prototype: { kill(): void } };
+    };
+    const spy = vi.spyOn(agentModule.WindowsPtyAgent.prototype, "kill");
+    try {
+      const entry = await openCmd();
+      await waitFor(() => entry.output().includes(">"), "prompt");
+      entry.pty.kill();
+      entry.pty.kill();
+      await entry.exited;
+      await sleep(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(entry.exits()).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60_000);
+
+  it("lets no other client connect to the relay pipe once node-pty is connected", async () => {
+    const reader = (await conoutReader())!;
+    await reader.ready();
+    const connections: ConoutConnection[] = [];
+    const connect = reader.connect.bind(reader);
+    const spy = vi.spyOn(reader, "connect").mockImplementation((pipe: string) => {
+      const connection = connect(pipe);
+      connections.push(connection);
+      return connection;
+    });
+    let entry: Opened;
+    try {
+      entry = await openCmd();
+    } finally {
+      spy.mockRestore();
+    }
+    // Output arrives only through node-pty's connection, accepted before the worker closed the server.
+    await waitFor(() => entry.output().includes(">"), "prompt");
+    expect(connections).toHaveLength(1);
+    // The pipe name lives on with node-pty's instance, but no instance is free: a client gets ENOENT or waits until
+    // it gives up (ERROR_PIPE_BUSY, then ETIMEDOUT after 30 s). With the server still listening it would connect at
+    // once.
+    const outcome = await new Promise<string>((resolve) => {
+      const socket = connectPipe(`${connections[0]!.pipe}-worker`);
+      const timer = setTimeout(() => {
+        socket.destroy();
+        resolve("no connection");
+      }, 3_000);
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        socket.destroy();
+        resolve("connected");
+      });
+      socket.once("error", () => {
+        clearTimeout(timer);
+        resolve("no connection");
+      });
+    });
+    expect(outcome).toBe("no connection");
+  }, 60_000);
+
   it("leaves no pipe in the worker when a PTY cannot start", async () => {
     const reader = (await conoutReader())!;
     await reader.ready();
@@ -179,16 +262,28 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     // A PTY that already ended on its own is not reported again.
     const done = await openCmd();
     await waitFor(() => done.output().includes(">"), "prompt of the PTY that ends first");
+    const reader = (await conoutReader())!;
+    const before = reader.activeConnections;
     done.pty.write("exit\r");
     await done.exited;
-    const reader = (await conoutReader())!;
+    // The worker closes the pipe of a PTY that ended without `kill` by itself.
+    await waitFor(
+      () => reader.activeConnections === before - 1,
+      "the worker closed the pipe of the ended PTY",
+    );
     const thread = reader.workerThreadId;
     const pids = ptys.map((entry) => entry.pty.pid);
 
     await reader.crashWorker();
 
     await Promise.all(ptys.map((entry) => entry.exited));
-    await waitFor(() => pids.every((pid) => !alive(pid)), "the processes of the lost PTYs ended");
+    // Reported only once the process has ended, with a number: the registry must not attach a second client while
+    // the first still runs.
+    for (const entry of ptys) {
+      expect(entry.exitSeen[0]!.processAlive).toBe(false);
+      expect(entry.exitSeen[0]!.exitCode).toBeTypeOf("number");
+    }
+    expect(pids.every((pid) => !alive(pid))).toBe(true);
     // Reported once, even though node-pty sees its output socket close as well.
     await sleep(500);
     expect(ptys.map((entry) => entry.exits())).toEqual([1, 1, 1]);

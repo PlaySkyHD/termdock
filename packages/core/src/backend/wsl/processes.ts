@@ -178,33 +178,52 @@ export async function spawnConpty(
   return connection instanceof ConoutConnection ? endOnLoss(terminal, connection) : terminal;
 }
 
-/** Longest wait for the process of a lost PTY to end before the next one is closed. */
+/** Longest wait for the process of a closed PTY to end before the next one is closed. */
 const LOST_KILL_WAIT_MS = 2_000;
-/** Closing of PTYs whose worker was lost, one after the other. */
+/**
+ * Longest wait, after node-pty reported an end without exit code, for the ConPTY to report the exit code. Its output
+ * socket may close before the process exit is reported; without exit code after this the process counts as alive
+ * and is closed.
+ */
+const EXIT_CODE_WAIT_MS = 1_000;
+/** Closing of PTYs that lost their output, one after the other. */
 let lostKills: Promise<void> = Promise.resolve();
 
-/** `terminal`, ended when `connection` is lost; its exit is reported once, from node-pty or from the loss. */
+/**
+ * `terminal`, closed when its output is lost. Its end is reported once, only when its process has ended, with the exit
+ * code the ConPTY reported (-1 if it reported none in time). node-pty reports an end as soon as its output socket
+ * closes, which a lost worker does while the process still runs; reported then, the registry would attach a second
+ * tmux client while the first still lives.
+ */
 function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): ConptyProcess {
   let ended = false;
+  let closing = false;
+  let killed = false;
   const exitListeners = new Set<(event: { exitCode: number }) => void>();
-  const end = (event: { exitCode: number }) => {
+  const exitCode = () => agentOf(terminal)?.exitCode;
+  const processEnded = () => exitCode() !== undefined;
+  const end = () => {
     if (ended) return;
     ended = true;
+    const event = { exitCode: exitCode() ?? -1 };
     for (const listener of [...exitListeners]) listener(event);
   };
-  let killed = false;
-  terminal.onExit(({ exitCode }) => end({ exitCode }));
-  const processEnded = () => agentOf(terminal)?.exitCode !== undefined;
-  connection.onLost(() => {
+  const killOnce = () => {
+    // Once only: a second `kill` would close the same ConPTY again (`PtyKill` has no guard).
+    if (killed) return;
+    killed = true;
+    terminal.kill();
+  };
+  const close = () => {
+    if (closing || ended) return;
+    closing = true;
     // One PTY after the other, each until its process ended: several kills in a row crash node-pty 1.1.0 now and
     // then (#160), and a lost worker closes every PTY at once.
     lostKills = lostKills
       .then(async () => {
-        // node-pty may already have reported an end only because its output socket closed with the worker; the
-        // process is gone only once the ConPTY reported its exit code. Until then node-pty holds the process handle,
-        // so the PID cannot belong to another process yet. The process first: `kill` waits for the PTY's first
-        // output, which may never come without the worker.
-        // Also after our own `kill`: node-pty defers it until the first output.
+        // Until the ConPTY reported the exit code node-pty holds the process handle, so the PID cannot belong to
+        // another process yet. The process first: node-pty defers `kill` until the PTY's first output, which may never
+        // come without the worker (also after our own `kill`).
         if (!processEnded()) {
           try {
             process.kill(terminal.pid);
@@ -212,19 +231,14 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
             // Already gone.
           }
         }
-        // Once only: a second `kill` would close the same ConPTY again.
-        if (!killed) {
-          killed = true;
-          try {
-            terminal.kill();
-          } catch {
-            // node-pty may have closed it already.
-          }
+        try {
+          killOnce();
+        } catch {
+          // node-pty may have closed it already.
         }
         const deadline = Date.now() + LOST_KILL_WAIT_MS;
         while (!processEnded() && Date.now() < deadline) await sleep(25);
-        // node-pty's code for a process it could not follow; the WSL backend asks tmux how the session ended.
-        end({ exitCode: -1 });
+        end();
       })
       .catch((error: unknown) => {
         // One failed step must not stop the closing of the PTYs after it.
@@ -232,17 +246,28 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
           `termdock-core: conout reader: closing a lost PTY failed: ${error instanceof Error ? error.message : String(error)}\n`,
         );
       });
+  };
+  terminal.onExit(() => {
+    if (processEnded()) {
+      end();
+      return;
+    }
+    // The output socket closed first: wait for the exit code, or close the process if it does not come.
+    void (async () => {
+      const deadline = Date.now() + EXIT_CODE_WAIT_MS;
+      while (!processEnded() && !closing && Date.now() < deadline) await sleep(25);
+      if (processEnded()) end();
+      else close();
+    })();
   });
+  connection.onLost(close);
   return {
     get pid() {
       return terminal.pid;
     },
     write: (data) => terminal.write(data),
     resize: (cols, rows) => terminal.resize(cols, rows),
-    kill: () => {
-      killed = true;
-      terminal.kill();
-    },
+    kill: killOnce,
     onData: (listener) => terminal.onData(listener),
     onExit: (listener) => {
       exitListeners.add(listener);

@@ -86,17 +86,32 @@ export function percentile(values, p) {
   return sorted[Math.min(rank, sorted.length) - 1];
 }
 
-/** Each measured value against its limit; a missing value fails. */
+/**
+ * Each measured value against its limit; a missing value fails. The core shutdown passes only with exit code 0:
+ * a crash (e.g. 3221225477 = 0xC0000005), a signal or a missing record fails.
+ */
 export function evaluate(result, limits = LIMITS) {
   const checks = [
     { name: "reconcile", value: result.reconcileMs, limit: limits.reconcileMs, unit: "ms" },
     { name: "rss", value: result.rssMiB, limit: limits.rssMiB, unit: "MiB" },
     { name: "echo p95", value: result.echo?.p95Ms, limit: limits.echoP95Ms, unit: "ms" },
-  ];
-  return checks.map((check) => ({
+  ].map((check) => ({
     ...check,
     ok: typeof check.value === "number" && check.value < check.limit,
   }));
+  const shutdown = result.coreShutdown;
+  checks.push({
+    name: "core shutdown",
+    value: shutdown?.code ?? undefined,
+    limit: 0,
+    unit: "",
+    text: shutdown
+      ? `exit ${shutdown.code ?? "-"}${shutdown.signal ? `, signal ${shutdown.signal}` : ""}`
+      : "-",
+    rule: "exit 0",
+    ok: shutdown?.code === 0,
+  });
+  return checks;
 }
 
 /** Table of the result for the console. */
@@ -107,8 +122,10 @@ export function formatTable(result, checks) {
     ["core restart until ready", `${result.restartReadyMs} ms`, ""],
     ...checks.map((check) => [
       check.name,
-      check.value === undefined ? "-" : `${check.value} ${check.unit}`,
-      `< ${check.limit} ${check.unit} ${check.ok ? "ok" : "OVER"}`,
+      check.text ?? (check.value === undefined ? "-" : `${check.value} ${check.unit}`),
+      check.rule
+        ? `${check.rule} ${check.ok ? "ok" : "FAILED"}`
+        : `< ${check.limit} ${check.unit} ${check.ok ? "ok" : "OVER"}`,
     ]),
     ["echo p50 / max", `${result.echo?.p50Ms ?? "-"} / ${result.echo?.maxMs ?? "-"} ms`, ""],
   ];
@@ -199,6 +216,8 @@ async function main() {
   const clients = [];
   let core;
   let distro;
+  /** Exit code and signal of the core that `stopCore` ended; part of the result. */
+  let coreShutdown;
   const log = (line) => process.stderr.write(`load-test: ${line}\n`);
 
   async function startCore() {
@@ -230,16 +249,27 @@ async function main() {
 
   async function stopCore() {
     const current = core;
-    if (!current || current.exitCode !== null || current.signalCode !== null) return;
-    const exited = new Promise((done) => current.once("exit", done));
+    if (!current) return;
+    // A core that died before the shutdown (crash under load) keeps its exit code and signal.
+    if (current.exitCode !== null || current.signalCode !== null) {
+      coreShutdown = { code: current.exitCode, signal: current.signalCode };
+      return;
+    }
+    const exited = new Promise((done) => current.once("exit", (code, signal) => done({ code, signal })));
     try {
       await clients.at(-1)?.request("core.shutdown", { stopSessions: false });
     } catch {
       // The core may close the connection before it answers.
     }
-    const timer = setTimeout(() => current.kill(), 30_000);
-    await exited;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      current.kill();
+    }, 30_000);
+    const { code, signal } = await exited;
     clearTimeout(timer);
+    // A core that had to be killed did not shut down: no code, so the check fails.
+    coreShutdown = timedOut ? { code: null, signal: signal ?? "timeout" } : { code, signal };
     for (const client of clients.splice(0)) await client.close();
   }
 
@@ -319,6 +349,7 @@ async function main() {
       rssMiB,
       settleMs: options.settleMs,
       echo,
+      coreShutdown,
     };
     const checks = evaluate(result);
     const report = { result, limits: LIMITS, checks };

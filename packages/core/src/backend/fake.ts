@@ -97,6 +97,11 @@ export interface FakeBackendOptions {
   kind?: BackendKind;
   /** Exit code the PTY reports when the session is killed; undefined by default. */
   killExitCode?: number;
+  /**
+   * Offers `listLive` (issue #134); it answers from the same state as `exists`. Off by default, so a backend
+   * without it (the reconcile falls back to `exists`) stays covered.
+   */
+  listLive?: boolean;
 }
 
 export class FakeBackend implements Backend {
@@ -110,6 +115,12 @@ export class FakeBackend implements Backend {
   failNextSnapshot: Error | undefined;
   /** When set, the next `exists` rejects with this error. */
   failNextExists: Error | undefined;
+  /** When set, the next `listLive` rejects with this error. */
+  failNextListLive: Error | undefined;
+  /** When true, `listLive` answers undefined (the backend cannot tell). */
+  listLiveUnknown = false;
+  /** Test hook: runs (and may wait) before `listLive` answers. */
+  beforeListLive: (() => void | Promise<void>) | undefined;
   /** When set, the next `resolveLaunch` rejects with this error. */
   failNextResolve: Error | undefined;
   /** When set, the next `redraw` rejects with this error. */
@@ -131,6 +142,14 @@ export class FakeBackend implements Backend {
   readonly attaches: FakeBackendCall[] = [];
   readonly kills: SessionId[] = [];
   readonly redraws: SessionId[] = [];
+  /** Every `exists` call, in order. */
+  readonly existsCalls: SessionId[] = [];
+  /** The session ids of every `listLive` call, in order. */
+  readonly listLiveCalls: SessionId[][] = [];
+  /** Present only with the option `listLive`, like an optional member of `Backend`. */
+  readonly listLive?: (
+    sessions: readonly { id: SessionId; spec: LaunchSpec }[],
+  ) => Promise<ReadonlySet<SessionId> | undefined>;
   private readonly ptys = new Map<SessionId, FakePty[]>();
   private readonly alive = new Set<SessionId>();
   private readonly existsOverride = new Map<SessionId, boolean>();
@@ -140,6 +159,7 @@ export class FakeBackend implements Backend {
   constructor(options: FakeBackendOptions = {}) {
     this.kind = options.kind ?? "wsl";
     this.killExitCode = options.killExitCode;
+    if (options.listLive) this.listLive = (sessions) => this.answerListLive(sessions);
   }
 
   /** Latest PTY of a session. Throws when none was created. */
@@ -193,11 +213,30 @@ export class FakeBackend implements Backend {
   }
 
   async exists(id: SessionId, _spec: LaunchSpec): Promise<boolean> {
+    this.existsCalls.push(id);
     const error = this.failNextExists;
     if (error) {
       this.failNextExists = undefined;
       throw error;
     }
+    return this.isAlive(id);
+  }
+
+  private async answerListLive(
+    sessions: readonly { id: SessionId; spec: LaunchSpec }[],
+  ): Promise<ReadonlySet<SessionId> | undefined> {
+    this.listLiveCalls.push(sessions.map((session) => session.id));
+    await this.beforeListLive?.();
+    const error = this.failNextListLive;
+    if (error) {
+      this.failNextListLive = undefined;
+      throw error;
+    }
+    if (this.listLiveUnknown) return undefined;
+    return new Set(sessions.map((session) => session.id).filter((id) => this.isAlive(id)));
+  }
+
+  private isAlive(id: SessionId): boolean {
     return this.existsOverride.get(id) ?? this.alive.has(id);
   }
 

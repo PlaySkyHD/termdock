@@ -452,6 +452,7 @@ export class SessionRegistry {
       }
       return available;
     };
+    const listed = await this.listLive(stored, isAvailable);
     // One after another, so a slow WSL is not hit with many parallel wsl.exe calls.
     for (const info of stored) {
       // The Core is ending; the remaining sessions stay as stored for the next reconcile.
@@ -459,7 +460,7 @@ export class SessionRegistry {
       const entry = newEntry(info);
       if (LIVE_STATES.has(info.state)) {
         reconciled.push({ entry, from: info.state });
-        await this.reconcile(entry, isAvailable, unavailable);
+        await this.reconcile(entry, isAvailable, unavailable, listed);
       }
       this.sessions.set(info.id, entry);
     }
@@ -1179,11 +1180,43 @@ export class SessionRegistry {
     this.stateListeners.emit({ sessionId: entry.info.id, from, to, session: snapshotInfo(entry.info) });
   }
 
+  /**
+   * Asks each reachable backend with `listLive` once which of its stored live sessions still exist (issue #134), so
+   * the reconcile needs no `exists` call per session. A backend without `listLive`, or whose answer is undefined or
+   * fails, is missing from the result; its sessions are checked with `exists` as before.
+   */
+  private async listLive(
+    stored: readonly SessionInfo[],
+    isAvailable: (backend: Backend) => Promise<boolean>,
+  ): Promise<Map<Backend, ReadonlySet<SessionId>>> {
+    const groups = new Map<Backend, { id: SessionId; spec: LaunchSpec }[]>();
+    for (const info of stored) {
+      if (!LIVE_STATES.has(info.state) || info.launch.backend === "windows") continue;
+      const backend = this.backendFor(info.launch);
+      if (!backend?.listLive) continue;
+      const group = groups.get(backend) ?? [];
+      group.push({ id: info.id, spec: info.launch });
+      groups.set(backend, group);
+    }
+    const listed = new Map<Backend, ReadonlySet<SessionId>>();
+    for (const [backend, sessions] of groups) {
+      if (this.disposed || !(await isAvailable(backend))) continue;
+      try {
+        const live = await backend.listLive?.(sessions);
+        if (live) listed.set(backend, live);
+      } catch {
+        // Falls back to `exists` per session, which reports a backend that cannot be reached.
+      }
+    }
+    return listed;
+  }
+
   /** Reconciles one loaded live session and stores its new state; see `restore`. */
   private async reconcile(
     entry: SessionEntry,
     isAvailable: (backend: Backend) => Promise<boolean>,
     unavailable: Set<BackendKind>,
+    listed: ReadonlyMap<Backend, ReadonlySet<SessionId>>,
   ): Promise<SessionState> {
     const { info } = entry;
     const settle = (state: SessionState): SessionState => {
@@ -1204,7 +1237,8 @@ export class SessionRegistry {
     if (this.disposed) return info.state;
     let exists: boolean;
     try {
-      exists = await backend.exists(info.id, info.launch);
+      // The answer of `listLive`, when the backend gave one; otherwise one check for this session.
+      exists = listed.get(backend)?.has(info.id) ?? (await backend.exists(info.id, info.launch));
     } catch {
       unavailable.add(info.launch.backend);
       return settle("Interrupted");

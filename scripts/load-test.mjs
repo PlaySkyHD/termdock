@@ -128,6 +128,20 @@ export function loadTestSocket(pid = process.pid) {
   return `termdock-test-${pid}-${randomBytes(4).toString("hex")}`;
 }
 
+/** Run sockets as in `killWslTestServer`; any other name (above all `termdock`, `termdock-test`) is refused. */
+const RUN_SOCKET = /^termdock-test-\d+-[0-9a-f]+$/;
+
+/**
+ * `wsl.exe` arguments that end the tmux server of `socket`. Throws for a socket that is not a run socket, so the
+ * cleanup can never end the user's server.
+ */
+export function killServerArgs(socket, distro) {
+  if (typeof socket !== "string" || !RUN_SOCKET.test(socket)) {
+    throw new Error(`refusing kill-server on a socket that is not a run socket: ${JSON.stringify(socket)}`);
+  }
+  return [...(distro ? ["-d", distro] : []), "--cd", "~", "--exec", "tmux", "-L", socket, "kill-server"];
+}
+
 /** Argument array of the noisy program: `lines` lines of `yes` every 100 ms; no shell string with user input. */
 export function noisyCommand(lines) {
   if (!Number.isInteger(lines) || lines < 1) throw new Error("lines must be a positive integer");
@@ -178,6 +192,8 @@ async function main() {
   if (!existsSync(ENTRY)) throw new Error(`${ENTRY} missing: run npm run typecheck first`);
   const { connect } = await import(pathToFileURL(join(CORE_DIST, "ipc", "client.js")).href);
   const socket = loadTestSocket();
+  // Checked before anything starts, so the cleanup below cannot fail on it.
+  killServerArgs(socket);
   const pipePath = `\\\\.\\pipe\\termdock-load-${randomUUID()}`;
   const dataDir = mkdtempSync(join(tmpdir(), "termdock-load-"));
   const clients = [];
@@ -238,7 +254,7 @@ async function main() {
       }
       // The socket is ours alone: its server ends with every session; the keepalive waiting on it ends as well.
       const target = distro ? ["-d", distro] : [];
-      await runWsl([...target, "--cd", "~", "--exec", "tmux", "-L", socket, "kill-server"]);
+      await runWsl(killServerArgs(socket, distro));
       const left = await runWsl([...target, "--cd", "~", "--exec", "tmux", "-L", socket, "list-sessions"]);
       if (left.code === 0) log(`WARNING: sessions left on ${socket}: ${left.stdout.trim()}`);
       rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

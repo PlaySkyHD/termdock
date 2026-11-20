@@ -153,14 +153,16 @@ export function listSessionsArgs(target: TmuxTarget): string[] {
 }
 
 /**
- * Names of the sessions with a live pane from `listSessionsArgs`. A line that is not `<name> <0|1>` (e.g. a
- * message of wsl.exe) is dropped; names hold no spaces, `sessionName` allows only letters, digits, `-` and `_`.
+ * Names of the sessions with a live pane from `listSessionsArgs`, by the rule of `exists` (`parsePaneStatus`): a
+ * pane is dead only when `#{pane_dead}` is `1`; any other value, also an empty one, counts as alive. A line that is
+ * not `<name> <value>` (no value word or more than one, e.g. a message of wsl.exe) is dropped; session names hold
+ * no spaces, `sessionName` allows only letters, digits, `-` and `_`.
  */
 export function parseLiveSessions(stdout: string): Set<string> {
   const live = new Set<string>();
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^(\S+) ([01])$/.exec(line);
-    if (match && match[2] === "0") live.add(match[1]!);
+    const match = /^(\S+) (\S*)$/.exec(line);
+    if (match && match[2] !== "1") live.add(match[1]!);
   }
   return live;
 }

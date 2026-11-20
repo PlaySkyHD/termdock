@@ -101,7 +101,7 @@ Scheitert das Speichern einer Änderung einer bestehenden Session, SHALL der Cor
 
 ### Requirement: Reconcile beim Core-Start
 
-Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Starting`, `Running` oder `Detached` abgleichen. WSL: existiert die Backend-Session, MUST er sich wieder anbinden und sie `Detached` setzen, sonst oder bei gescheitertem Anbinden `Interrupted`. Die Existenz MUST er je Backend gebündelt erfragen (`listLive`), ohne Antwort per `exists`. Windows-Sessions MUST ohne Backend-Aufruf `Interrupted` werden. Neue Zustände MUST gespeichert werden. Erst danach MUST der Autostart laufen.
+Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Starting`, `Running` oder `Detached` abgleichen. WSL: existiert die Backend-Session, MUST der Core sich wieder anbinden und sie `Detached` setzen, sonst oder bei gescheitertem Anbinden `Interrupted`. Windows-Sessions MUST ohne Backend-Aufruf `Interrupted` werden. Neue Zustände MUST gespeichert werden. Erst danach MUST der Autostart laufen (Capability `launch-profiles`) und die abgeglichenen Zustände sehen.
 
 #### Scenario: Lebende WSL-Session
 
@@ -132,6 +132,10 @@ Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Startin
 - **GIVEN** eine gespeicherte WSL-Session eines Autostart-Profils in `Running`, deren tmux-Session noch existiert, und eine eines zweiten Autostart-Profils, deren tmux-Session fehlt
 - **WHEN** der Core startet
 - **THEN** ist die erste `Detached` und ihr Profil bekommt keine neue Session; die zweite wird nach dem Reconcile `Interrupted`, danach unter ihrer ID neu gestartet, und es gibt keine weitere Session
+
+### Requirement: Gebündelte Existenzprüfung beim Reconcile
+
+Ob die Backend-Sessions der abzugleichenden WSL-Sessions existieren, SHALL der Core je erreichbarem Backend mit einem Aufruf von `listLive` erfragen statt mit `exists` je Session. Liefert `listLive` `undefined` oder schlägt es fehl, MUST er jede Session mit `exists` prüfen wie ohne Bündelung. Nicht erreichbare Backends, Windows-Sessions und beendete Sessions MUST er nicht in `listLive` aufnehmen. Wird der Core währenddessen verworfen, MUST er nichts anbinden und nichts speichern.
 
 #### Scenario: Gebündelte Prüfung
 

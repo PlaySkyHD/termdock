@@ -71,7 +71,7 @@ Die PTY der Session SHALL Eingaben an das Programm weitergeben, seine Ausgabe li
 
 ### Requirement: Detach, Existenz und Wiederanbinden
 
-`dispose()` der PTY SHALL nur den tmux-Client beenden; die tmux-Session läuft weiter, ohne PTY-Ende. `exists` MUST ohne PTY prüfen und `true` nur für eine Session mit lebendem Programm liefern. `listLive` MUST dasselbe für viele Sessions mit einem `tmux list-sessions` je Distro beantworten, bei gescheitertem Aufruf `undefined`. `attach` MUST eine neue PTY an die bestehende Session hängen. `snapshot` MUST den Bildschirminhalt mit Farben und Cursor liefern, für eine fehlende Session keinen.
+`dispose()` der PTY SHALL nur den tmux-Client beenden; die tmux-Session MUST weiterlaufen und dabei kein PTY-Ende melden. `exists` MUST über `has-session` ohne PTY prüfen und `true` nur für eine Session mit lebendem Programm liefern. `attach` MUST eine neue PTY an die bestehende Session hängen. `snapshot` MUST den sichtbaren Bildschirminhalt mit Farben und die Cursorposition (0-basiert) liefern, für eine nicht vorhandene Session keinen Snapshot.
 
 #### Scenario: Detach und Reattach mit Snapshot
 
@@ -84,6 +84,10 @@ Die PTY der Session SHALL Eingaben an das Programm weitergeben, seine Ausgabe li
 - **GIVEN** eine laufende Session, deren `LaunchSpec.cwd` nicht mehr existiert
 - **WHEN** `attach` aufgerufen wird
 - **THEN** hängt es eine neue PTY an die Session (der Aufruf erfolgt aus `~`)
+
+### Requirement: Existenz vieler Sessions
+
+`listLive` SHALL für viele Sessions mit genau einem `wsl.exe`-Aufruf `tmux -L <socket> list-sessions -F '#{session_name} #{pane_dead}'` je Distro beantworten, welche leben, nach derselben Regel wie `exists` (lebend, solange die aktive Pane nicht als tot gemeldet ist). Ohne tmux-Server MUST es eine leere Menge liefern, bei einem anderen Fehler in einer Distro `undefined`, ohne den Keepalive zu ändern.
 
 #### Scenario: Viele Sessions mit einem Aufruf
 

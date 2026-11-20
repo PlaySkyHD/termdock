@@ -287,9 +287,19 @@ describe("parsers", () => {
   });
 
   it("parses live sessions from list-sessions and drops dead panes and other lines (issue #134)", () => {
-    const stdout = "td-a 0\r\ntd-b 1\ntd-c 0\n\nwsl: a notice\ntd-d \ntd-e 0 extra\n";
+    const stdout = "td-a 0\r\ntd-b 1\ntd-c 0\n\nwsl: a notice\ntd-e 0 extra\ntd-f\n";
     expect(parseLiveSessions(stdout)).toEqual(new Set(["td-a", "td-c"]));
     expect(parseLiveSessions("")).toEqual(new Set());
+  });
+
+  it("judges a pane like exists: only pane_dead 1 is dead (issue #134)", () => {
+    for (const value of ["0", "", "x"]) {
+      const alive = !parsePaneStatus(`${value}  \n`).dead;
+      expect(parseLiveSessions(`td-a ${value}\n`).has("td-a")).toBe(alive);
+      expect(alive).toBe(true);
+    }
+    expect(parsePaneStatus("1  \n").dead).toBe(true);
+    expect(parseLiveSessions("td-a 1\n").has("td-a")).toBe(false);
   });
 
   it("recognises tmux messages for a missing session or server", () => {

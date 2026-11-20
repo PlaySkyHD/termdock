@@ -7,6 +7,7 @@ import {
   LIMITS,
   evaluate,
   formatTable,
+  killServerArgs,
   loadTestSocket,
   noisyCommand,
   parseArgs,
@@ -63,6 +64,33 @@ test("the socket follows the run scheme of the WSL tests and is never the produc
   const socket = loadTestSocket(1234);
   assert.match(socket, /^termdock-test-1234-[0-9a-f]{8}$/);
   assert.notEqual(loadTestSocket(), loadTestSocket());
+});
+
+test("kill-server only targets a run socket, never termdock or termdock-test", () => {
+  const socket = loadTestSocket(1234);
+  assert.deepEqual(killServerArgs(socket, "Ubuntu"), [
+    "-d",
+    "Ubuntu",
+    "--cd",
+    "~",
+    "--exec",
+    "tmux",
+    "-L",
+    socket,
+    "kill-server",
+  ]);
+  assert.deepEqual(killServerArgs(socket).slice(0, 2), ["--cd", "~"]);
+  for (const bad of [
+    "termdock",
+    "termdock-test",
+    "termdock-test-1234",
+    "termdock-test-x-ab",
+    "termdock-test-1-ab;x",
+    "",
+    undefined,
+  ]) {
+    assert.throws(() => killServerArgs(bad, "Ubuntu"), /refusing kill-server/);
+  }
 });
 
 test("the noisy program is an argument array with a throttled loop", () => {

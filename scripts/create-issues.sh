@@ -107,7 +107,7 @@ numbers="$folder/numbers.txt"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 declare -A number_of
-: >"$numbers"
+# numbers.txt appears with the first created issue, so a run that fails at issue 1 can simply be repeated.
 
 # The text of `key` with every placeholder replaced whose issue exists; the others stay open.
 render() {

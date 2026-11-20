@@ -211,6 +211,20 @@ test("a failing gh call stops the run and numbers.txt lists what exists", () => 
   }
 });
 
+test("a run that fails at the first issue leaves no numbers.txt and can be repeated", () => {
+  const t = setup("A|x|Eins\nB|x|Zwei\n", { A: "a\n", B: "Nach #{{A}}.\n" });
+  try {
+    const failed = t.run([t.folder], { FAKE_GH_FAIL_ON: "1" });
+    assert.notEqual(failed.status, 0);
+    assert.equal(existsSync(join(t.folder, "numbers.txt")), false);
+    const again = t.run([t.folder]);
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(readFileSync(join(t.folder, "numbers.txt"), "utf8"), "A|101\nB|102\n");
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("wrong arguments exit with 2", () => {
   const t = setup("A|x|Eins\n", { A: "a\n" });
   try {

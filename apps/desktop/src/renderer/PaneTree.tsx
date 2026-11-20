@@ -12,6 +12,8 @@ import type {
 } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import { RESTART_IDLE, restartFromPlaceholder } from "./restart-session.js";
+import type { RestartStatus } from "./restart-session.js";
 import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
@@ -378,6 +380,9 @@ function PaneView({
   useEffect(() => {
     if (attachable) setAttached(true);
   }, [attachable]);
+  // A refusal stays until the next click: a failed restart changes the state itself (Starting, Interrupted), and a
+  // restart that worked replaces the placeholder with the view (review PR #156).
+  const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);
 
   if (attached || attachable) {
     return (
@@ -396,6 +401,10 @@ function PaneView({
     );
   }
   const content = paneContent(session, sessionsLoaded);
+  // "Neu starten" (#156): once the session lives again, the pane attaches like after any start.
+  const restart = (): void =>
+    void restartFromPlaceholder(restartStatus, () => api.restartSession(sessionId), setRestartStatus);
+  const restartError = restartStatus.error;
   if (content.kind !== "placeholder")
     return (
       <div className="empty-state" data-view="loading">
@@ -413,9 +422,27 @@ function PaneView({
         <dt>Letzter Exit-Code</dt>
         <dd data-fact="exit-code">{content.exitCode}</dd>
       </dl>
-      <button className="button" type="button" data-action="close-pane-placeholder" onClick={onClosePane}>
-        Pane schließen
-      </button>
+      {restartError !== undefined && (
+        <p className="empty-state__error" role="alert" data-restart-error="">
+          {restartError}
+        </p>
+      )}
+      <div className="placeholder-actions">
+        {content.restartable && (
+          <button
+            className="button button--primary"
+            type="button"
+            data-action="restart-session"
+            disabled={restartStatus.running}
+            onClick={restart}
+          >
+            Neu starten
+          </button>
+        )}
+        <button className="button" type="button" data-action="close-pane-placeholder" onClick={onClosePane}>
+          Pane schließen
+        </button>
+      </div>
     </div>
   );
 }

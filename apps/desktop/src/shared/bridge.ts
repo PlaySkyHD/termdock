@@ -54,6 +54,8 @@ export type BridgeCall =
   | { method: "updateSession"; sessionId: SessionId; name?: string; workspaceId?: WorkspaceId | null }
   | { method: "archiveSession"; sessionId: SessionId }
   | { method: "deleteSession"; sessionId: SessionId }
+  /** Starts an `Exited` or `Interrupted` session again under its id (#156); the states come as events. */
+  | { method: "restartSession"; sessionId: SessionId }
   /** The layout of this window as the main process holds it (restore, #29). */
   | { method: "windowLayout" }
   /** The tabs and sidebar of this window after a change; the main process bundles and saves the layout. */
@@ -121,6 +123,7 @@ export interface BridgeResults {
   updateSession: SessionInfo;
   archiveSession: null;
   deleteSession: null;
+  restartSession: null;
   windowLayout: LayoutWindow;
   reportLayout: null;
   answerQuit: null;
@@ -211,6 +214,8 @@ export interface TermdockApi {
   ): Promise<SessionInfo>;
   archiveSession(sessionId: SessionId): Promise<void>;
   deleteSession(sessionId: SessionId): Promise<void>;
+  /** `session.restart` (#156); rejects with the core's reason, e.g. `invalid_state` for a living session. */
+  restartSession(sessionId: SessionId): Promise<void>;
   windowLayout(): Promise<LayoutWindow>;
   reportLayout(window: LayoutWindowPart): Promise<void>;
   answerQuit(requestId: string, answer: QuitAnswer): Promise<void>;

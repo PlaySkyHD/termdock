@@ -236,23 +236,27 @@ describe("withRequestTimeout", () => {
     expect(core.requests).toEqual(["session.attach", "session.detach"]);
   });
 
-  it("gives session.create and session.attach the long timeout of a cold WSL start", async () => {
+  it("gives session.create, session.attach and session.restart the long timeout of a cold WSL start", async () => {
     vi.useFakeTimers();
     const core = fakeCore();
     const inner = core.request;
+    const slow: readonly Method[] = ["session.create", "session.attach", "session.restart"];
     core.request = ((method: Method, params: never) =>
-      method === "session.create" || method === "session.attach"
+      slow.includes(method)
         ? new Promise((resolve) => setTimeout(() => resolve(inner(method, params) as never), 30_000))
         : new Promise(() => {})) as CorePort["request"];
     const port = withRequestTimeout(core, 10_000, SLOW_REQUEST_TIMEOUTS_MS);
 
     const created = port.request("session.create", { name: "WSL", launch: { backend: "wsl", cwd: "~" } });
     const attached = port.request("session.attach", { sessionId: "s1" });
+    // A restart after a Windows restart may start the distro, like a create (#156).
+    const restarted = port.request("session.restart", { sessionId: "s1" });
     const listed = port.request("session.list", {}).catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(30_000);
 
     await expect(created).resolves.toMatchObject({ result: {} });
     await expect(attached).resolves.toMatchObject({ result: {} });
+    await expect(restarted).resolves.toMatchObject({ result: {} });
     expect(((await listed) as IpcError).code).toBe("timeout");
   });
 

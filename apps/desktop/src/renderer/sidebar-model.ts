@@ -4,6 +4,7 @@
 import type { Project, SessionCreateParams, SessionInfo, Workspace } from "@termdock/protocol";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
+import { canRestart } from "./session-display.js";
 
 export interface WorkspaceSection {
   workspace: Workspace;
@@ -104,7 +105,9 @@ export type SessionAction =
   | { kind: "rename" }
   | { kind: "move"; workspaceId: string | null }
   | { kind: "archive" }
-  | { kind: "delete" };
+  | { kind: "delete" }
+  /** `session.restart` of an ended or interrupted session (#156). */
+  | { kind: "restart" };
 
 /**
  * `offered`: the entries that open the session in a zone of the active pane (`sessionPlaceEntries`, #67). Like
@@ -118,6 +121,10 @@ export function sessionMenu(
   const places = isDraggable(session) ? offered : [];
   const entries: MenuEntry<SessionAction>[] = [
     { key: "open", label: "Öffnen", action: { kind: "open" } },
+    // Only where the core takes it; no disabled entry for living sessions, they have nothing to restart (#156).
+    ...(canRestart(session.state)
+      ? [{ key: "restart", label: "Neu starten", action: { kind: "restart" as const } }]
+      : []),
     ...places.map((place) => ({ ...place, action: { kind: "place" as const, zone: place.action } })),
     {
       key: "rename",

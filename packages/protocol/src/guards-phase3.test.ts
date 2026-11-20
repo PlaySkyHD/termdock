@@ -647,3 +647,23 @@ describe("wsl.distros", () => {
     expect(rejected(parse({}))).toContain("result.distros");
   });
 });
+
+// Issue #156 (openspec change session-neu-starten): restart an ended session from the app, protocol 1.6.
+describe("session.restart", () => {
+  const parse = (result: unknown) => parseResponse(response(result), "session.restart");
+
+  it("takes only a session id and no payload", () => {
+    expect(METHODS).toContain("session.restart");
+    accepts("session.restart", { sessionId: "s1" });
+    rejects("session.restart", {}, "sessionId");
+    rejects("session.restart", { sessionId: "" }, "sessionId");
+    rejects("session.restart", { sessionId: "s1", launch: { backend: "wsl" } }, "launch");
+    rejected(parseRequest(request("session.restart", { sessionId: "s1" }, new Uint8Array([1]))));
+  });
+
+  it("answers with the restarted session", () => {
+    expect(parse({ session: sessionInfo }).ok).toBe(true);
+    expect(rejected(parse({}))).toContain("result.session");
+    expect(rejected(parse({ session: { ...sessionInfo, state: "Weg" } }))).toContain("result.session");
+  });
+});

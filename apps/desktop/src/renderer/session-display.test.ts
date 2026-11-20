@@ -2,6 +2,7 @@ import type { SessionInfo, SessionState } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import {
   backendText,
+  canRestart,
   coreHints,
   endedNotice,
   isAttachable,
@@ -45,6 +46,17 @@ describe("state helpers", () => {
     ["Archived", false],
   ])("a tab of a %s session attaches: %s", (state, attachable) => {
     expect(isAttachable(state)).toBe(attachable);
+  });
+
+  it.each<[SessionState, boolean]>([
+    ["Starting", false],
+    ["Running", false],
+    ["Detached", false],
+    ["Exited", true],
+    ["Interrupted", true],
+    ["Archived", false],
+  ])("a %s session can be restarted: %s (#156)", (state, restartable) => {
+    expect(canRestart(state)).toBe(restartable);
   });
 });
 

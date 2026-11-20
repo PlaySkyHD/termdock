@@ -2,7 +2,7 @@
 // A restored layout can name sessions that ended, were interrupted or are gone; none of them may look running.
 // Pure, no DOM.
 import type { SessionInfo } from "@termdock/protocol";
-import { endedNotice, isAttachable } from "./session-display.js";
+import { canRestart, endedNotice, isAttachable } from "./session-display.js";
 
 export type PaneContent =
   | { kind: "terminal" }
@@ -16,6 +16,8 @@ export type PaneContent =
       state: string;
       /** Last exit code as text, `unbekannt` when there is none. */
       exitCode: string;
+      /** The placeholder offers "Neu starten" (#156): the session is `Exited` or `Interrupted`. */
+      restartable: boolean;
     };
 
 export function paneContent(session: SessionInfo | undefined, sessionsLoaded: boolean): PaneContent {
@@ -27,6 +29,7 @@ export function paneContent(session: SessionInfo | undefined, sessionsLoaded: bo
       detail: "Der Core kennt diese Session nicht (mehr).",
       state: "Fehlt",
       exitCode: "unbekannt",
+      restartable: false,
     };
   }
   if (isAttachable(session.state)) return { kind: "terminal" };
@@ -37,5 +40,6 @@ export function paneContent(session: SessionInfo | undefined, sessionsLoaded: bo
     detail: notice?.detail ?? "",
     state: session.state,
     exitCode: session.lastExitCode === undefined ? "unbekannt" : String(session.lastExitCode),
+    restartable: canRestart(session.state),
   };
 }

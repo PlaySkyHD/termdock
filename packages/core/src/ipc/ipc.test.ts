@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.5" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.6" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.5" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.6" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -1041,7 +1041,7 @@ describe("phase 3 (issue #55)", () => {
       expect(raw.frames[0]?.header).toEqual({
         kind: "response",
         id: "h",
-        result: { protocolVersion: "1.5" },
+        result: { protocolVersion: "1.6" },
       });
     }
   });

@@ -202,7 +202,7 @@ Endet die PTY einer laufenden Session mit Exit-Code, SHALL die Session `Exited` 
 
 ### Requirement: Neustart
 
-`restart` SHALL eine Session in `Exited` oder `Interrupted` unter derselben Session-ID über `Starting` neu starten. Besteht die Backend-Session noch, MUST der Core sich wieder anbinden statt einen zweiten Prozess zu starten. Angehängte Views und der Schreiber bleiben erhalten. Der Rohdaten-Puffer MUST erst geleert werden, wenn die neue PTY angebunden ist.
+`restart` SHALL eine Session in `Exited` oder `Interrupted` unter derselben ID über `Starting` neu starten. Besteht die Backend-Session noch, MUST der Core sich anbinden statt einen zweiten Prozess zu starten. Views und Schreiber bleiben. Der Rohdaten-Puffer MUST erst geleert werden, wenn die neue PTY angebunden ist; erste Ausgabe eines neuen Laufs SHALL die Trennzeile `--- Neu gestartet <ISO-Zeit> ---` sein, beim Anbinden keine. Ein zweiter Aufruf beim Start MUST `invalid_state` ergeben.
 
 #### Scenario: Neustart schlägt fehl
 
@@ -220,7 +220,19 @@ Endet die PTY einer laufenden Session mit Exit-Code, SHALL die Session `Exited` 
 
 - **GIVEN** eine `Interrupted`-Session, deren Backend-Session noch existiert
 - **WHEN** sie neu gestartet wird
-- **THEN** bindet sich der Core wieder an, ohne einen neuen Start auszulösen
+- **THEN** bindet sich der Core wieder an, ohne einen neuen Start auszulösen, und schreibt keine Trennzeile
+
+#### Scenario: Trennzeile
+
+- **GIVEN** eine `Exited`-Session mit Ausgabe `alt` und einer angehängten View, die Uhr steht auf `2026-11-20T08:00:00.000Z`
+- **WHEN** sie neu gestartet wird
+- **THEN** erhält die View als erste Ausgabe `\r\n--- Neu gestartet 2026-11-20T08:00:00.000Z ---\r\n`, der Rohdaten-Puffer beginnt damit, und erst danach folgt die Ausgabe der neuen PTY
+
+#### Scenario: Zwei Neustarts gleichzeitig
+
+- **GIVEN** eine `Interrupted`-Session
+- **WHEN** `restart` zweimal aufgerufen wird, ohne auf den ersten zu warten
+- **THEN** scheitert der zweite mit `invalid_state`, und das Backend hat genau einen neuen Start erhalten
 
 ### Requirement: Archivieren
 

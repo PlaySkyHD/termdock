@@ -122,13 +122,19 @@ Der Renderer SHALL keinen Zugriff auf die Pipe, auf Node oder auf Electron-Modul
 
 ### Requirement: Views gehören ihrem Fenster
 
-Eine View SHALL dem Fenster gehören, das sie angehängt hat. Eingabe, Größe, Schreibrecht und Lösen SHALL der Main nur für Views des aufrufenden Fensters weitergeben. Schließt ein Fenster, lädt sein Renderer neu oder stürzt er ab, SHALL der Main dessen Views beim Core lösen.
+Eine View SHALL dem Fenster gehören, das sie angehängt hat. Eingabe, Größe, Schreibrecht und Lösen SHALL der Main nur für Views des aufrufenden Fensters weitergeben. Schließt ein Fenster, lädt sein Renderer neu oder stürzt er ab, SHALL der Main dessen Views beim Core lösen; hielt eine davon das Schreibrecht, MUST es danach frei sein, so dass ein anderes Fenster es übernehmen kann.
 
 #### Scenario: Renderer lädt neu
 
 - **GIVEN** Fenster A hat die schreibende View `v1`
 - **WHEN** der Renderer von A neu lädt oder abstürzt
 - **THEN** sendet der Main `session.detach` für `v1`, und die neue Seite in A hängt sich mit einer neuen View an
+
+#### Scenario: Renderer stürzt ab, anderes Fenster schreibt
+
+- **GIVEN** Fenster A hat die schreibende View `v1` einer Session, Fenster B eine lesende View derselben Session
+- **WHEN** der Renderer von A abstürzt (`forcefullyCrashRenderer()`) und B danach „Eingabe übernehmen“ wählt
+- **THEN** hat A beim Main keine View mehr, `session.list` nennt keinen Schreiber, Eingabe für `v1` wird abgelehnt, B schreibt, und nach dem Neuladen hängt sich A mit einer neuen View als Leser an
 
 #### Scenario: Fremde View
 
@@ -1528,7 +1534,7 @@ Der Screenshot-Modus SHALL mit echten Mausereignissen (`webContents.sendInputEve
 
 ### Requirement: Screenshot-Modus wählt Szenengruppen
 
-Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
+Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `crash`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
 
 #### Scenario: Eine Gruppe allein
 
@@ -1778,3 +1784,12 @@ Der Main-Prozess SHALL Terminal-Ausgabe unverändert als `output`-Event an die F
 - **GIVEN** die Quellen von Main, Preload, Shared und Renderer
 - **WHEN** sie geprüft werden
 - **THEN** enthalten sie kein `registerOscHandler`, kein Clipboard- oder Web-Links-Addon, keinen `linkHandler`, kein `onTitleChange`, kein `openExternal` und keinen Import von `clipboard` aus Electron, und `main.ts` verweigert neue Fenster und Navigation
+
+### Requirement: Screenshot-Szenen für einen Renderer-Absturz
+
+Die Screenshot-Gruppe `crash` SHALL zwei Fenster mit derselben Session öffnen, den Renderer des schreibenden Fensters mit `forcefullyCrashRenderer()` beenden und `31-crash-input-free.png` (Leser mit „Eingabe übernehmen“), `32-crash-other-window-writes.png` (das andere Fenster schreibt) und `33-crash-reloaded-reader.png` (das neu geladene Fenster liest) aufnehmen, jede mit Sichtbarkeitsselektor. Sie läuft vor `restart`, weil diese Gruppe den Core beendet.
+
+#### Scenario: Absturz und Neuladen
+
+- **WHEN** der Screenshot-Modus mit `--scenes crash` läuft
+- **THEN** liegen die drei PNG vor, der Main hielt nach dem Absturz keine View des Fensters, der Core nannte keinen Schreiber, das zweite Fenster schrieb sichtbar, das neu geladene Fenster hängte sich als Leser an, und der Lauf endet mit Code 0

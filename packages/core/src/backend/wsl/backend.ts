@@ -6,6 +6,7 @@ import {
   attachArgs,
   checksCwd,
   cwdCheckArgs,
+  endKeepalivesArgs,
   hasSessionArgs,
   isMissingSession,
   killSessionArgs,
@@ -73,6 +74,7 @@ export class WslBackend implements Backend {
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
   private defaultDistro: Promise<string> | undefined;
+  private disposed = false;
 
   constructor(options: WslBackendOptions = {}) {
     this.socket = options.socket ?? DEFAULT_TMUX_SOCKET;
@@ -83,9 +85,12 @@ export class WslBackend implements Backend {
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
+    const socket = this.socket;
     this.keepalive = new DistroKeepalive(
-      options.spawnKeepalive ?? spawnKeepalive,
+      options.spawnKeepalive ?? ((distro) => spawnKeepalive({ distro, socket })),
       options.keepaliveRestartDelayMs ?? 1_000,
+      // A keepalive survives its core (issue #140); the next one ends it before starting its own.
+      { takeOver: (distro) => this.exec(endKeepalivesArgs({ distro, socket })) },
     );
   }
 
@@ -210,9 +215,15 @@ export class WslBackend implements Backend {
     if (failed && results.every((result) => result.code !== 0)) throw wslError("tmux refresh-client", failed);
   }
 
-  /** Stops all keepalive processes; tmux sessions keep running (until WSL stops the distro). */
-  dispose(): void {
-    this.keepalive.dispose();
+  /**
+   * Hands the keepalives over (issue #140): every distro with known sessions keeps one running after the core ends,
+   * until the next core takes it over or the tmux server ends; none is started afterwards, and `start`/`attach` fail
+   * before their PTY. Resolves once that is done: usually within about 3 s, at the latest after a running take-over
+   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then.
+   */
+  dispose(): Promise<void> {
+    this.disposed = true;
+    return this.keepalive.dispose();
   }
 
   private async open(
@@ -223,14 +234,21 @@ export class WslBackend implements Backend {
     releaseOnFailure: boolean,
   ): Promise<WslPty> {
     const name = sessionName(id);
-    this.keepalive.retain(target.distro, name);
+    // A closed backend starts no tmux client any more: no keepalive would follow it (review PR #148).
+    if (this.disposed) throw new Error("WSL backend is closed");
+    // Known at once, so a `dispose` during `spawnPty` hands a keepalive over for it; started only after the PTY (its
+    // wsl.exe keeps the distro awake meanwhile), because the keepalive is a tmux client and ends at once while
+    // `new-session` has not created the server yet.
+    this.keepalive.retain(target.distro, name, { deferStart: true });
     let process: PtyProcess;
     try {
       process = await this.spawnPty(args, size);
     } catch (error) {
       if (releaseOnFailure) this.keepalive.release(target.distro, name);
+      else this.keepalive.start(target.distro);
       throw error;
     }
+    this.keepalive.start(target.distro);
     return new WslPty(process, () => this.resolveEnd(target, id));
   }
 

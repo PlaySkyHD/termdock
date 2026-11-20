@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import type { TerminalSize } from "@termdock/protocol";
 // Type only: the module is loaded on first use, so unit tests never load the native addon.
 import type * as NodePty from "node-pty";
-import type { RunResult } from "./commands.js";
+import type { RunResult, TmuxTarget } from "./commands.js";
 import { keepaliveArgs } from "./commands.js";
 import type { KeepaliveProcess } from "./keepalive.js";
 import type { PtyProcess } from "./pty.js";
@@ -43,9 +43,20 @@ export function runWsl(args: readonly string[], options: { timeoutMs: number }):
   });
 }
 
-/** `wsl.exe -d <distro> --exec sleep infinity` without PTY. */
-export function spawnKeepalive(distro: string): KeepaliveProcess {
-  const child = spawn(WSL, keepaliveArgs(distro), { env: wslEnv(), stdio: "ignore", windowsHide: true });
+/**
+ * The keepalive (`keepaliveArgs`) without PTY, detached from the core (issue #140): libuv puts every child that is
+ * not detached into the core's job object, which ends it together with the core (update, uninstall, Task
+ * Manager). Detached, it keeps the distro and its tmux sessions alive until the next core takes it over or the
+ * tmux server ends. `unref` lets the core (and tests) end while it runs.
+ */
+export function spawnKeepalive(target: TmuxTarget): KeepaliveProcess {
+  const child = spawn(WSL, keepaliveArgs(target), {
+    env: wslEnv(),
+    stdio: "ignore",
+    windowsHide: true,
+    detached: true,
+  });
+  child.unref();
   let exited = false;
   const listeners: (() => void)[] = [];
   const onEnd = () => {

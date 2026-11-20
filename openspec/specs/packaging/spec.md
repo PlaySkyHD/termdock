@@ -24,7 +24,7 @@ Legt fest, wie aus `apps/desktop` ein installierbares TermDock für Windows ents
 
 ### Requirement: Datenordner bleibt bei der Deinstallation
 
-Die Deinstallation über „Apps“ SHALL das Programm entfernen und `%APPDATA%\TermDock` (Datenbank, Verlauf, Einstellungen) stehen lassen. Installer und Deinstaller MUST das auf ihrer Willkommensseite sagen, ebenso dass sie ein laufendes TermDock samt Core im Hintergrund beenden und laufende WSL-Sessions dabei in der Regel enden.
+Die Deinstallation über „Apps“ SHALL das Programm entfernen und `%APPDATA%\TermDock` (Datenbank, Verlauf, Einstellungen) stehen lassen. Installer und Deinstaller MUST das auf ihrer Willkommensseite sagen, ebenso dass sie ein laufendes TermDock samt Core im Hintergrund beenden und laufende WSL-Sessions dabei weiterlaufen (der WSL-Keepalive überlebt den Core, #140).
 
 #### Scenario: Deinstallation
 

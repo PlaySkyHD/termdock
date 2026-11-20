@@ -31,6 +31,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **WSL-Integrationstests** laufen nur mit `TERMDOCK_WSL_TESTS=1` und nur lokal; GitHub-Runner haben keine Distro.
 - **`wsl.exe -- <args>` geht durch die Login-Shell** (`$HOME` wird expandiert, `;` trennt Befehle). Für Argument-Arrays `wsl.exe -d Ubuntu --cd ~ --exec <programm> ...` nutzen.
 - **WSL beendet die Distro samt tmux-Server**, wenn ca. 8–20 s kein `wsl.exe`-Prozess läuft. Wer eine tmux-Session über eine Pause ohne PTY retten will, hält `wsl.exe -d Ubuntu --exec sleep infinity` offen (ADR 0003).
+- **Der Keepalive des Core läuft losgelöst (#140):** `wsl.exe … tmux -L <socket> wait-for termdock-keepalive` überlebt den Kill des Core und endet mit dem tmux-Server; der nächste Core beendet ihn per `pkill` und startet seinen eigenen. Solche Prozesse auf dem Socket `termdock` gehören dem Nutzer, nie beenden. Kinder ohne `detached` liegen im Job-Objekt des Elternprozesses und sterben mit ihm.
 - **tmux: `status off` und `-T RGB`.** Ohne `status off` meldet `stty size` eine Zeile weniger als die PTY; ohne `-T RGB` am Client rechnet tmux Truecolor auf 256 Farben herunter. `status off` im selben Aufruf setzen (`new-session ... ; set-option -t <s> status off`), ein separates `set-option` direkt nach dem Start verliert das Rennen.
 
 ### node-pty und Electron (aus Phase 0, `docs/poc/phase-0-bericht.md`)

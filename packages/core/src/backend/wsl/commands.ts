@@ -45,9 +45,13 @@ export function wslExec(distro: string, cwd: string, program: readonly string[])
 }
 
 function tmux(target: TmuxTarget, cwd: string, args: readonly string[]): string[] {
-  if (!WORD.test(target.socket))
-    throw new Error(`Invalid tmux socket name: ${JSON.stringify(target.socket)}`);
-  return wslExec(target.distro, cwd, ["tmux", "-L", target.socket, ...args]);
+  return wslExec(target.distro, cwd, tmuxProgram(target.socket, args));
+}
+
+/** `tmux -L <socket> <args>`; the socket must be a plain word. */
+function tmuxProgram(socket: string, args: readonly string[]): string[] {
+  if (!WORD.test(socket)) throw new Error(`Invalid tmux socket name: ${JSON.stringify(socket)}`);
+  return ["tmux", "-L", socket, ...args];
 }
 
 /** Exact session target (`=` prevents prefix matches such as td-1 → td-10). */
@@ -216,8 +220,26 @@ export function versionArgs(distro: string): string[] {
   return wslExec(distro, "~", ["tmux", "-V"]);
 }
 
-export function keepaliveArgs(distro: string): string[] {
-  return wslExec(distro, "~", ["sleep", "infinity"]);
+/** tmux channel the keepalive waits on; nobody signals it, the wait ends only with the process or the server. */
+export const KEEPALIVE_CHANNEL = "termdock-keepalive";
+
+/**
+ * Keeps the distro alive (ADR 0003, issue #140): a tmux client that waits on a channel nobody signals. It needs no
+ * terminal, is not listed by `list-clients`, and ends with the tmux server, so a keepalive left behind by a killed
+ * core ends at the latest when the last session of the socket is gone.
+ */
+export function keepaliveArgs(target: TmuxTarget): string[] {
+  return tmux(target, "~", ["wait-for", KEEPALIVE_CHANNEL]);
+}
+
+/**
+ * Ends every keepalive of `target` that runs in its distro, e.g. one left behind by a killed core. `pkill -x -f`
+ * matches the whole command line of `keepaliveArgs` exactly; the socket is a plain word, so it holds no regex
+ * syntax. Exit 1 means none was running.
+ */
+export function endKeepalivesArgs(target: TmuxTarget): string[] {
+  const commandLine = tmuxProgram(target.socket, ["wait-for", KEEPALIVE_CHANNEL]).join(" ");
+  return wslExec(target.distro, "~", ["pkill", "-x", "-f", commandLine]);
 }
 
 export function listDistrosArgs(): string[] {

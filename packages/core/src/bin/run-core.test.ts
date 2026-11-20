@@ -3,14 +3,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LAYOUT_VERSION } from "@termdock/protocol";
 import type { LaunchSpec, LayoutDocument } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
+import { WslBackend } from "../backend/wsl/backend.js";
 import { connect } from "../ipc/client.js";
 import type { CoreClient } from "../ipc/client.js";
 import { openStorage } from "../storage/database.js";
-import { historyDir, readHistory } from "../storage/history-store.js";
+import { HistoryStore, historyDir, readHistory } from "../storage/history-store.js";
 import { runCore } from "./run-core.js";
 import type { RunCoreOptions, RunCoreResult } from "./run-core.js";
 
@@ -523,6 +524,52 @@ describe("runCore", () => {
     expect(backend.kills).toEqual([]);
     // The database is closed: Windows would refuse to delete an open file.
     rmSync(dataDir, { recursive: true });
+  });
+});
+
+describe("runCore hands the WSL keepalives over (issue #140)", () => {
+  it("ends the history and calls onExit only after its own WSL backend finished dispose", async () => {
+    const order: string[] = [];
+    let finishDispose: () => void = () => {};
+    let backend: WslBackend | undefined;
+    const historyDispose = vi.spyOn(HistoryStore.prototype, "dispose");
+    cleanups.push(() => historyDispose.mockRestore());
+    historyDispose.mockImplementation(async () => void order.push("history.dispose"));
+    let exited: () => void = () => {};
+    const exit = new Promise<void>((resolve) => (exited = resolve));
+    const pipePath = uniquePipe();
+    await start({
+      pipePath,
+      dataDir: tempDir(),
+      createWslBackend: (options) => {
+        backend = new WslBackend({
+          ...options,
+          distro: "Ubuntu",
+          run: async () => ({ code: 0, stdout: "tmux 3.6\n", stderr: "" }),
+          spawnPty: () => Promise.reject(new Error("no PTY in this test")),
+          spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+        });
+        vi.spyOn(backend, "dispose").mockImplementation(() => {
+          order.push("backend.dispose");
+          return new Promise<void>((resolve) => (finishDispose = resolve));
+        });
+        return backend;
+      },
+      onExit: () => {
+        order.push("onExit");
+        exited();
+      },
+    });
+    expect(backend).toBeDefined();
+    const c = await client(pipePath);
+    await c.request("core.shutdown", {});
+    await until(() => order.includes("backend.dispose"), "backend.dispose");
+    // Long enough for the rest of the teardown to run if it did not wait.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(order).toEqual(["backend.dispose"]);
+    finishDispose();
+    await exit;
+    expect(order).toEqual(["backend.dispose", "history.dispose", "onExit"]);
   });
 });
 

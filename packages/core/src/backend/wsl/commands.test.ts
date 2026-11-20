@@ -4,6 +4,7 @@ import {
   attachArgs,
   checksCwd,
   cwdCheckArgs,
+  endKeepalivesArgs,
   hasSessionArgs,
   isMissingSession,
   keepaliveArgs,
@@ -230,8 +231,34 @@ describe("other tmux commands", () => {
     ]);
   });
 
-  it("keeps the distro alive with sleep infinity", () => {
-    expect(keepaliveArgs("Debian")).toEqual(["-d", "Debian", "--cd", "~", "--exec", "sleep", "infinity"]);
+  it("keeps the distro alive with a tmux client waiting on the keepalive channel (issue #140)", () => {
+    expect(keepaliveArgs({ distro: "Debian", socket: "termdock" })).toEqual([
+      "-d",
+      "Debian",
+      "--cd",
+      "~",
+      "--exec",
+      "tmux",
+      "-L",
+      "termdock",
+      "wait-for",
+      "termdock-keepalive",
+    ]);
+  });
+
+  it("ends left-behind keepalives of the socket by their exact command line (issue #140)", () => {
+    expect(endKeepalivesArgs({ distro: "Debian", socket: "termdock-test-1" })).toEqual([
+      "-d",
+      "Debian",
+      "--cd",
+      "~",
+      "--exec",
+      "pkill",
+      "-x",
+      "-f",
+      "tmux -L termdock-test-1 wait-for termdock-keepalive",
+    ]);
+    expect(() => endKeepalivesArgs({ distro: "Debian", socket: "a.*" })).toThrow(/socket/i);
   });
 
   it("rejects socket names that are not plain words", () => {

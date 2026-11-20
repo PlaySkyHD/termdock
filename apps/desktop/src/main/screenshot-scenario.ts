@@ -14,6 +14,7 @@ import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
 import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from "./screenshot.js";
 import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
+import { crashScenes } from "./screenshot-crash.js";
 import { cwdScenes } from "./screenshot-cwd.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restartScenes } from "./screenshot-restart.js";
@@ -313,6 +314,7 @@ async function playGroups(
   await play("search", () => searchScenes(deps));
   await play("settings", () => settingsScenes(deps));
   await play("cwd", () => cwdScenes(deps));
+  await play("crash", () => crashScenes(deps));
   await play("restart", () => restartScenes(deps));
 }
 

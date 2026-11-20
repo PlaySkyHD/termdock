@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaunchSpec, SessionInfo, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { openStorage } from "../storage/database.js";
@@ -89,6 +89,74 @@ describe("SessionRegistry: failing repository", () => {
     expect(errors).toEqual([
       { error: expect.objectContaining({ message: "disk full" }), sessionId: session.id },
     ]);
+  });
+
+  it("saves a change that failed once a later save works, and reports one error per streak (issue #133)", async () => {
+    const repository = new FailingRepository();
+    const backend = new FakeBackend();
+    const errors: string[] = [];
+    const registry = new SessionRegistry({
+      backends: [backend],
+      repository,
+      onPersistError: (_error, session) => errors.push(session.id),
+      persistRetryMs: 60_000,
+    });
+    const first = await registry.create({ name: "first", launch: wsl });
+    const second = await registry.create({ name: "second", launch: wsl });
+
+    // The disk is full: both ends stay in memory only, the error is reported once.
+    repository.failSave = () => true;
+    backend.pty(first.id).emitExit(3);
+    backend.pty(second.id).emitExit(4);
+    expect(errors).toEqual([first.id]);
+    expect(stateOf(repository, first.id)).toBe("Detached");
+
+    // Room again: the next save also writes what was left over.
+    repository.failSave = undefined;
+    registry.update(second.id, { name: "renamed" });
+    const saved = repository.list().map((s) => [s.name, s.state, s.lastExitCode]);
+    expect(saved.sort()).toEqual([
+      ["first", "Exited", 3],
+      ["renamed", "Exited", 4],
+    ]);
+
+    // A new streak is reported again.
+    repository.failSave = () => true;
+    registry.update(first.id, { name: "again" });
+    expect(errors).toEqual([first.id, first.id]);
+    registry.dispose();
+  });
+
+  it("retries failed saves on a timer and once more on dispose (issue #133)", async () => {
+    const repository = new FailingRepository();
+    const backend = new FakeBackend();
+    const registry = new SessionRegistry({
+      backends: [backend],
+      repository,
+      onPersistError: () => {},
+      persistRetryMs: 10,
+    });
+    const timed = await registry.create({ name: "timed", launch: wsl });
+    repository.failSave = () => true;
+    backend.pty(timed.id).emitExit(3);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(stateOf(repository, timed.id)).toBe("Detached");
+    repository.failSave = undefined;
+    await vi.waitFor(() => expect(stateOf(repository, timed.id)).toBe("Exited"));
+
+    const slow = new SessionRegistry({
+      backends: [backend],
+      repository,
+      onPersistError: () => {},
+      persistRetryMs: 60_000,
+    });
+    const left = await slow.create({ name: "left", launch: wsl });
+    repository.failSave = () => true;
+    backend.pty(left.id).emitExit(5);
+    repository.failSave = undefined;
+    slow.dispose();
+    expect(stateOf(repository, left.id)).toBe("Exited");
+    registry.dispose();
   });
 
   it("rejects create with internal and registers nothing when the first save fails", async () => {

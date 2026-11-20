@@ -70,7 +70,11 @@ export interface HistoryStoreOptions {
   /** Read at every write, so a changed limit applies without restart (at the next segment change). */
   getSettings: () => Pick<Settings, "historyLimitBytes">;
   now?: () => number;
-  /** Called when writing fails; the failed entries are dropped. Defaults to `console.error` of the message. */
+  /**
+   * Called when writing fails; the failed entries are dropped. Once per session until one of its writes succeeds
+   * again, so a full or read-only disk does not log every flush (issue #133); `stats` counts all dropped entries.
+   * Defaults to `console.error` of the message.
+   */
   onError?: (error: unknown, sessionId: SessionId) => void;
   maxPendingBytes?: number;
   flushDelayMs?: number;
@@ -108,6 +112,8 @@ interface SessionLog {
   checkedCap: number | undefined;
   /** Undefined until the first write looked at the files. */
   active: ActiveSegment | undefined;
+  /** The last write failed and was reported; further failures are only counted until a write succeeds. */
+  failing: boolean;
 }
 
 export class HistoryStore {
@@ -279,6 +285,7 @@ export class HistoryStore {
         forgotten: false,
         checkedCap: undefined,
         active: undefined,
+        failing: false,
       };
       this.logs.set(sessionId, log);
     }
@@ -347,11 +354,14 @@ export class HistoryStore {
     if (batch.length === 0) return;
     try {
       await this.writeBatch(sessionId, log, batch);
+      log.failing = false;
     } catch (error) {
       // Resynchronise with the files at the next write.
       log.active = undefined;
       log.checkedCap = undefined;
       for (const entry of batch) this.drop(log, entry.buffer.length, 1);
+      if (log.failing) return;
+      log.failing = true;
       try {
         (this.options.onError ?? defaultOnError)(error, sessionId);
       } catch {

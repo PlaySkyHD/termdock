@@ -1,7 +1,7 @@
 // Archive and delete against real WSL and tmux (issue #57): no tmux session outlives an archived or deleted
 // session. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI); socket `termdock-test`.
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -112,6 +112,84 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
 
     expect(existsSync(history)).toBe(false);
     expect((await c.request("session.list", {})).result.sessions).toEqual([]);
+  }, 120_000);
+
+  it("deletes a session with recorded history after a core restart; a third core finds nothing (issue #135)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const { session } = (
+      await c1.request("session.create", {
+        name: "history",
+        launch: {
+          backend: "wsl",
+          cwd: "/tmp",
+          command: ["sh", "-c", "echo td-test-history; exec sleep 600"],
+        },
+      })
+    ).result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    await waitFor(() => hasSession(distro, session.id), "tmux session");
+    const dir = historyDir(dataDir, session.id);
+    // The core keeps the session's output; closing it flushes the history to the disk.
+    await c1.request("session.attach", { sessionId: session.id });
+    await waitFor(
+      async () => (await c1.request("history.search", { query: "td-test-history" })).result.hits.length > 0,
+      "recorded history",
+    );
+    await c1.close();
+    await cores.pop()!.close?.();
+    expect(existsSync(dir)).toBe(true);
+
+    await startCore();
+    const c2 = await client();
+    expect((await c2.request("session.list", {})).result.sessions[0]?.state).toBe("Detached");
+    await c2.request("session.kill", { sessionId: session.id });
+    await c2.request("session.delete", { sessionId: session.id });
+    expect(existsSync(dir)).toBe(false);
+    expect(await hasSession(distro, session.id)).toBe(false);
+    await c2.close();
+    await cores.pop()!.close?.();
+
+    await startCore();
+    const c3 = await client();
+    expect((await c3.request("session.list", {})).result.sessions).toEqual([]);
+    expect(existsSync(dir)).toBe(false);
+  }, 120_000);
+
+  it("keeps an env value of a session out of answers and core.log, also with a missing cwd (issue #135)", async () => {
+    freshDataDir();
+    const secret = "td-test-secret-0000";
+    await startCore();
+    const c = await client();
+    const { session } = (
+      await c.request("session.create", {
+        name: "env",
+        launch: {
+          backend: "wsl",
+          cwd: "/td-test-missing-dir",
+          command: ["sh", "-c", "exec sleep 600"],
+          env: { TD_TEST_VALUE: secret },
+        },
+      })
+    ).result;
+    distros.add(session.launch.distro!);
+    expect(session.warnings).toEqual([expect.objectContaining({ code: "cwd_missing" })]);
+    expect(JSON.stringify(session.warnings)).not.toContain(secret);
+    const refused = await c
+      .request("session.create", {
+        name: "token",
+        launch: { backend: "wsl", cwd: "/tmp", env: { TD_TEST_TOKEN: secret } },
+      })
+      .catch((error: unknown) => error as Error);
+    expect(String((refused as Error).message)).toContain("TD_TEST_TOKEN");
+    expect(String((refused as Error).message)).not.toContain(secret);
+    await c.request("session.kill", { sessionId: session.id });
+    await c.close();
+    await cores.pop()!.close?.();
+    const log = join(dataDir, "logs", "core.log");
+    if (existsSync(log)) expect(readFileSync(log, "utf8")).not.toContain(secret);
   }, 120_000);
 
   it("deletes an Interrupted session and ends the tmux session it left behind", async () => {

@@ -270,7 +270,10 @@ describe("openStorage", () => {
     const insert = old.prepare(`
       INSERT INTO sessions (id, name, backend, cwd, env, state, cols, rows, created_at, updated_at, logging_enabled)
       VALUES (?, 's', 'wsl', '/home/user', ?, 'Detached', 80, 24, '${at}', '${at}', 1)`);
-    insert.run("mixed", JSON.stringify({ LANG: "C.UTF-8", GITHUB_TOKEN: fake, STRIPE_KEY: fake }));
+    insert.run(
+      "mixed",
+      JSON.stringify({ LANG: "C.UTF-8", GITHUB_TOKEN: fake, SECRET_KEY: fake, SORT_KEY: "asc" }),
+    );
     insert.run(
       "only-secret",
       JSON.stringify({ DATABASE_URL: `postgres://app:${fake}@db.example.invalid/x` }),
@@ -286,14 +289,14 @@ describe("openStorage", () => {
 
     const db = inspect(dataDir);
     const env = (id: string) => db.prepare("SELECT env FROM sessions WHERE id = ?").get(id)?.env;
-    expect(env("mixed")).toBe(JSON.stringify({ LANG: "C.UTF-8" }));
+    expect(env("mixed")).toBe(JSON.stringify({ LANG: "C.UTF-8", SORT_KEY: "asc" }));
     expect(env("only-secret")).toBeNull();
     expect(env("harmless")).toBe(JSON.stringify({ KEYBOARD: "us", PATH: "/usr/bin" }));
     expect(env("none")).toBeNull();
     expect(env("broken")).toBe("{not json");
     expect(warnings.sort()).toEqual([
       'session mixed: removed env key "GITHUB_TOKEN" (looks like a secret)',
-      'session mixed: removed env key "STRIPE_KEY" (looks like a secret)',
+      'session mixed: removed env key "SECRET_KEY" (looks like a secret)',
       'session only-secret: removed env key "DATABASE_URL" (looks like a secret)',
     ]);
     expect(warnings.join("\n")).not.toContain(fake);
@@ -301,5 +304,28 @@ describe("openStorage", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE env LIKE ?").get(`%${fake}%`)).toEqual({
       n: 0,
     });
+  });
+
+  it("logs migration warnings only after the commit, none when the migration is rolled back (issue #149)", () => {
+    const db = new DatabaseSync(":memory:");
+    opened.push(db);
+    const failing: typeof MIGRATIONS = [
+      {
+        version: 1,
+        sql: "CREATE TABLE t (id TEXT) STRICT;",
+        run: (_db, warn) => {
+          warn('profile p1: removed env key "X_TOKEN" (looks like a secret)');
+          throw new Error("boom");
+        },
+      },
+    ];
+    const warnings: string[] = [];
+    expect(() => migrate(db, failing, (message) => warnings.push(message))).toThrow(/boom/);
+    expect(warnings).toEqual([]);
+    expect(schemaVersion(db)).toBe(0);
+
+    const working: typeof MIGRATIONS = [{ ...failing[0]!, run: (_db, warn) => warn("w") }];
+    migrate(db, working, (message) => warnings.push(message));
+    expect(warnings).toEqual(["w"]);
   });
 });

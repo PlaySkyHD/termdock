@@ -3,12 +3,13 @@
 import { CoreError } from "./errors.js";
 
 /**
- * Names ending in TOKEN, SECRET, PASSWORD, PASSWD, API_KEY, ACCESS_KEY, PRIVATE_KEY or CREDENTIAL(S), any case; and
- * names whose last part after an underscore is PAT, PASS or KEY (`GITHUB_PAT`, `DB_PASS`, `STRIPE_KEY`). The
- * underscore keeps `KEYBOARD`, `KEYMAP`, `SSH_AUTH_SOCK` and a plain `PATH` out.
+ * Names ending in TOKEN, SECRET, PASSWORD, PASSWD, API_KEY, SECRET_KEY, ACCESS_KEY, PRIVATE_KEY or CREDENTIAL(S),
+ * any case; and names whose last part after an underscore is PAT or PASS (`GITHUB_PAT`, `DB_PASS`). A bare `_KEY`
+ * is no rule: `SORT_KEY`, `CACHE_KEY` and `SSH_KEY` (a path) are harmless. The underscore keeps `KEYBOARD`,
+ * `KEYMAP`, `SSH_AUTH_SOCK` and a plain `PATH` out.
  */
 const SECRET_ENV_KEY =
-  /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?|_PAT|_PASS|_KEY)$/i;
+  /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|SECRET_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?|_PAT|_PASS)$/i;
 /** A public key is no secret. */
 const PUBLIC_KEY = /PUBLIC_?KEY$/i;
 /** A URL with a password in its userinfo: `scheme://user:password@host` (the user may be empty). */

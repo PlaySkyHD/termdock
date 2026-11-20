@@ -11,8 +11,8 @@ describe("secret env rule (issue #149)", () => {
       "GITHUB_PAT",
       "github_pat",
       "DB_PASS",
-      "STRIPE_KEY",
-      "stripe_key",
+      "SECRET_KEY",
+      "django_secret_key",
       "AWS_ACCESS_KEY",
       "APIKEY",
     ]) {
@@ -45,6 +45,10 @@ describe("secret env rule (issue #149)", () => {
       TOKENS_PER_MIN: "100",
       BYPASS: "1",
       PATTERN: "x",
+      SORT_KEY: "asc",
+      CACHE_KEY: "v1",
+      LICENSE_KEY: "x",
+      SSH_KEY: "/home/dev/.ssh/id_ed25519",
       GPG_PUBLIC_KEY: "ABCD",
       DATABASE_URL: "postgres://db.example.invalid:5432/x",
       REPO_URL: "https://example.invalid/a@b",
@@ -56,7 +60,7 @@ describe("secret env rule (issue #149)", () => {
   });
 
   it("names the key and never the value in the refusal", () => {
-    for (const env of [{ STRIPE_KEY: FAKE }, { DATABASE_URL: `postgres://u:${FAKE}@h/x` }]) {
+    for (const env of [{ DB_PASS: FAKE }, { DATABASE_URL: `postgres://u:${FAKE}@h/x` }]) {
       let message = "";
       try {
         assertNoSecretEnv(env, "profile");

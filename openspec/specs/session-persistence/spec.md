@@ -249,7 +249,7 @@ Beim Löschen einer Session SHALL der Core das Verzeichnis `history/<sessionId>/
 
 ### Requirement: Keine Geheimnisse in gespeicherten Sessions
 
-Der Core SHALL `session.create` mit `bad_request` ablehnen, wenn ein Eintrag von `launch.env` nach der Regel der Profile ein Geheimnis ist (Name auf `TOKEN`, `_KEY`, `_PAT` und Co. am Ende, oder Wert als URL mit Passwort), auch mit `profileId`, bevor er etwas speichert oder startet. Die Meldung MUST den Schlüssel nennen, nie den Wert. Ein Umgebungswert MUST in der Datenbank nur in der `env`-Spalte des Profils oder der Session stehen, in die der Nutzer ihn eingetragen hat.
+Der Core SHALL `session.create` mit `bad_request` ablehnen, wenn ein Eintrag von `launch.env` nach der Regel der Profile ein Geheimnis ist (Name auf `TOKEN`, `SECRET_KEY`, `_PAT` und Co. am Ende, oder Wert als URL mit Passwort), auch mit `profileId`, bevor er etwas speichert oder startet. Die Meldung MUST den Schlüssel nennen, nie den Wert. Ein Umgebungswert MUST in der Datenbank nur in der `env`-Spalte des Profils oder der Session stehen, in die der Nutzer ihn eingetragen hat.
 
 #### Scenario: Geheimnis in einer eigenen Session
 
@@ -266,15 +266,21 @@ Der Core SHALL `session.create` mit `bad_request` ablehnen, wenn ein Eintrag von
 #### Scenario: Weitere Schlüsselformen in einer Session
 
 - **GIVEN** ein Core ohne Sessions
-- **WHEN** ein Client `session.create` mit `launch.env { STRIPE_KEY: "td-test-secret-0000" }` oder `{ DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" }` sendet
+- **WHEN** ein Client `session.create` mit `launch.env { SECRET_KEY: "td-test-secret-0000" }` oder `{ DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" }` sendet
 - **THEN** antwortet der Core mit `bad_request` und nennt den Schlüssel, nicht den Wert
 
 ### Requirement: Altbestand ohne Geheimnisse
 
-Die Migration auf Schema-Version 4 SHALL aus `sessions.env` jeden Eintrag entfernen, den die Geheimnis-Regel erkennt, und `env` auf `NULL` setzen, wenn nichts bleibt. Je entferntem Eintrag MUST der Core eine Warnung mit Session-ID und Schlüssel in `core.log` schreiben, nie mit dem Wert. Andere Einträge und Zeilen mit unlesbarem JSON MUST unverändert bleiben.
+Die Migration auf Schema-Version 4 SHALL aus `sessions.env` und `launch_profiles.env` jeden Eintrag entfernen, den die Geheimnis-Regel erkennt, und `env` auf `NULL` setzen, wenn nichts bleibt. Je Eintrag MUST der Core nach dem COMMIT eine Warnung mit Session- oder Profil-ID und Schlüssel in `core.log` schreiben, nie mit dem Wert; bei einem Rollback keine. Andere Einträge (`SORT_KEY`) und unlesbares JSON MUST unverändert bleiben.
 
 #### Scenario: Session aus der Zeit vor #146
 
-- **GIVEN** eine Datenbank der Version 3 mit einer Session, deren `env` `{ LANG, GITHUB_TOKEN: "td-test-secret-0000", STRIPE_KEY }` enthält, einer mit nur `{ DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" }` und einer mit `{ KEYBOARD, PATH }`
+- **GIVEN** eine Datenbank der Version 3 mit einer Session, deren `env` `{ LANG, GITHUB_TOKEN: "td-test-secret-0000", SECRET_KEY, SORT_KEY }` enthält, einer mit nur `{ DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" }` und einer mit `{ KEYBOARD, PATH }`
 - **WHEN** der Core die Datenbank öffnet
-- **THEN** hat die erste nur noch `LANG`, die zweite `env` `NULL`, die dritte unverändert `KEYBOARD` und `PATH`; der Core warnt je entferntem Schlüssel mit der Session-ID, und der Wert steht in keiner Warnung und nicht mehr in `sessions.env`
+- **THEN** hat die erste nur noch `LANG` und `SORT_KEY`, die zweite `env` `NULL`, die dritte unverändert `KEYBOARD` und `PATH`; der Core warnt je entferntem Schlüssel mit der Session-ID, und der Wert steht in keiner Warnung und nicht mehr in `sessions.env`
+
+#### Scenario: Profil aus der Zeit vor der Regel
+
+- **GIVEN** eine Datenbank der Version 3 mit einem Autostart-Profil, dessen `env` `{ GITHUB_TOKEN: "td-test-secret-0000", SORT_KEY: "asc" }` enthält
+- **WHEN** der Core die Datenbank öffnet
+- **THEN** hat das Profil nur noch `SORT_KEY`, der Autostart und `session.create` mit `profileId` starten Sessions daraus, `profile.update` (Umbenennen) gelingt, `core.log` nennt `profile <id>` und `GITHUB_TOKEN` ohne Wert, und der Wert steht nicht mehr in `launch_profiles.env`

@@ -1659,7 +1659,7 @@ describe("launch profiles (issue #58)", () => {
     }
     // Issue #149: more key forms and a URL with a password in the value.
     for (const [key, value] of [
-      ["STRIPE_KEY", "td-test-secret-0000"],
+      ["SECRET_KEY", "td-test-secret-0000"],
       ["GITHUB_PAT", "td-test-secret-0000"],
       ["DB_PASS", "td-test-secret-0000"],
       ["DATABASE_URL", "postgres://app:td-test-secret-0000@db.example.invalid/x"],
@@ -1677,6 +1677,7 @@ describe("launch profiles (issue #58)", () => {
       PATH: "/usr/bin",
       XDG_RUNTIME_DIR: "/run/user/1000",
       DATABASE_URL: "postgres://db.example.invalid:5432/x",
+      SORT_KEY: "asc",
     };
     const harmlessProfile = (await a.request("profile.create", withEnv(harmless))).result.profile;
     await a.request("profile.delete", { profileId: harmlessProfile.id });
@@ -1710,7 +1711,7 @@ describe("launch profiles (issue #58)", () => {
     expect((await a.request("session.list", {})).result.sessions).toEqual([]);
     expect(backend.starts).toEqual([]);
     for (const env of [
-      { STRIPE_KEY: "td-test-secret-0000" },
+      { GITHUB_PAT: "td-test-secret-0000" },
       { DATABASE_URL: "postgres://app:td-test-secret-0000@db.example.invalid/x" },
     ]) {
       const failure = await a

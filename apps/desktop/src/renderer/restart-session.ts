@@ -34,7 +34,7 @@ export function restartFromPlaceholder(
 }
 
 /** Text of a reader's hint: only the writing view restarts, like only it types (ADR 0003). */
-export const READER_RESTART_HINT = "Neu starten kann das schreibende Pane.";
+export const READER_RESTART_HINT = "Zum Neustarten zuerst die Eingabe übernehmen.";
 
 /**
  * The bar of an attached view whose session ended (#164): the writer gets the button, a reader only the hint.
@@ -72,6 +72,16 @@ export function restartBar(
  */
 export function clearsRestartError(state: SessionState): boolean {
   return isAttachable(state) || state === "Archived";
+}
+
+/**
+ * The status without a refusal that no longer applies (#164): applied when the state changes and when the core's
+ * answer arrives. A refusal that arrives after the session already lives again (a timeout of the client while the
+ * core still started it) is dropped, so it cannot show up when the session ends later.
+ */
+export function withoutStaleRefusal(status: RestartStatus, state: SessionState | undefined): RestartStatus {
+  if (status.error === undefined || state === undefined || !clearsRestartError(state)) return status;
+  return { ...status, error: undefined };
 }
 
 /** The sidebar's menu entry: a refusal goes to the status bar (`notice`). Never rejects. */

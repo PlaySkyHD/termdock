@@ -6,6 +6,7 @@ import {
   restartBar,
   restartFromMenu,
   restartFromPlaceholder,
+  withoutStaleRefusal,
 } from "./restart-session.js";
 import type { RestartStatus } from "./restart-session.js";
 import type { ViewRole } from "./terminal-controller.js";
@@ -134,7 +135,8 @@ describe("restartBar of an attached view (#164)", () => {
 
     expect(bar).toMatchObject({ kind: "hint" });
     expect(bar).not.toHaveProperty("running");
-    expect(bar?.detail).toMatch(/schreibende Pane/);
+    // A reader may be the only view left (its writer's pane closed): it says how to get the button.
+    expect(bar?.detail).toMatch(/Eingabe übernehmen/);
   });
 
   it.each<ViewRole | undefined>([undefined, "connecting", "error", "restarting", "closed"])(
@@ -165,11 +167,27 @@ describe("restartBar of an attached view (#164)", () => {
       error: "Session s1 could not be started",
     });
   });
+});
 
-  it("does not show the writer's refusal in a reader", () => {
-    const refusedStatus = { running: false, error: "Session s1 could not be started" };
+describe("withoutStaleRefusal (#164, review)", () => {
+  const refusedStatus: RestartStatus = { running: false, error: "[timeout] session.restart" };
 
-    expect(restartBar(session("Interrupted"), "reader", refusedStatus)).not.toHaveProperty("error");
+  it("drops a refusal that arrives after the session lives again", () => {
+    expect(withoutStaleRefusal(refusedStatus, "Running")).toEqual(RESTART_IDLE);
+  });
+
+  it("keeps the refusal of a restart that left the session Interrupted", () => {
+    expect(withoutStaleRefusal(refusedStatus, "Interrupted")).toBe(refusedStatus);
+  });
+
+  it("keeps the refusal while the session list does not know the session", () => {
+    expect(withoutStaleRefusal(refusedStatus, undefined)).toBe(refusedStatus);
+  });
+
+  it("leaves a running restart alone", () => {
+    const running = { running: true, error: undefined };
+
+    expect(withoutStaleRefusal(running, "Running")).toBe(running);
   });
 });
 

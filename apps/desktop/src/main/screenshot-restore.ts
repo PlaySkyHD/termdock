@@ -428,7 +428,6 @@ async function restartInViewScenes(
     })()`,
   );
   if (onTop !== "button") throw new Error(`the bar's button is covered by ${onTop}`);
-  await paintedFrame(win, evaluate);
   await capture(win, "19c-restart-bar-in-view.png", { visible: button });
 
   const ended = await rowsText();
@@ -447,7 +446,6 @@ async function restartInViewScenes(
     shown = await rowsText();
   }
   await sleep(1_000); // the new run's first screen
-  await paintedFrame(win, evaluate);
   await capture(win, "19d-restarted-in-view.png", { visible: `${pane} .terminal-view` });
   log("Crash restarted from the bar of its attached view");
 

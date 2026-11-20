@@ -272,14 +272,16 @@ input {
 }
 
 /*
- * The session of an attached view ended (#164): one line at the top of the pane, left of its grip, above the
- * terminal and below the note of a lost core. Only the button takes the mouse; a reader's hint takes none.
+ * The session of an attached view ended (#164): one line at the top right of the pane, left of its grip, above the
+ * terminal and below the note of a lost core. Only as wide as its text, so the start of the top rows (where a
+ * session that failed at once printed why) stays readable. Only the button takes the mouse; a hint takes none.
  */
 .restart-bar {
   position: absolute;
   top: 4px;
-  left: 8px;
   right: 46px;
+  max-width: calc(100% - 62px);
+  box-sizing: border-box;
   z-index: 3;
   display: flex;
   gap: 8px;

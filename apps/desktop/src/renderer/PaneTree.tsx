@@ -12,7 +12,7 @@ import type {
 } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { clearsRestartError, RESTART_IDLE, restartBar, restartFromPlaceholder } from "./restart-session.js";
+import { RESTART_IDLE, restartBar, restartFromPlaceholder, withoutStaleRefusal } from "./restart-session.js";
 import type { RestartBar, RestartStatus } from "./restart-session.js";
 import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
@@ -419,18 +419,22 @@ function PaneView({
   // itself (Starting, Interrupted), and a restart that worked replaces the placeholder with the view (review PR #156).
   const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);
   const state = session?.state;
+  // The state when the core's answer arrives, which may be later than this render's (#164, review).
+  const stateNow = useRef(state);
+  stateNow.current = state;
   useEffect(() => {
-    if (state !== undefined && clearsRestartError(state))
-      setRestartStatus((current) =>
-        current.error === undefined ? current : { ...current, error: undefined },
-      );
+    setRestartStatus((current) => withoutStaleRefusal(current, state));
   }, [state]);
   // The role of the attached view decides between the button and the hint of its bar (#164).
   const [role, setRole] = useState<ViewRole>();
   // "Neu starten" (#156): once the session lives again, the pane attaches like after any start; an attached view
   // keeps its view and gets the new run (#164).
   const restart = (): void =>
-    void restartFromPlaceholder(restartStatus, () => api.restartSession(sessionId), setRestartStatus);
+    void restartFromPlaceholder(
+      restartStatus,
+      () => api.restartSession(sessionId),
+      (next) => setRestartStatus(withoutStaleRefusal(next, stateNow.current)),
+    );
 
   if (attached || attachable) {
     return (

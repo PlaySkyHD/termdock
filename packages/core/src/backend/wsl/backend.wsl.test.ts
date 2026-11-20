@@ -224,6 +224,49 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     expect(await backend.exists(id, spec())).toBe(true);
   }, 30_000);
 
+  it("listLive finds the live sessions with one call and agrees with exists (issue #134)", async () => {
+    // A socket without a server first: nothing is alive.
+    const empty = new WslBackend({ socket: wslTestSocket() });
+    expect(await empty.listLive([{ id: nextId(), spec: spec() }])).toEqual(new Set());
+    void empty.dispose();
+
+    backend = new WslBackend({ socket: SOCKET });
+    const [a, b, dead, none] = [nextId(), nextId(), nextId(), nextId()];
+    const first = track(await backend.start(a, spec(), size));
+    const second = track(await backend.start(b, spec(), size));
+    await waitFor(() => first.output().length > 0 && second.output().length > 0);
+    first.pty.dispose();
+    // A leftover whose program ended (remain-on-exit), made without the backend so no hook removes it.
+    const name = `td-${dead}`;
+    // In the same call, so the option is set before the program ends.
+    await tmux([
+      "new-session",
+      "-d",
+      "-s",
+      name,
+      "sh",
+      "-c",
+      "sleep 1; exit 3",
+      ";",
+      "set-option",
+      "-w",
+      "-t",
+      `=${name}:`,
+      "remain-on-exit",
+      "on",
+    ]);
+    await waitFor(
+      async () =>
+        (await tmux(["display-message", "-p", "-t", `=${name}:`, "#{pane_dead}"])).stdout.trim() === "1",
+    );
+
+    const ids = [a, b, dead, none];
+    const live = await backend.listLive(ids.map((id) => ({ id, spec: spec() })));
+
+    expect(live).toEqual(new Set([a, b]));
+    for (const id of ids) expect(await backend.exists(id, spec())).toBe(live!.has(id));
+  }, 30_000);
+
   it("kill ends the session", async () => {
     backend = new WslBackend({ socket: SOCKET });
     const id = nextId();

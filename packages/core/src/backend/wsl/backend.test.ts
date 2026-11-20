@@ -159,6 +159,88 @@ describe("WslBackend", () => {
     await expect(backend.exists("alive", spec)).rejects.toThrow(/WSL_E_DISTRO_NOT_FOUND/);
   });
 
+  it("listLive asks tmux once per distro and reports live sessions like exists (issue #134)", async () => {
+    const lists: string[] = [];
+    const { backend, calls } = setup({
+      respond: (args) => {
+        if (subcommand(args) !== "list-sessions") return undefined;
+        lists.push(args[1]!);
+        return args[1] === "Ubuntu"
+          ? ok("td-alive 0\ntd-dead 1\ntd-other 0\nunrelated 0\n")
+          : ok("td-debian 0\n");
+      },
+    });
+    const live = await backend.listLive([
+      { id: "alive", spec },
+      { id: "dead", spec },
+      { id: "none", spec: { ...spec, distro: "Ubuntu" } },
+      { id: "debian", spec: { ...spec, distro: "Debian" } },
+    ]);
+    expect(live).toEqual(new Set(["alive", "debian"]));
+    expect(lists.sort()).toEqual(["Debian", "Ubuntu"]);
+    expect(calls.find((args) => subcommand(args) === "list-sessions")).toEqual([
+      "-d",
+      expect.any(String),
+      "--cd",
+      "~",
+      "--exec",
+      "tmux",
+      "-L",
+      "termdock-test",
+      "list-sessions",
+      "-F",
+      "#{session_name} #{pane_dead}",
+    ]);
+  });
+
+  it("listLive reports nothing alive when the socket has no tmux server", async () => {
+    const { backend, running } = setup({
+      distro: "Ubuntu",
+      respond: (args) =>
+        subcommand(args) === "list-sessions"
+          ? { code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/termdock-test\n" }
+          : undefined,
+    });
+    expect(await backend.listLive([{ id: "a", spec }])).toEqual(new Set());
+    await flush();
+    expect(running()).toEqual([]);
+  });
+
+  it("listLive answers undefined and leaves the keepalive alone when one distro fails", async () => {
+    const { backend, running } = setup({
+      respond: (args) => {
+        if (subcommand(args) !== "list-sessions") return undefined;
+        return args[1] === "Debian" ? distroMissing : ok("td-a 0\n");
+      },
+    });
+    const live = await backend.listLive([
+      { id: "a", spec: { ...spec, distro: "Ubuntu" } },
+      { id: "b", spec: { ...spec, distro: "Debian" } },
+    ]);
+    expect(live).toBeUndefined();
+    await flush();
+    expect(running()).toEqual([]);
+  });
+
+  it("listLive keeps the keepalive bookkeeping of exists: one take-over, one keepalive per distro", async () => {
+    const { backend, calls, panes, running } = setup({
+      distro: "Ubuntu",
+      respond: (args) => (subcommand(args) === "list-sessions" ? ok("td-a 0\ntd-b 0\ntd-c 1\n") : undefined),
+    });
+    const live = await backend.listLive(["a", "b", "c"].map((id) => ({ id, spec })));
+    expect(live).toEqual(new Set(["a", "b"]));
+    await flush();
+    expect(running()).toEqual(["Ubuntu"]);
+    expect(calls.filter((args) => args.includes("pkill"))).toHaveLength(1);
+    // Ending the first live session keeps the keepalive; ending the second one stops it.
+    panes.set("td-a", "0  ");
+    panes.set("td-b", "0  ");
+    await backend.kill("a", spec);
+    expect(running()).toEqual(["Ubuntu"]);
+    await backend.kill("b", spec);
+    expect(running()).toEqual([]);
+  });
+
   it("kill resolves once has-session no longer finds the session and drops the keepalive", async () => {
     const { backend, panes, calls, running } = setup({ distro: "Ubuntu" });
     await backend.start("s1", spec, { cols: 80, rows: 24 });

@@ -133,6 +133,34 @@ Beim Start SHALL der Core alle gespeicherten Sessions laden und jede in `Startin
 - **WHEN** der Core startet
 - **THEN** ist die erste `Detached` und ihr Profil bekommt keine neue Session; die zweite wird nach dem Reconcile `Interrupted`, danach unter ihrer ID neu gestartet, und es gibt keine weitere Session
 
+### Requirement: Gebündelte Existenzprüfung beim Reconcile
+
+Ob die Backend-Sessions der abzugleichenden WSL-Sessions existieren, SHALL der Core je erreichbarem Backend mit einem Aufruf von `listLive` erfragen statt mit `exists` je Session. Liefert `listLive` `undefined` oder schlägt es fehl, MUST er jede Session mit `exists` prüfen wie ohne Bündelung. Nicht erreichbare Backends, Windows-Sessions und beendete Sessions MUST er nicht in `listLive` aufnehmen. Wird der Core währenddessen verworfen, MUST er nichts anbinden und nichts speichern.
+
+#### Scenario: Gebündelte Prüfung
+
+- **GIVEN** gespeicherte WSL-Sessions in `Running`, `Detached` und `Starting`, von denen zwei leben, sowie beendete Sessions, und ein Backend mit `listLive`
+- **WHEN** der Core startet
+- **THEN** fragt er `listLive` genau einmal mit den drei abzugleichenden Sessions, ruft `exists` nicht auf, die zwei lebenden sind `Detached` und angebunden, die dritte ist `Interrupted`
+
+#### Scenario: Rückfall auf die Einzelprüfung
+
+- **GIVEN** gespeicherte WSL-Sessions in `Running` und ein Backend, dessen `listLive` `undefined` liefert oder fehlschlägt
+- **WHEN** der Core startet
+- **THEN** prüft er jede Session mit `exists`, gleicht sie danach ab und meldet `backend_unavailable` nur, wenn eine Einzelprüfung fehlschlägt
+
+#### Scenario: Kein Bündel für nicht erreichbare Backends
+
+- **GIVEN** eine gespeicherte WSL-Session in `Running` mit nicht verfügbarem WSL-Backend und eine Windows-Session in `Running`
+- **WHEN** der Core startet
+- **THEN** fragt er kein `listLive`, beide Sessions sind `Interrupted` und das Ergebnis meldet `backend_unavailable` für WSL
+
+#### Scenario: Core endet während der gebündelten Prüfung
+
+- **GIVEN** ein laufendes `listLive` beim Start
+- **WHEN** der Core verworfen wird, bevor es antwortet
+- **THEN** bindet er keine Session an und speichert keinen neuen Zustand
+
 ### Requirement: Reconcile bei nicht erreichbarem Backend
 
 Ist das Backend einer abzugleichenden Session nicht verfügbar, fehlt es oder scheitert die Existenzprüfung, SHALL der Core die Session `Interrupted` setzen und im Ergebnis des Starts `backend_unavailable` für dieses Backend melden. Die übrigen Sessions MUST trotzdem abgeglichen werden.

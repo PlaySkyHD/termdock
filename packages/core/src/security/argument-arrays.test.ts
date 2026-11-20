@@ -55,6 +55,33 @@ function scanSource(file: string, text: string): ScanResult {
   /** `const NAME = <initializer>` of the file, to follow a program or options given by name. */
   const constants = new Map<string, ts.Expression>();
 
+  const unwrap = (expression: ts.Expression): ts.Expression => {
+    let node = expression;
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) {
+      node = node.expression;
+    }
+    return node;
+  };
+  /**
+   * `cp.exec` or `cp["exec"]` on a namespace of child_process or node-pty. `name` is undefined for a name that is
+   * not a literal (`cp[name]`).
+   */
+  const namespaceMember = (
+    node: ts.Node,
+  ): { kind: "child_process" | "node-pty"; name: string | undefined } | undefined => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      const kind = namespaces.get(node.expression.text);
+      return kind ? { kind, name: node.name.text } : undefined;
+    }
+    if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      const kind = namespaces.get(node.expression.text);
+      const key = node.argumentExpression;
+      const literal = ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key);
+      return kind ? { kind, name: literal ? key.text : undefined } : undefined;
+    }
+    return undefined;
+  };
+
   const visitAll = (visit: (node: ts.Node) => void) => {
     const walk = (node: ts.Node): void => {
       visit(node);
@@ -101,6 +128,46 @@ function scanSource(file: string, text: string): ScanResult {
       (node.parent.flags & ts.NodeFlags.Const) !== 0
     ) {
       constants.set(node.name.text, node.initializer);
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const init = unwrap(node.initializer);
+      // `const { exec, spawn: run } = cp`: the members become tracked functions.
+      if (ts.isObjectBindingPattern(node.name) && ts.isIdentifier(init) && namespaces.has(init.text)) {
+        const kind = namespaces.get(init.text)!;
+        for (const element of node.name.elements) {
+          let imported: ts.Node = element.propertyName ?? element.name;
+          // `{ ["exec"]: run }`
+          if (
+            ts.isComputedPropertyName(imported) &&
+            (ts.isStringLiteral(imported.expression) ||
+              ts.isNoSubstitutionTemplateLiteral(imported.expression))
+          ) {
+            imported = imported.expression;
+          }
+          const name =
+            !element.dotDotDotToken &&
+            ts.isIdentifier(element.name) &&
+            (ts.isIdentifier(imported) ||
+              ts.isStringLiteral(imported) ||
+              ts.isNoSubstitutionTemplateLiteral(imported))
+              ? imported.text
+              : undefined;
+          // A rest element, a nested pattern or a computed name cannot be followed.
+          if (name === undefined) report(element, "unchecked-use");
+          else
+            functions.set(
+              (element.name as ts.Identifier).text,
+              kind === "node-pty" ? `node-pty ${name}` : name,
+            );
+        }
+      }
+      // `const run = cp.exec`, `const run = cp["exec"]`.
+      if (ts.isIdentifier(node.name)) {
+        const member = namespaceMember(init);
+        if (member?.name !== undefined) {
+          functions.set(node.name.text, member.kind === "node-pty" ? `node-pty ${member.name}` : member.name);
+        }
+      }
     }
   });
 
@@ -225,12 +292,39 @@ function scanSource(file: string, text: string): ScanResult {
           check(node, "node-pty spawn");
         }
       }
+      // `cp["exec"](...)`; a name that is not a literal cannot be followed.
+      if (ts.isElementAccessExpression(callee)) {
+        const member = namespaceMember(callee);
+        if (member?.name === undefined) {
+          if (member) report(callee, "unchecked-use");
+        } else if (member.kind === "child_process") check(node, member.name);
+        else if (member.name === "spawn") check(node, "node-pty spawn");
+      }
+    }
+    // A member of the namespace handed on as a value (`register(cp.exec)`) escapes the checks; naming it in a
+    // `const` is followed above.
+    const member = namespaceMember(node);
+    // Every child_process member counts; of node-pty only `spawn` (or a name that is not a literal).
+    if (
+      member &&
+      !isInType(node) &&
+      (member.kind === "child_process" || member.name === "spawn" || member.name === undefined)
+    ) {
+      const parent = node.parent;
+      const callee = ts.isCallExpression(parent) && parent.expression === node;
+      const named =
+        member.name !== undefined &&
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === node &&
+        ts.isIdentifier(parent.name);
+      if (!callee && !named) report(node, "unchecked-use");
     }
     // A tracked function handed on in another way (an argument, a property) escapes the checks above.
     if (usesFunction(node)) {
       const parent = node.parent;
       const declaration =
         ts.isImportSpecifier(parent) ||
+        (ts.isBindingElement(parent) && parent.name === node) ||
         ((ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.name === node);
       let inAlias = false;
       for (let current: ts.Node | undefined = parent; current; current = current.parent) {
@@ -331,6 +425,46 @@ describe("process calls use argument arrays (issue #135)", () => {
       rules(`import { exec } from "node:child_process"; import { promisify } from "node:util";
         const run = promisify(exec); run("ls");`),
     ).toEqual(["exec"]);
+  });
+
+  it("rejects exec through a namespace alias: destructuring, a member in a const, an element access", () => {
+    const head = `import * as cp from "node:child_process"; `;
+    const cases = [
+      'const { exec } = cp; exec("ls");',
+      'const { exec: run } = cp; run("ls");',
+      'const { ["exec"]: run } = cp; run("ls");',
+      'const run = cp.exec; run("ls");',
+      'const run = cp["exec"]; run("ls");',
+      'cp["exec"]("ls");',
+      "cp[`execSync`]('ls');",
+      'const { execSync } = cp as typeof import("node:child_process"); execSync("ls");',
+    ];
+    for (const body of cases) {
+      expect(rules(head + body), body).toContain("exec");
+    }
+  });
+
+  it("checks the other members taken from a namespace like the imported ones", () => {
+    const head = `import * as cp from "node:child_process"; `;
+    expect(rules(head + 'const { spawn } = cp; spawn("a", [], { shell: true });')).toEqual(["shell"]);
+    expect(rules(head + 'cp["spawn"]("wsl.exe -d x", []);')).toEqual(["composed-command"]);
+    expect(rules(head + 'const run = cp.execFile; run("wsl.exe", ["-d", d]);')).toEqual([]);
+    expect(scanSource("fixture.ts", head + 'const { spawn: go } = cp; go("a", []);').calls).toEqual([
+      { file: "fixture.ts", line: 1, api: "spawn" },
+    ]);
+  });
+
+  it("reports a namespace member it cannot follow", () => {
+    const head = `import * as cp from "node:child_process"; `;
+    for (const body of [
+      "register(cp.spawn);",
+      "const name = pick(); cp[name]('ls');",
+      "const { spawn, ...rest } = cp;",
+      "const { [key]: run } = cp;",
+    ]) {
+      expect(rules(head + body), body).toContain("unchecked-use");
+    }
+    expect(rules(head + "let c: cp.ChildProcess; let t: typeof cp.spawn;")).toEqual([]);
   });
 
   it("rejects a shell option, also from a constant", () => {

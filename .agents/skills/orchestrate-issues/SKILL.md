@@ -12,6 +12,8 @@ You plan, brief, verify, open the pull requests and merge. Subagents only implem
 - Read with `gh api repos/PlaySkyHD/termdock/issues/<n> --jq '.title, .body'` or `gh issue list --json number,title,body`.
 - Read `docs/agent-lessons-learned.md`, `docs/adr/` and the concept (`docs/concept/v1-konzept.txt`) before planning.
 
+- Creating several issues that refer to each other (a concept phase): write `plan.txt` (`<key>|<labels>|<title>` per line) and one `<key>.md` per issue with the Write tool (no heredocs) in a folder outside the repo (`P:/Temp/<name>/`), with `#{{<key>}}` wherever an issue number belongs. Check with `bash scripts/create-issues.sh --dry-run <folder>`, then `bash scripts/create-issues.sh <folder>`. It creates the issues in plan order, fills in the numbers (forward and mutual references in a second pass with `gh issue edit`), stops on a placeholder without a key before creating anything, and writes `numbers.txt`.
+
 ## 2. Plan
 
 - Map each issue to the packages and files it changes (`packages/<name>/`).

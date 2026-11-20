@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
-import { captureWindow } from "./screenshot-page.js";
+import { bringToFront, captureWindow } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -292,39 +292,6 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   await restartScenes(crash, againSecond, { core, bridge, log, evaluate, waitFor, capture, click });
 }
 
-/** Puts the window above the other one of the scene, so it paints and runs its timers unthrottled. */
-function bringToFront(win: BrowserWindow): void {
-  // Windows refuses a plain `focus` to an app in the background; "always on top" for a moment lifts it anyway.
-  win.setAlwaysOnTop(true);
-  win.moveTop();
-  win.focus();
-  win.setAlwaysOnTop(false);
-  win.webContents.invalidate();
-}
-
-/**
- * Waits until the page has painted two frames, so `capturePage` shows the current DOM: a window that Windows reports
- * as covered paints nothing and the capture repeats an old frame (19b showed the state of 19a twice). Brings the
- * window to the front before each try; fails after 5 tries.
- */
-async function paintedFrame(
-  win: BrowserWindow,
-  evaluate: <T>(win: BrowserWindow, expression: string) => Promise<T>,
-): Promise<void> {
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    bringToFront(win);
-    const painted = await evaluate<boolean>(
-      win,
-      `new Promise((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
-        setTimeout(() => resolve(false), 1500);
-      })`,
-    );
-    if (painted) return;
-  }
-  throw new Error("the window paints no frames (covered by another window?)");
-}
-
 interface RestartSceneTools {
   core: ScenarioDeps["core"];
   bridge: ScenarioDeps["bridge"];
@@ -390,7 +357,6 @@ async function restartScenes(
     await sleep(200);
   }
   await sleep(1_000); // snapshot and the first fit
-  await paintedFrame(win, evaluate);
   await capture(win, "19a-session-restarted.png", { visible: `${pane} .terminal-view` });
   log("Crash restarted from its placeholder");
 
@@ -409,8 +375,6 @@ async function restartScenes(
   );
   const entry = `[role="menu"] [data-menu-item="restart"]`;
   await waitFor(win, `document.querySelector('${entry}')`, "Neu starten in the menu of Crash");
-  // A frame without the menu would pass the check of the DOM: the window must paint it.
-  await paintedFrame(win, evaluate);
   await capture(win, "19b-sidebar-restart-menu.png", { visible: entry });
   await click(win, entry);
   await waitForState(living, "Crash to live again after the menu entry");

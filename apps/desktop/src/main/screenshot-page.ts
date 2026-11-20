@@ -14,7 +14,53 @@ export interface Point {
   y: number;
 }
 
-/** Writes a PNG of the window; with `visible` the run fails first when that element is not fully visible (#116). */
+/** The part of a `BrowserWindow` that `paintedFrame` and `bringToFront` use (a fake in the tests). */
+export interface PaintableWindow {
+  setAlwaysOnTop(flag: boolean): void;
+  moveTop(): void;
+  focus(): void;
+  webContents: {
+    executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+    invalidate(): void;
+  };
+}
+
+/** Puts the window above the other ones, so it paints and runs its timers unthrottled. */
+export function bringToFront(win: PaintableWindow): void {
+  // Windows refuses a plain `focus` to an app in the background; "always on top" for a moment lifts it anyway.
+  win.setAlwaysOnTop(true);
+  win.moveTop();
+  win.focus();
+  win.setAlwaysOnTop(false);
+  win.webContents.invalidate();
+}
+
+/**
+ * Waits until the page has painted two frames, so `capturePage` shows the current DOM: a window that Windows reports
+ * as covered paints nothing and the capture repeats an old frame without an error (#162, 19b showed the state of 19a).
+ * Waits at most 1.5 s per try; without a frame the window goes to the front before the next try. Fails after 5 tries.
+ */
+export async function paintedFrame(win: PaintableWindow): Promise<void> {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (attempt > 1) bringToFront(win);
+    const painted = await win.webContents
+      .executeJavaScript(
+        `new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+          setTimeout(() => resolve(false), 1500);
+        })`,
+        true,
+      )
+      .catch(() => false);
+    if (painted === true) return;
+  }
+  throw new Error("the window paints no frames (covered by another window?)");
+}
+
+/**
+ * Writes a PNG of the window; with `visible` the run fails first when that element is not fully visible (#116). Waits
+ * for painted frames first, so the PNG is not an old frame of a covered window (#162).
+ */
 export async function captureWindow(
   win: BrowserWindow,
   dir: string,
@@ -22,6 +68,7 @@ export async function captureWindow(
   options: CaptureOptions = {},
 ): Promise<void> {
   await sleep(300); // one more frame
+  await paintedFrame(win);
   if (options.visible !== undefined)
     await assertVisible(
       <T>(expression: string) => win.webContents.executeJavaScript(expression, true) as Promise<T>,

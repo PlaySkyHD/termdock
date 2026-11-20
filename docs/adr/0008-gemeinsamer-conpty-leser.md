@@ -1,0 +1,39 @@
+# ADR 0008: Ein gemeinsamer Leser für die Ausgabe aller ConPTYs
+
+Status: angenommen (20.11.2026), aus dem Spike zu #153; ergänzt ADR 0003
+
+## Kontext
+
+Der Core soll mit 50 Sessions unter 300 MiB RSS bleiben, der Abgleich unter 3 s, Echo p95 unter 100 ms (#134, #153). Der Lasttest (`node scripts/load-test.mjs`, 50 WSL-Sessions, 10 davon mit Ausgabe, 60 s) ergab auf `main` 588 MiB unter Node 25.2.1 und 386 MiB unter Electron 45.3.1 als Node (so läuft der Core im Paket). Der Abgleich lag bei 2969 ms bzw. 2590 ms.
+
+Ursache: node-pty 1.1.0 startet unter Windows je PTY einen eigenen Worker-Thread (`ConoutConnection` in `lib/windowsConoutConnection.js`, Skript `lib/worker/conoutSocketWorker.js`), also je PTY eine eigene V8-Instanz samt Node-Umgebung. Der Worker verbindet sich mit der Ausgabe-Pipe der ConPTY und reicht sie an eine zweite Named Pipe (`<pipe>-worker`) weiter, mit der sich der Hauptthread verbindet. Laut node-pty verhindert das einen Deadlock, wenn `ClosePseudoConsole` auf das Abfließen der Ausgabe wartet (node-pty #375, microsoft/terminal #1810). Eine Option zum Abschalten hat weder 1.1.0 noch 1.2.0-beta.18. Der Start einer PTY wartet synchron in `ConnectNamedPipe` (`conpty.cc`, `PtyConnect`), bis der neue Worker die Ausgabe-Pipe geöffnet hat; das sind die rund 55 ms je Session im Abgleich.
+
+Gemessen im Spike ohne WSL (`cmd.exe`, 50 PTYs, Leerlauf):
+
+| Variante | RSS je PTY Node | RSS je PTY Electron | 50 PTYs Node | Start einer PTY (synchron, Median) |
+| --- | --- | --- | --- | --- |
+| node-pty 1.1.0 (Worker je PTY) | 11,5 MiB | 8,0 MiB | 633 MiB | 58 ms |
+| Worker mit `resourceLimits` (16/2/4 MiB) | 11,1 MiB | – | – | 45 ms |
+| ein gemeinsamer Worker | 0,4 MiB | 0,4 MiB | 78 MiB | 10 ms |
+| kein Worker (Hauptthread liest) | 0,1 MiB | 0,2 MiB | 65 MiB | 8 ms |
+
+Erwogen und verworfen:
+
+- **PTY nur bei angehängter View** (tmux hält den Prozess ohne Client). Spart im Core nur, was der gemeinsame Leser auch spart, außerhalb des Core aber rund 12 MiB private Bytes je Session (OpenConsole, `wsl.exe`, `wslhost`, `conhost`). Dafür bräuchte jede Session ohne View eine eigene Exit-Erkennung, eine Aufzeichnung des Verlaufs ohne PTY (`pipe-pane` je Session oder ein Steuermodus-Client `tmux -C` je Distro), und die Kennzeichnung von Neuzeichnen (#88, #99) und die Modusverfolgung (#42) müssten neu begründet werden. Im Spike sah ein Steuermodus-Client die Ausgabe fremder Sessions nur über in seine Session verlinkte Fenster; `kill-session` beendete den Prozess dann nicht mehr. Aufwand groß, viele Lifecycle-Risiken, für #153 nicht nötig.
+- **Kleinere V8-Heaps für die Worker** (`resourceLimits`): spart unter 0,5 MiB je PTY; der Großteil ist die Isolate- und Node-Umgebung. Zu knappe Grenzen lassen den Worker vor seiner Meldung sterben, und der Hauptthread bleibt für immer in `ConnectNamedPipe` hängen.
+- **Kein Worker, der Hauptthread liest.** Am sparsamsten; mit der mitgelieferten ConPTY blockierte `kill()` unter voller Ausgabe höchstens 1,3 ms. Die Sicherheit hinge aber an einem Verhalten der ConPTY, das node-pty ausdrücklich nicht voraussetzt; blockiert `ClosePseudoConsole` doch, steht der ganze Core.
+- **`patch-package`, Fork oder anderes natives Modul:** neue Abhängigkeit bzw. ein Native-Build, den der Host nicht baut (ADR 0003, Folgen). **node-pty 1.2.0-beta:** behält den Worker je PTY.
+
+## Entscheidung
+
+- **Ein Leser-Thread für alle PTYs** (`packages/core/src/backend/wsl/conout-reader.ts`). Vor dem ersten `spawn` ersetzt der Core die Klasse `ConoutConnection` im CommonJS-Modul `node-pty/lib/windowsConoutConnection.js` durch eine Funktion, die eine Verbindung des `ConoutReader` liefert (Schnittstelle von `WindowsPtyAgent`: `onReady`, `connectSocket`, `dispose`). Der Reader hält genau einen Worker (`eval`-Quelltext im Modul, damit das Paket keine zusätzliche Datei braucht, ADR 0007; `unref`). Je PTY: `add { id, pipe }`, der Worker öffnet die Ausgabe-Pipe, legt `<pipe>-worker` an, leitet weiter wie node-pty und meldet `ready { id }`. `dispose` wartet wie node-pty 1 s auf Restdaten, dann `remove { id }`. Der Worker schließt eine Pipe auch von selbst, sobald die ConPTY ihre Ausgabe geschlossen hat und die Verbindung zum Hauptthread zu Ende ist (`closed { id }`); node-pty 1.1.0 mit `useConptyDll` beendete seinen Worker in diesem Fall nie.
+- **Nur node-pty 1.1.0:** Meldet `node-pty/package.json` eine andere Version oder fehlt `ConoutConnection`, schreibt der Core eine Zeile `termdock-core: conout reader: …` auf stderr und lässt node-pty unverändert (ein Worker je PTY). Der Test „is the version whose ConoutConnection the reader replaces“ schlägt bei jedem Update fehl, bis der Ersatz geprüft ist.
+- **Start erst mit laufendem Worker:** `spawnConpty` (`processes.ts`, auch Grundlage von `spawnPty`) wartet auf die Meldung `started` des Workers, höchstens 10 s, sonst scheitert der Start. Ohne laufenden Worker wirft das Anlegen der Verbindung, `spawn` scheitert, statt den Hauptthread in `ConnectNamedPipe` anzuhalten. Grenze: Stirbt der Worker genau zwischen `add` und dem Öffnen der Pipe, bleibt dieser Start hängen, wie bisher bei einem sterbenden Worker je PTY.
+- **Absturz des Workers:** Der Reader meldet eine Zeile und alle Verbindungen als verloren. `spawnConpty` beendet dann den Prozess jeder PTY (`process.kill(pid)`, denn `kill` von node-pty wartet bis zur ersten Ausgabe, und nur solange node-pty noch keinen Exit-Code hat, also das Prozess-Handle hält) und die PTY selbst, eine nach der anderen bis zum Ende ihres Prozesses (höchstens 2 s je PTY; mehrere `kill` direkt nacheinander lassen node-pty 1.1.0 gelegentlich abstürzen, #160), und meldet ihr Ende genau einmal (node-pty meldet es zusätzlich, weil seine Ausgabe-Socket schließt). Für die WSL-PTY ist das ein Client-Ende ohne Exit-Code: Die Pane lebt, die Registry hängt neu an (ADR 0003, „Verlorener Client“). Zustand, Views und Schreiber bleiben, je Session läuft genau ein tmux-Client. Die nächste PTY startet einen neuen Worker.
+
+## Folgen
+
+- Gemessen mit 50 Sessions (Umsetzung, drei Läufe unter Node, zwei unter Electron): 87 bis 93 MiB RSS unter Node, 71 MiB unter Electron (statt 588 bzw. 386), Abgleich 1162 bis 1292 ms bzw. 1149 bis 1256 ms, Echo p95 höchstens 3,4 ms. Ein PTY-Start dauert synchron rund 10 statt 55 ms.
+- Ein Fehler im Leser trifft alle Sessions zugleich; die Sessions überleben ihn in tmux und werden neu angehängt.
+- Der Core hängt an internen Pfaden von node-pty 1.1.0. Die Tests in `backend/wsl/conout-reader.test.ts` laufen ohne WSL auch auf `windows-latest` (Version, RSS-Zuwachs bei 20 PTYs, `kill()` unter voller Ausgabe, Absturz). Der Ersatz entfällt, sobald node-pty eine öffentliche Option dafür hat.
+- Außerhalb des Core bleiben je Session OpenConsole, `wsl.exe` und `wslhost`. Wer das senken will, braucht „PTY nur bei angehängter View“ mit eigener Entscheidung.

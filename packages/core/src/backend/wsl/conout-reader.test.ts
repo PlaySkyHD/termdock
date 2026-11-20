@@ -1,0 +1,205 @@
+// The shared ConPTY output reader (issue #153, ADR 0008). The PTY tests run `cmd.exe` through node-pty and need
+// no WSL, so they run on the Windows CI runner too.
+import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ConoutReader,
+  installConoutReader,
+  nodePtyVersion,
+  SUPPORTED_NODE_PTY_VERSION,
+} from "./conout-reader.js";
+import { conoutReader, spawnConpty } from "./processes.js";
+import type { ConptyProcess } from "./processes.js";
+
+const MiB = 1024 * 1024;
+
+interface Opened {
+  pty: ConptyProcess;
+  output: () => string;
+  exits: () => number;
+  exited: Promise<void>;
+}
+
+const opened: Opened[] = [];
+const readers: ConoutReader[] = [];
+
+/** `cmd.exe` in a ConPTY; answers the DA1 query of the bundled ConPTY like a terminal would. */
+async function openCmd(): Promise<Opened> {
+  const pty = await spawnConpty("cmd.exe", [], { cols: 120, rows: 30 }, process.cwd());
+  let text = "";
+  let answered = false;
+  let exits = 0;
+  pty.onData((data) => {
+    text += data;
+    if (!answered && data.includes("\x1b[c")) {
+      answered = true;
+      pty.write("\x1b[?1;2c");
+    }
+  });
+  const exited = new Promise<void>((resolve) =>
+    pty.onExit(() => {
+      exits += 1;
+      resolve();
+    }),
+  );
+  const entry = { pty, output: () => text, exits: () => exits, exited };
+  opened.push(entry);
+  return entry;
+}
+
+async function waitFor(predicate: () => boolean, what: string, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(50);
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+afterEach(async () => {
+  // One after another, each awaited: several kills in a row crash node-pty 1.1.0 now and then (#160).
+  for (const entry of opened.splice(0)) {
+    if (entry.exits() === 0) {
+      entry.pty.kill();
+      await Promise.race([entry.exited, sleep(5_000)]);
+    }
+  }
+  for (const reader of readers.splice(0)) await reader.dispose();
+});
+
+describe("node-pty version", () => {
+  it("is the version whose ConoutConnection the reader replaces (update node-pty only together with ADR 0008)", () => {
+    expect(nodePtyVersion()).toBe(SUPPORTED_NODE_PTY_VERSION);
+  });
+
+  it("logs one line and leaves node-pty unchanged for any other version", () => {
+    const original = function OriginalConoutConnection() {};
+    const internal = { ConoutConnection: original };
+    const log = vi.fn();
+    const load = (id: string) => (id.endsWith("package.json") ? { version: "1.2.0" } : internal);
+    expect(installConoutReader(new ConoutReader(), { log, load })).toBe(false);
+    expect(internal.ConoutConnection).toBe(original);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]![0]).toContain("node-pty 1.2.0 is not 1.1.0");
+  });
+
+  it("replaces ConoutConnection for 1.1.0, and a connection without running worker throws instead of blocking", () => {
+    const original = function OriginalConoutConnection() {};
+    const internal: { ConoutConnection: unknown } = { ConoutConnection: original };
+    const load = (id: string) => (id.endsWith("package.json") ? { version: "1.1.0" } : internal);
+    const reader = new ConoutReader();
+    readers.push(reader);
+    expect(installConoutReader(reader, { log: () => {}, load })).toBe(true);
+    expect(internal.ConoutConnection).not.toBe(original);
+    const Replaced = internal.ConoutConnection as new (pipe: string, useConptyDll: boolean) => unknown;
+    expect(() => new Replaced("\\\\.\\pipe\\conpty-test-out", true)).toThrow("no worker running");
+  });
+});
+
+describe("ConoutReader worker", () => {
+  it("rejects ready() when the worker fails to start, and starts a new one on the next call", async () => {
+    const log = vi.fn();
+    const broken = new ConoutReader({ workerSource: "throw new Error('broken worker')", log });
+    readers.push(broken);
+    await expect(broken.ready()).rejects.toThrow("before it started");
+    const reader = new ConoutReader();
+    readers.push(reader);
+    await reader.ready();
+    expect(reader.workerThreadId).toBeTypeOf("number");
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.exe, no WSL)", () => {
+  it("20 PTYs share one worker thread and add far less than one worker each to the RSS", async () => {
+    // Warm up: node-pty and the worker are loaded once per process, not per PTY.
+    const first = await openCmd();
+    await waitFor(() => first.output().length > 0, "output of the first PTY");
+    const reader = await conoutReader();
+    const thread = reader?.workerThreadId;
+    await sleep(1_000);
+    const before = process.memoryUsage().rss;
+    const ptys: Opened[] = [];
+    for (let i = 0; i < 20; i++) ptys.push(await openCmd());
+    await waitFor(() => ptys.every((entry) => entry.output().length > 0), "output of all PTYs");
+    await sleep(2_000);
+    const grown = (process.memoryUsage().rss - before) / MiB;
+    // One node-pty worker per PTY costs 8 to 12 MiB, 160 to 240 MiB for 20 (issue #153); measured here about 0.4 MiB
+    // per PTY. 60 MiB leaves room for a busy runner.
+    expect(grown).toBeLessThan(60);
+    expect(reader).toBeDefined();
+    expect(reader!.workerThreadId).toBe(thread);
+    expect(reader!.activeConnections).toBe(21);
+  }, 120_000);
+
+  it("kill() does not block while every PTY prints, every PTY ends and the worker closes its pipes", async () => {
+    const ptys: Opened[] = [];
+    for (let i = 0; i < 5; i++) ptys.push(await openCmd());
+    await waitFor(() => ptys.every((entry) => entry.output().includes(">")), "prompts");
+    for (const { pty } of ptys) pty.write("for /L %i in (1,1,1000000) do @echo line %i\r");
+    await waitFor(() => ptys.every((entry) => entry.output().includes("line 2000")), "full output");
+    let slowest = 0;
+    // One after another, each awaited: several kills in a row crash node-pty 1.1.0 now and then (#160).
+    for (const { pty, exited } of ptys) {
+      const started = performance.now();
+      pty.kill();
+      slowest = Math.max(slowest, performance.now() - started);
+      await exited;
+    }
+    // Measured at most 1.3 ms; a ClosePseudoConsole waiting for the output to drain would take seconds or forever.
+    expect(slowest).toBeLessThan(1_000);
+    await Promise.all(ptys.map((entry) => entry.exited));
+    const reader = await conoutReader();
+    await waitFor(() => reader!.activeConnections === 0, "no pipe left in the worker");
+    expect(ptys.map((entry) => entry.exits())).toEqual([1, 1, 1, 1, 1]);
+  }, 120_000);
+
+  it("leaves no pipe in the worker when a PTY cannot start", async () => {
+    const reader = (await conoutReader())!;
+    await reader.ready();
+    const before = reader.activeConnections;
+    await expect(
+      spawnConpty("termdock-missing-153.exe", [], { cols: 80, rows: 24 }, process.cwd()),
+    ).rejects.toThrow();
+    expect(reader.activeConnections).toBe(before);
+  }, 60_000);
+
+  it("closes every PTY once when the worker crashes and starts a new worker for the next PTY", async () => {
+    const ptys: Opened[] = [];
+    for (let i = 0; i < 3; i++) ptys.push(await openCmd());
+    await waitFor(() => ptys.every((entry) => entry.output().includes(">")), "prompts");
+    // A PTY that already ended on its own is not reported again.
+    const done = await openCmd();
+    await waitFor(() => done.output().includes(">"), "prompt of the PTY that ends first");
+    done.pty.write("exit\r");
+    await done.exited;
+    const reader = (await conoutReader())!;
+    const thread = reader.workerThreadId;
+    const pids = ptys.map((entry) => entry.pty.pid);
+
+    await reader.crashWorker();
+
+    await Promise.all(ptys.map((entry) => entry.exited));
+    await waitFor(() => pids.every((pid) => !alive(pid)), "the processes of the lost PTYs ended");
+    // Reported once, even though node-pty sees its output socket close as well.
+    await sleep(500);
+    expect(ptys.map((entry) => entry.exits())).toEqual([1, 1, 1]);
+    expect(done.exits()).toBe(1);
+    expect(reader.activeConnections).toBe(0);
+
+    const next = await openCmd();
+    await waitFor(() => next.output().includes(">"), "prompt of the next PTY");
+    next.pty.write("echo after-%NUMBER_OF_PROCESSORS%-crash\r");
+    await waitFor(() => /after-\d+-crash/.test(next.output()), "echo after the crash");
+    expect(reader.workerThreadId).toBeTypeOf("number");
+    expect(reader.workerThreadId).not.toBe(thread);
+  }, 120_000);
+});

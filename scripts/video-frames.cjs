@@ -65,6 +65,21 @@ function parseArgs(argv) {
   return { video, outDir: path.resolve(argv[1]), step: parseStep(argv[2]) };
 }
 
+/** Escapes text for a double-quoted HTML attribute; `pathToFileURL` leaves `&` (and `'`) as they are. */
+function escapeAttribute(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+/** The page that shows the video file; the file URL is escaped, so a name like `a&amp;b.mp4` loads that file. */
+function videoPage(video) {
+  return `<!doctype html><video muted preload="auto" src="${escapeAttribute(pathToFileURL(video).href)}"></video>`;
+}
+
 /** Runs inside the page: waits for the metadata and returns the duration. */
 const DURATION_SCRIPT = `new Promise((resolve, reject) => {
   const video = document.querySelector("video");
@@ -113,8 +128,7 @@ async function extract({ video, outDir, step }) {
     ]).finally(() => clearTimeout(timer));
   };
   try {
-    // `pathToFileURL` percent-encodes quotes and brackets, so the name cannot break out of the attribute.
-    const page = `<!doctype html><video muted preload="auto" src="${pathToFileURL(video).href}"></video>`;
+    const page = videoPage(video);
     await withTimeout(
       window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`),
       LOAD_TIMEOUT_MS,
@@ -155,7 +169,7 @@ async function main() {
   }
 }
 
-module.exports = { frameTimes, frameName, parseStep, parseArgs, MAX_FRAMES };
+module.exports = { frameTimes, frameName, parseStep, parseArgs, videoPage, MAX_FRAMES };
 
 // Electron starts the script as its app, where `require.main` is not the script; under plain Node (tests) it is.
 if (require.main === module || process.versions.electron) {

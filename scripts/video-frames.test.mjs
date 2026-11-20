@@ -8,10 +8,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { URL, fileURLToPath } from "node:url";
+import { URL, fileURLToPath, pathToFileURL } from "node:url";
 
 const script = fileURLToPath(new URL("./video-frames.cjs", import.meta.url));
-const { frameTimes, frameName, parseStep, parseArgs, MAX_FRAMES } = createRequire(import.meta.url)(script);
+const { frameTimes, frameName, parseStep, parseArgs, videoPage, MAX_FRAMES } = createRequire(import.meta.url)(
+  script,
+);
 
 test("frame times step through the video and stay below its end", () => {
   assert.deepEqual(frameTimes(2.495, 0.5), [0, 0.5, 1, 1.5, 2]);
@@ -45,6 +47,22 @@ test("frame names are f-<seconds>.png and sort by time", () => {
   assert.equal(frameName(1234.0005), "f-01234.001.png");
   const names = [100, 9.5, 20, 0.25].map(frameName);
   assert.deepEqual([...names].sort(), [0.25, 9.5, 20, 100].map(frameName));
+});
+
+test("the page escapes the file URL, so a name with an HTML entity loads that file", () => {
+  const page = videoPage(join(tmpdir(), `a&amp;b"c'<d>.mp4`));
+  const src = /src="([^"]*)"/.exec(page)[1];
+  assert.match(src, /a&amp;amp;b/);
+  assert.doesNotMatch(src, /[<>']/);
+  // Undoing the escaping the way an HTML parser does gives back the real file URL.
+  const decoded = src
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&amp;", "&");
+  assert.equal(decoded, pathToFileURL(join(tmpdir(), `a&amp;b"c'<d>.mp4`)).href);
+  assert.equal(page.match(/"/g).length, 4);
 });
 
 test("the step must be a positive number of seconds", () => {

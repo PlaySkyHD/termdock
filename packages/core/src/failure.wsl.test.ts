@@ -170,6 +170,10 @@ describe.skipIf(!enabled)("the tmux server dies while sessions run (issue #133)"
     let output = "";
     registry.onOutput(({ data }) => (output += decoder.decode(data)));
     await registry.attachView(session.id, "view-1");
+    // `create` returns once the PTY runs; the tmux server may start only afterwards. A kill before that would find
+    // no server, and the session would come up and stay Running.
+    registry.input(session.id, "view-1", "echo up-$((6*7))\r");
+    await waitFor(() => output.includes("up-42"), "output before the kill");
 
     await killWslTestServer(distro, SOCKET);
     await waitFor(() => registry.get(session.id).state === "Interrupted", "Interrupted");

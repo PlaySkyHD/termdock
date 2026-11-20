@@ -67,7 +67,9 @@ describe("electron-builder.json", () => {
 
   it("leaves the test helpers of the core out of the app, but keeps its entry (issue #133)", () => {
     const excludes = config.files.filter((pattern) => pattern.startsWith("!")).map((p) => p.slice(1));
-    const excluded = (file: string) => excludes.some((pattern) => matches(pattern, file));
+    // A leading `**/` also matches no directory at all, as in electron-builder.
+    const excluded = (file: string) =>
+      excludes.some((pattern) => matches(pattern, file) || matches(pattern, `app/${file}`));
 
     expect(excluded("node_modules/@termdock/core/dist/test/flooding-core.js")).toBe(true);
     expect(excluded("node_modules/@termdock/core/dist/test/wsl-socket.js")).toBe(true);

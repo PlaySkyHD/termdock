@@ -1,6 +1,7 @@
 // Pieces of the screenshot mode (`--screenshot <dir>`, docs/agent-lessons-learned.md section 4) that do not
 // need Electron: the argument, the isolated core and waiting until the terminal output has settled.
 import { execFile } from "node:child_process";
+import { closeSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 
 /** Directory after `--screenshot`, or undefined without the flag. */
@@ -177,6 +178,151 @@ export function staleProfileDirs(
     })
     .map((name) => path.win32.join(tempDir, name));
 }
+
+/** Name of the machine-wide lock of screenshot runs in the temp directory (#144). */
+export const SCREENSHOT_LOCK_NAME = "termdock-screenshot.lock";
+/** Longest wait for the lock before a run gives up with code 1. */
+export const SCREENSHOT_LOCK_WAIT_MS = 15 * 60_000;
+/** Poll interval while waiting for the lock. */
+const LOCK_POLL_MS = 1_000;
+/** A lock without a readable pid is free after this age (its run died between creating and writing). */
+const LOCK_UNREADABLE_GRACE_MS = 5_000;
+/** A lock older than any run (scenes, core start and cleanup) is free even if its pid lives again (reused pid). */
+const LOCK_MAX_AGE_MS = 12 * 60_000;
+
+/** File access of the screenshot lock; tests replace it. */
+export interface ScreenshotLockFs {
+  /** Creates `file` with `content` only if it does not exist (`"wx"`); false if it exists. */
+  createExclusive(file: string, content: string): boolean;
+  /** Content and mtime of `file`, or undefined if it does not exist. */
+  read(file: string): { content: string; mtimeMs: number } | undefined;
+  /** Removes `file`; a missing file is fine. */
+  remove(file: string): void;
+}
+
+export type ScreenshotLockState = { kind: "free" } | { kind: "held"; pid: number | undefined };
+
+/**
+ * Whether the lock `entry` (content and age) blocks the run `ownPid`: held by a live process, or briefly by a lock
+ * that is still being written. The lock of a dead process, of the own pid or one older than any run is free.
+ */
+export function screenshotLockState(
+  entry: { content: string; ageMs: number } | undefined,
+  ownPid: number,
+  isAlive: (pid: number) => boolean,
+): ScreenshotLockState {
+  if (entry === undefined || entry.ageMs > LOCK_MAX_AGE_MS) return { kind: "free" };
+  const text = entry.content.trim();
+  if (!/^\d+$/.test(text)) {
+    return entry.ageMs > LOCK_UNREADABLE_GRACE_MS ? { kind: "free" } : { kind: "held", pid: undefined };
+  }
+  const pid = Number(text);
+  return pid !== ownPid && isAlive(pid) ? { kind: "held", pid } : { kind: "free" };
+}
+
+export type LockAttempt = { acquired: true } | { acquired: false; holder: number | undefined };
+
+/** One attempt to take the lock: creates it, or replaces a stale one, or names its live holder. */
+export function tryScreenshotLock(
+  lockPath: string,
+  ownPid: number,
+  fs: ScreenshotLockFs,
+  isAlive: (pid: number) => boolean,
+  now: number,
+): LockAttempt {
+  // A few rounds: between removing a stale lock and creating ours another run may have taken it.
+  for (let round = 0; round < 3; round += 1) {
+    if (fs.createExclusive(lockPath, String(ownPid))) return { acquired: true };
+    const entry = fs.read(lockPath);
+    const state = screenshotLockState(
+      entry && { content: entry.content, ageMs: now - entry.mtimeMs },
+      ownPid,
+      isAlive,
+    );
+    if (state.kind === "held") return { acquired: false, holder: state.pid };
+    if (entry !== undefined) fs.remove(lockPath);
+  }
+  return { acquired: false, holder: undefined };
+}
+
+export interface ScreenshotLockDeps {
+  lockPath: string;
+  ownPid: number;
+  fs: ScreenshotLockFs;
+  isAlive(pid: number): boolean;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  log(message: string): void;
+  /** Defaults to `SCREENSHOT_LOCK_WAIT_MS`. */
+  waitMs?: number;
+}
+
+/**
+ * Takes the machine-wide lock of screenshot runs, waiting while another live run holds it; logs
+ * `waiting for screenshot run <pid>` once per holder. False after `waitMs` without the lock (the foreign lock stays).
+ */
+export async function acquireScreenshotLock(deps: ScreenshotLockDeps): Promise<boolean> {
+  const waitMs = deps.waitMs ?? SCREENSHOT_LOCK_WAIT_MS;
+  const start = deps.now();
+  let announced: { holder: number | undefined } | undefined;
+  for (;;) {
+    const attempt = tryScreenshotLock(deps.lockPath, deps.ownPid, deps.fs, deps.isAlive, deps.now());
+    if (attempt.acquired) return true;
+    const name = attempt.holder === undefined ? "(lock being written)" : String(attempt.holder);
+    if (announced === undefined || announced.holder !== attempt.holder) {
+      deps.log(`waiting for screenshot run ${name}`);
+      announced = { holder: attempt.holder };
+    }
+    if (deps.now() - start >= waitMs) {
+      deps.log(`gave up waiting for screenshot run ${name} after ${waitMs} ms (${deps.lockPath})`);
+      return false;
+    }
+    await deps.sleep(LOCK_POLL_MS);
+  }
+}
+
+/** Removes the lock if it is still the one of `ownPid`; never throws. */
+export function releaseScreenshotLock(lockPath: string, ownPid: number, fs: ScreenshotLockFs): void {
+  try {
+    if (fs.read(lockPath)?.content.trim() === String(ownPid)) fs.remove(lockPath);
+  } catch {
+    // Best effort: a lock left behind is free once this process has ended.
+  }
+}
+
+/** The lock on the real file system. */
+export const nodeLockFs: ScreenshotLockFs = {
+  createExclusive(file, content) {
+    let fd: number;
+    try {
+      fd = openSync(file, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+    try {
+      writeSync(fd, content);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  },
+  read(file) {
+    try {
+      return { content: readFileSync(file, "utf8"), mtimeMs: statSync(file).mtimeMs };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  },
+  remove(file) {
+    try {
+      unlinkSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  },
+};
 
 /**
  * Socket file of a screenshot run in the tmux socket directory of WSL (`/tmp/tmux-<uid>/`), exactly as

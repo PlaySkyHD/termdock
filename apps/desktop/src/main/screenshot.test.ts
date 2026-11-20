@@ -15,6 +15,17 @@ import {
 } from "./screenshot.js";
 import type { ExecFileFn, SceneGroup } from "./screenshot.js";
 import { describeError, runGroupsWithRetry, SceneGroupError } from "./screenshot.js";
+import {
+  acquireScreenshotLock,
+  nodeLockFs,
+  releaseScreenshotLock,
+  screenshotLockState,
+  tryScreenshotLock,
+} from "./screenshot.js";
+import type { ScreenshotLockFs } from "./screenshot.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 describe("describeError", () => {
   it("names errors, strings and plain objects, never [object Object]", () => {
@@ -466,5 +477,177 @@ describe("QuietWatch", () => {
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(await waiting).toBeInstanceOf(Error);
+  });
+});
+
+/** An in-memory lock file system; files get the time of `clock` as their mtime. */
+function memoryLockFs(clock: { now: number }) {
+  const files = new Map<string, { content: string; mtimeMs: number }>();
+  const fs: ScreenshotLockFs = {
+    createExclusive: (file, content) => {
+      if (files.has(file)) return false;
+      files.set(file, { content, mtimeMs: clock.now });
+      return true;
+    },
+    read: (file) => files.get(file),
+    remove: (file) => void files.delete(file),
+  };
+  return { fs, files };
+}
+
+const LOCK = "C:\\Temp\\termdock-screenshot.lock";
+
+describe("screenshotLockState", () => {
+  const alive = (pid: number): boolean => pid === 100;
+
+  it("is free without a file, held by a live process, free for a dead one or the own pid", () => {
+    expect(screenshotLockState(undefined, 7, alive)).toEqual({ kind: "free" });
+    expect(screenshotLockState({ content: "100", ageMs: 1_000 }, 7, alive)).toEqual({
+      kind: "held",
+      pid: 100,
+    });
+    expect(screenshotLockState({ content: "100\n", ageMs: 1_000 }, 7, alive)).toEqual({
+      kind: "held",
+      pid: 100,
+    });
+    expect(screenshotLockState({ content: "200", ageMs: 1_000 }, 7, alive)).toEqual({ kind: "free" });
+    expect(screenshotLockState({ content: "7", ageMs: 1_000 }, 7, () => true)).toEqual({ kind: "free" });
+  });
+
+  it("waits a moment for an unreadable lock that is still being written", () => {
+    expect(screenshotLockState({ content: "", ageMs: 1_000 }, 7, alive)).toEqual({
+      kind: "held",
+      pid: undefined,
+    });
+    expect(screenshotLockState({ content: "x", ageMs: 6_000 }, 7, alive)).toEqual({ kind: "free" });
+  });
+
+  it("frees a lock older than any run (a reused pid)", () => {
+    expect(screenshotLockState({ content: "100", ageMs: 13 * 60_000 }, 7, alive)).toEqual({ kind: "free" });
+  });
+});
+
+describe("tryScreenshotLock", () => {
+  it("creates the lock with the own pid", () => {
+    const { fs, files } = memoryLockFs({ now: 0 });
+    expect(tryScreenshotLock(LOCK, 7, fs, () => true, 0)).toEqual({ acquired: true });
+    expect(files.get(LOCK)?.content).toBe("7");
+  });
+
+  it("reports a live holder and leaves its lock alone", () => {
+    const { fs, files } = memoryLockFs({ now: 0 });
+    fs.createExclusive(LOCK, "100");
+    expect(tryScreenshotLock(LOCK, 7, fs, (pid) => pid === 100, 1_000)).toEqual({
+      acquired: false,
+      holder: 100,
+    });
+    expect(files.get(LOCK)?.content).toBe("100");
+  });
+
+  it("replaces the lock of a dead process", () => {
+    const { fs, files } = memoryLockFs({ now: 0 });
+    fs.createExclusive(LOCK, "200");
+    expect(tryScreenshotLock(LOCK, 7, fs, () => false, 1_000)).toEqual({ acquired: true });
+    expect(files.get(LOCK)?.content).toBe("7");
+  });
+});
+
+describe("acquireScreenshotLock", () => {
+  function setup(alive: Set<number>) {
+    const clock = { now: 0 };
+    const { fs, files } = memoryLockFs(clock);
+    const logs: string[] = [];
+    const deps = {
+      lockPath: LOCK,
+      ownPid: 7,
+      fs,
+      isAlive: (pid: number) => alive.has(pid),
+      now: () => clock.now,
+      sleep: async (ms: number) => {
+        clock.now += ms;
+      },
+      log: (text: string) => void logs.push(text),
+    };
+    return { clock, files, logs, deps };
+  }
+
+  it("waits until the holder ends and logs each holder once", async () => {
+    const alive = new Set([100, 101]);
+    const { clock, files, logs, deps } = setup(alive);
+    deps.fs.createExclusive(LOCK, "100");
+    let polls = 0;
+    deps.sleep = async (ms) => {
+      clock.now += ms;
+      polls += 1;
+      // The first run ends, a third one takes the lock before us, then it ends as well.
+      if (polls === 3) {
+        alive.delete(100);
+        files.set(LOCK, { content: "101", mtimeMs: clock.now });
+      }
+      if (polls === 5) alive.delete(101);
+    };
+
+    await expect(acquireScreenshotLock(deps)).resolves.toBe(true);
+    expect(logs).toEqual(["waiting for screenshot run 100", "waiting for screenshot run 101"]);
+    expect(files.get(LOCK)?.content).toBe("7");
+  });
+
+  it("gives up after 15 minutes and leaves the foreign lock", async () => {
+    const { clock, files, logs, deps } = setup(new Set([100]));
+    deps.fs.createExclusive(LOCK, "100");
+    // A live holder whose lock never gets too old (the test renews its mtime).
+    deps.sleep = async (ms) => {
+      clock.now += ms;
+      files.set(LOCK, { content: "100", mtimeMs: clock.now });
+    };
+
+    await expect(acquireScreenshotLock(deps)).resolves.toBe(false);
+    expect(clock.now).toBeGreaterThanOrEqual(15 * 60_000);
+    expect(clock.now).toBeLessThan(15 * 60_000 + 5_000);
+    expect(logs[0]).toBe("waiting for screenshot run 100");
+    expect(logs.at(-1)).toMatch(/gave up waiting for screenshot run 100/);
+    expect(files.get(LOCK)?.content).toBe("100");
+  });
+
+  it("takes a free lock without waiting or logging", async () => {
+    const { logs, deps } = setup(new Set());
+    await expect(acquireScreenshotLock(deps)).resolves.toBe(true);
+    expect(logs).toEqual([]);
+  });
+});
+
+describe("releaseScreenshotLock", () => {
+  it("removes only the own lock", () => {
+    const { fs, files } = memoryLockFs({ now: 0 });
+    fs.createExclusive(LOCK, "100");
+    releaseScreenshotLock(LOCK, 7, fs);
+    expect(files.has(LOCK)).toBe(true);
+    files.set(LOCK, { content: "7", mtimeMs: 0 });
+    releaseScreenshotLock(LOCK, 7, fs);
+    expect(files.has(LOCK)).toBe(false);
+    // A missing file is fine.
+    releaseScreenshotLock(LOCK, 7, fs);
+  });
+});
+
+describe("nodeLockFs", () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  it("creates exclusively, reads content and age, removes", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "termdock-lock-test-"));
+    const file = path.join(dir, "termdock-screenshot.lock");
+    expect(nodeLockFs.read(file)).toBeUndefined();
+    expect(nodeLockFs.createExclusive(file, "42")).toBe(true);
+    expect(nodeLockFs.createExclusive(file, "43")).toBe(false);
+    const entry = nodeLockFs.read(file);
+    expect(entry?.content).toBe("42");
+    expect(entry?.mtimeMs).toBeGreaterThan(0);
+    nodeLockFs.remove(file);
+    nodeLockFs.remove(file);
+    expect(nodeLockFs.read(file)).toBeUndefined();
   });
 });

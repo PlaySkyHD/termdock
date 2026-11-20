@@ -27,6 +27,7 @@ export const SCENE_GROUPS = [
   "search",
   "settings",
   "cwd",
+  "crash",
   "restart",
 ] as const;
 

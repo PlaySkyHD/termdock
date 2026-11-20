@@ -301,6 +301,34 @@ describe("HistoryStore: writing never blocks the output", () => {
     expect(store.stats("s1").droppedEntries).toBe(1);
   });
 
+  it("reports a failing write once until a write of the session succeeds again (issue #133)", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "history"), "x");
+    const errors: string[] = [];
+    const store = makeStore(dir, { onError: (_error, sessionId) => errors.push(sessionId) });
+
+    // A full or read-only disk fails every flush; the log gets one line, not one per flush.
+    for (let i = 0; i < 5; i++) {
+      store.append("s1", numbered(i));
+      await store.flush();
+    }
+    store.append("s2", numbered(0));
+    await store.flush();
+    expect(errors).toEqual(["s1", "s2"]);
+    expect(store.stats("s1").droppedEntries).toBe(5);
+
+    // The disk has room again: the next write works, and a later failure is reported anew.
+    rmSync(join(dir, "history"));
+    store.append("s1", numbered(5));
+    await store.flush();
+    expect(await collect(readHistory(dir, "s1"))).toHaveLength(1);
+    rmSync(join(dir, "history"), { recursive: true });
+    writeFileSync(join(dir, "history"), "x");
+    store.append("s1", numbered(6));
+    await store.flush();
+    expect(errors).toEqual(["s1", "s2", "s1"]);
+  });
+
   it("ignores output after dispose", async () => {
     const dir = tempDir();
     const store = makeStore(dir);

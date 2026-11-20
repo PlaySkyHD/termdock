@@ -78,7 +78,7 @@ Der WSL-Test startet `vim` aus einem Startprofil als Stellvertreter für ein int
 
 Status: automatisiert und manuell
 
-Der Renderer hängt je Pane eine View ein, Schlüssel ist die Pane-ID; eine View trennt sich (`detach`) nur, wenn ihre Pane verschwindet oder eine andere Session zeigt. Der erste Test schaltet mit allen Tab-Befehlen und per Klick um und prüft: dieselben Panes mit denselben Sessions bleiben eingehängt, kein Aufruf an den Core, alle Sessions bleiben `Running`. Der zweite Test ist nur die Voraussetzung dafür (`layoutWindow` liefert auch die Panes inaktiver Tabs). Ob der Prozess in WSL wirklich weiterläuft, zeigt erst der manuelle Schritt; deshalb bleibt das Kriterium teilweise manuell.
+Der Renderer hängt je Pane eine View ein, Schlüssel ist die Pane-ID; eine View trennt sich (`detach`) nur, wenn ihre Pane verschwindet oder eine andere Session zeigt. Der erste Test schaltet mit allen Tab-Befehlen und per Klick um und prüft auf Ebene des Modells: Das Layout nennt dieselben Panes mit denselben Sessions, die Tab-Befehle rufen den Core nicht auf, alle Sessions bleiben `Running`. Dass `PaneTree` die Views dabei wirklich nicht aushängt, prüft er nicht (kein gerendertes React). Der zweite Test ist nur die Voraussetzung (`layoutWindow` liefert auch die Panes inaktiver Tabs). Den eigentlichen Nachweis, dass View und Prozess weiterlaufen, liefert der manuelle Schritt.
 
 - Test `apps/desktop/src/renderer/commands.test.ts`: `[V1-04] switches tabs without unmounting a pane or reaching the core: same views, sessions stay Running`
 - Test `apps/desktop/src/renderer/pane-layout.test.ts`: `[V1-04] lists the panes of every tab, tabs in order and each in tree order, with their tab`

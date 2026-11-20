@@ -309,7 +309,7 @@ describe("TerminalController", () => {
     expect(statuses.at(-1)).toMatchObject({ role: "writer", size: { cols: 120, rows: 40 } });
   });
 
-  it("as writer follows a smaller area and sends the new size once", async () => {
+  it("[V1-06] as writer follows a smaller area and sends the new size once", async () => {
     const { api, surface, controller, delay } = await opened({ writerViewId: "v1" });
 
     surface.area = { cols: 70, rows: 20 };
@@ -360,7 +360,7 @@ describe("TerminalController", () => {
     expect(api.resizes).toHaveLength(1);
   });
 
-  it("as reader drops input and automatic replies and shows the writer's size", async () => {
+  it("[V1-05] as reader drops input and automatic replies and shows the writer's size", async () => {
     const { api, surface, controller, statuses, delay } = await opened({ writerViewId: "v0" });
 
     surface.emitData("typed");

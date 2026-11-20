@@ -26,7 +26,7 @@ describe("planQuit", () => {
     });
   });
 
-  it("asks while sessions run and the question is on", () => {
+  it("[V1-13] asks while sessions run and the question is on", () => {
     expect(planQuit({ reason: "user", activeSessions: 2, settings: asking })).toEqual({ kind: "ask" });
   });
 
@@ -72,7 +72,7 @@ describe("outcomeOfAnswer", () => {
     expect(outcomeOfAnswer({ choice: "cancel", remember: true })).toEqual({ kind: "cancel" });
   });
 
-  it("keeps or stops the sessions without storing when the checkbox is off", () => {
+  it("[V1-13] keeps or stops the sessions without storing when the checkbox is off", () => {
     expect(outcomeOfAnswer({ choice: "keepSessions", remember: false })).toEqual({
       kind: "quit",
       stopSessions: false,

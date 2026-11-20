@@ -109,7 +109,7 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     expect(track(await backend.start(other, spec(), size)).pty.warnings).toBeUndefined();
   }, 30_000);
 
-  it("starts in the requested directory within 3 s, echoes input and follows resizes", async () => {
+  it("[V1-02] starts in the requested directory within 3 s, echoes input and follows resizes", async () => {
     backend = new WslBackend({ socket: SOCKET });
     const id = nextId();
     const session = track(await backend.start(id, spec(), size));

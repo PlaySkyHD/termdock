@@ -131,7 +131,7 @@ describe("session management over IPC (issue #57)", () => {
     expect(updates).toEqual([]);
   });
 
-  it("archives a running session: process ended, Archived reported, history kept", async () => {
+  it("[V1-10] archives a running session: process ended, Archived reported, history kept", async () => {
     const dataDir = tempDataDir();
     const { backend, pipePath } = await startCore(dataDir);
     const client = await newClient(pipePath);
@@ -166,7 +166,7 @@ describe("session management over IPC (issue #57)", () => {
     expect((await client.request("session.list", {})).result.sessions).toHaveLength(1);
   });
 
-  it("deletes a session with its views, history and stored row and sends session.removed", async () => {
+  it("[V1-12] deletes a session with its views, history and stored row and sends session.removed", async () => {
     const dataDir = tempDataDir();
     const first = await startCore(dataDir);
     const lister = await newClient(first.pipePath);

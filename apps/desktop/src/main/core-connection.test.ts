@@ -59,7 +59,7 @@ describe("connectOrStartCore", () => {
     expect(connect).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the core once when nobody holds the pipe and connects as soon as it is up", async () => {
+  it("[V1-14] starts the core once when nobody holds the pipe and connects as soon as it is up", async () => {
     const clock = new FakeClock();
     const core = fakeCore();
     let startedAt: number | undefined;

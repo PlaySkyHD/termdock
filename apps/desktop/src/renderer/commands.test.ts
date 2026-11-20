@@ -11,6 +11,7 @@ import {
 } from "./commands.js";
 import type { Clipboard, CommandDeps, ProjectStartDeps } from "./commands.js";
 import type { CommandId } from "./keymap.js";
+import { layoutWindow } from "./pane-layout.js";
 import type { OpenMode } from "./sidebar-model.js";
 import { activeTab, paneCount, panesOf, UiStore } from "./ui-store.js";
 
@@ -284,6 +285,43 @@ describe("runCommand: tabs", () => {
     expect(activeIndex()).toBe(1);
     await run("gotoTab9");
     expect(activeIndex()).toBe(1);
+  });
+
+  // PaneTree mounts one PaneView per pane of `layoutWindow`, keyed by pane id. TerminalView attaches in an effect
+  // that depends only on api and session id and detaches in its cleanup, so a view detaches only when its pane
+  // unmounts or shows another session. Same keys and sessions before and after a switch mean no detach.
+  it("[V1-04] switches tabs without unmounting a pane or reaching the core: same views, sessions stay Running", async () => {
+    const { run, store, calls, created } = setup(["a", "b", "c"]);
+    const mounted = () => {
+      const { tabs, activeTabId } = store.getState().window;
+      return layoutWindow(tabs, activeTabId).panes.map(({ paneId, sessionId }) => `${paneId}:${sessionId}`);
+    };
+    const before = mounted();
+    expect(before).toHaveLength(3);
+    const hidden = () =>
+      layoutWindow(store.getState().window.tabs, store.getState().window.activeTabId)
+        .panes.filter((pane) => !pane.tabActive)
+        .map((pane) => pane.sessionId);
+
+    for (const command of ["nextTab", "gotoTab2", "previousTab", "gotoTab3"] as const) {
+      const active = activeTab(store.getState())?.id;
+      await run(command);
+      expect(activeTab(store.getState())?.id).not.toBe(active);
+      expect(mounted()).toEqual(before);
+      expect(hidden()).toHaveLength(2);
+    }
+    // A click on a tab goes straight to the store.
+    store.focusTab(store.getState().window.tabs[0]!.id);
+    expect(mounted()).toEqual(before);
+
+    expect(calls.filter((call) => call !== "refocus")).toEqual([]);
+    // The only way to the core in CommandDeps is createSession; there is no detach or kill to call.
+    expect(created).toEqual([]);
+    expect(store.getState().sessions.map((each) => [each.id, each.state])).toEqual([
+      ["a", "Running"],
+      ["b", "Running"],
+      ["c", "Running"],
+    ]);
   });
 
   it("closes the active tab", async () => {
@@ -641,7 +679,7 @@ describe("startProjectSession (#104)", () => {
     return { ...base, opened, deps };
   }
 
-  it("creates the session in the project directory and opens it by the mode of the click", async () => {
+  it("[V1-01] creates the session in the project directory and opens it by the mode of the click", async () => {
     const { deps, created, opened, store } = projectSetup();
 
     await startProjectSession(deps, project, "tab");

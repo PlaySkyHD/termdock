@@ -130,7 +130,7 @@ describe("layoutWindow (#67: one flat list for all tabs)", () => {
     { id: "B", root: split, activePaneId: "b1" },
   ];
 
-  it("lists the panes of every tab, tabs in order and each in tree order, with their tab", () => {
+  it("[V1-04] lists the panes of every tab, tabs in order and each in tree order, with their tab", () => {
     const { panes } = layoutWindow(tabs, "B");
 
     expect(panes.map((pane) => [pane.paneId, pane.tabId, pane.tabActive])).toEqual([

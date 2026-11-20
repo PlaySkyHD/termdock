@@ -257,7 +257,7 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
     expect(registry.get("starting").state).toBe("Detached");
   });
 
-  it("makes a WSL session whose tmux session is gone Interrupted", async () => {
+  it("[V1-09] makes a WSL session whose tmux session is gone Interrupted", async () => {
     const backend = new FakeBackend();
     const { registry, repository } = restoring([stored({ id: "gone", state: "Detached" })], [backend]);
 
@@ -288,7 +288,7 @@ describe("SessionRegistry.restore: reconcile (ADR 0005)", () => {
     expect(backend.attaches).toEqual([]);
   });
 
-  it("makes WSL sessions Interrupted and reports backend_unavailable when WSL is not available", async () => {
+  it("[V1-09] makes WSL sessions Interrupted and reports backend_unavailable when WSL is not available", async () => {
     const backend = new FakeBackend();
     backend.isAvailable = false;
     backend.setExists("a", true);

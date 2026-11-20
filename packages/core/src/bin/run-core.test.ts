@@ -329,7 +329,7 @@ describe("runCore", () => {
     expect((await listing).result.sessions.map((s) => s.state)).toEqual(["Interrupted"]);
   });
 
-  it("keeps the layout and its revision across a restart and holds layout.get until the reconcile is done", async () => {
+  it("[V1-08] keeps the layout and its revision across a restart and holds layout.get until the reconcile is done", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
     const first = await start({ pipePath, dataDir, backends: [new FakeBackend()] });
@@ -399,7 +399,7 @@ describe("runCore", () => {
     expect(stderr.lines.join("")).toContain("backend_unavailable: wsl");
   });
 
-  it("fails with already_running before it creates or opens the data directory", async () => {
+  it("[V1-14] fails with already_running before it creates or opens the data directory", async () => {
     const pipePath = uniquePipe();
     await start({ pipePath, dataDir: tempDir(), backends: [new FakeBackend()] });
     const dataDir = join(tempDir(), "second");
@@ -595,7 +595,7 @@ describe("runCore autostart (issue #61)", () => {
     return sessions;
   }
 
-  it("starts exactly the autostart profiles, and a restart with running sessions starts none", async () => {
+  it("[V1-07] starts exactly the autostart profiles, and a restart with running sessions starts none", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
     const backend = new FakeBackend();
@@ -679,7 +679,7 @@ describe("runCore autostart (issue #61)", () => {
     expect(backend.starts.map((call) => call.id)).toEqual([old, old]);
   });
 
-  it("holds requests until the autostart sessions are registered; two clients see one start", async () => {
+  it("[V1-14] holds requests until the autostart sessions are registered; two clients see one start", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
     const backend = new FakeBackend();
@@ -729,6 +729,35 @@ describe("runCore autostart (issue #61)", () => {
     expect(slow.starts).toHaveLength(1);
     // Nobody had listed when the session was registered; both clients know it from their list.
     expect(created).toEqual([]);
+  });
+
+  it("[V1-14] two cores started at once on one pipe and data directory: one runs, one autostart, one session", async () => {
+    const dataDir = tempDir();
+    const pipePath = uniquePipe();
+    await prepared(dataDir, pipePath, new FakeBackend(), async (c) => {
+      await c.request("profile.create", { name: "Claude", launch, autostart: true });
+      await c.request("profile.create", { name: "Manual", launch, autostart: false });
+    });
+
+    // Like two windows (or two app starts) that each find no core and start one at the same time.
+    const backends = [new FakeBackend(), new FakeBackend()];
+    const results = await Promise.all(
+      backends.map((backend) => start({ pipePath, dataDir, backends: [backend] })),
+    );
+
+    expect(results.map((result) => result.exitCode).sort()).toEqual([0, 10]);
+    const loser = results.find((result) => result.exitCode === 10);
+    expect(loser).toMatchObject({ errorCode: "already_running" });
+    const winner = results.find((result) => result.exitCode === 0)!;
+    await winner.autostart?.started;
+    expect(backends.reduce((sum, backend) => sum + backend.starts.length, 0)).toBe(1);
+
+    const [a, b] = [await client(pipePath), await client(pipePath)];
+    const [first, second] = await Promise.all([a.request("session.list", {}), b.request("session.list", {})]);
+    expect(first.result.sessions.map((session) => session.name)).toEqual(["Claude"]);
+    expect(second.result.sessions.map((session) => session.id)).toEqual(
+      first.result.sessions.map((session) => session.id),
+    );
   });
 
   it("reports an unreachable backend once on stderr and in core.status and starts nothing", async () => {

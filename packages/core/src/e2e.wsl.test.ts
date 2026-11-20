@@ -163,7 +163,7 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     throw new Error("history did not settle");
   }
 
-  it("survives a core restart and reports a session killed from outside as Interrupted", async () => {
+  it("[V1-09] survives a core restart and reports a session killed from outside as Interrupted", async () => {
     freshDataDir();
     await startCore();
     const c1 = await client();
@@ -421,7 +421,7 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect(states).not.toContain("Interrupted");
   }, 120_000);
 
-  it("starts a session from a profile in the directory of its project, command as argument array (issue #58)", async () => {
+  it("[V1-01][V1-02] starts a session from a profile in the directory of its project, command as argument array (issue #58)", async () => {
     freshDataDir();
     await startCore();
     const c = await client();
@@ -521,7 +521,7 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
     expect(await settledHistory(session.id)).toContain("after-2");
   }, 60_000);
 
-  it("holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
+  it("[V1-11] holds the history limit under 50 MiB of output and keeps the PTY flowing (issue #59)", async () => {
     freshDataDir();
     await startCore();
     const c = await client();
@@ -575,4 +575,59 @@ describe.skipIf(!enabled)("termdock-core end to end", () => {
       newest = (newest + decoder.decode(entry.data)).slice(-2000);
     expect(newest).toContain("flows-2");
   }, 180_000);
+
+  // Stands in for Claude Code or Codex (V1-03): a full-screen program from a profile that reads keys, draws in the
+  // alternate screen and ends on a command. The real CLIs are a manual step in docs/acceptance.md.
+  it("[V1-03] runs vim from a profile: alternate screen, typed text on the screen and in the view, clean exit", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const file = `/tmp/termdock-v1-03-${randomUUID()}.txt`;
+    const { profile } = (
+      await c.request("profile.create", {
+        name: "vim",
+        launch: { backend: "wsl", cwd: "/tmp", command: ["vim", "-u", "NONE", "-N", "-n", file] },
+      })
+    ).result;
+    const { session } = (await c.request("session.create", { name: profile.name, profileId: profile.id }))
+      .result;
+    const distro = session.launch.distro!;
+    distros.add(distro);
+    const target = `=td-${session.id}:`;
+    const pane = async (format: string) =>
+      (await tmux(distro, ["display-message", "-p", "-t", target, format])).stdout.trim();
+    const screen = async () => (await tmux(distro, ["capture-pane", "-p", "-t", target])).stdout;
+    const output = collect(c);
+    const { viewId } = (await c.request("session.attach", { sessionId: session.id })).result;
+    const send = (text: string) => c.request("session.input", { viewId }, new TextEncoder().encode(text));
+    try {
+      // tmux itself runs in the alternate screen of the view; only tmux knows whether the program in the pane does.
+      await waitFor(async () => (await pane("#{alternate_on}")) === "1", "vim in the alternate screen");
+      expect(await pane("#{pane_current_command}")).toBe("vim");
+
+      await send("ihello-v1-03");
+      await waitFor(async () => {
+        const now = await screen();
+        return now.includes("hello-v1-03") && now.includes("-- INSERT --");
+      }, "the typed text in insert mode");
+      await waitFor(() => output().includes("hello-v1-03"), "the typed text in the output of the view");
+
+      // Ctrl+C leaves insert mode without the wait for an escape sequence that ESC would cause.
+      await send("\x03");
+      await waitFor(async () => !(await screen()).includes("-- INSERT --"), "normal mode");
+      await send(":wq\r");
+      await waitFor(
+        async () => (await list(c)).find((each) => each.id === session.id)?.state === "Exited",
+        "the end of vim",
+      );
+      expect((await list(c)).find((each) => each.id === session.id)).toMatchObject({
+        profileId: profile.id,
+        lastExitCode: 0,
+      });
+      const saved = await runWsl(["-d", distro, "--cd", "~", "--exec", "cat", file], { timeoutMs: 15_000 });
+      expect(saved.stdout).toBe("hello-v1-03\n");
+    } finally {
+      await runWsl(["-d", distro, "--cd", "~", "--exec", "rm", "-f", file], { timeoutMs: 15_000 });
+    }
+  }, 120_000);
 });

@@ -1657,6 +1657,12 @@ Während des Neustarts SHALL jedes Pane „Core startet neu …“ zeigen und ni
 - **WHEN** das Fenster nach `coreRestarted` neu lädt
 - **THEN** zeigt das Pane den Platzhalter mit `Interrupted` statt eines Terminals
 
+#### Scenario: Core endet während des Neuladens
+
+- **GIVEN** ein Fenster hat `coreRestarted` erhalten und wartet auf die Sessionliste des neuen Core
+- **WHEN** die Verbindung vor der Antwort wieder endet (`coreClosed`, oder die Liste scheitert mit `closed`) oder ein weiteres `coreRestarted` folgt
+- **THEN** übernimmt das Fenster diese Liste nicht und hängt keine Views neu an: Es zeigt weiter die getrennte Verbindung mit „Core neu starten“, oder nur das letzte Neuladen übernimmt seine Liste samt der bis dahin gehaltenen Events
+
 #### Scenario: Eingabe während des Neustarts
 
 - **GIVEN** der Core startet neu

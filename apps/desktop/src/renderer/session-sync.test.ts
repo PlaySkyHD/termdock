@@ -70,6 +70,12 @@ class FakeApi implements Pick<
   fail(error: Error): void {
     this.failList?.(error);
   }
+  /** Keeps the answer of the list that is out, so a later call cannot replace it. */
+  takeAnswer(): (sessions: SessionInfo[]) => void {
+    const answer = this.answerList;
+    if (!answer) throw new Error("no list is out");
+    return answer;
+  }
 }
 
 const store = (): UiStore =>
@@ -269,12 +275,75 @@ describe("connectStore", () => {
     api.emit({ kind: "coreClosed", restarting: true });
 
     api.emit({ kind: "coreRestarted" });
-    api.fail(new Error("[closed] gone again"));
+    api.fail(new Error("[timeout] no answer"));
     await settle();
 
-    expect(errors).toEqual(["[closed] gone again"]);
+    expect(errors).toEqual(["[timeout] no answer"]);
     expect(s.getState()).toMatchObject({ coreClosed: false, coreGeneration: 1 });
     expect(states(s)).toEqual([["a", "Detached"]]);
+  });
+
+  it("stays disconnected when the new core dies while its list is out (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    // The main process reports the end before the rejected list (limit reached: no restart follows).
+    api.emit({ kind: "coreClosed", restarting: false });
+    api.fail(new Error("[closed] Connection closed"));
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreRestarting: false, coreGeneration: 0 });
+  });
+
+  it("does not raise the generation when the list fails with closed before the event (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    api.fail(new Error("[closed] Connection closed"));
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: true, coreGeneration: 0 });
+  });
+
+  it("applies only the list and the held events of the latest of two overlapping reloads (#130)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([session("a")]);
+    await connection.ready;
+    api.emit({ kind: "coreClosed", restarting: true });
+
+    api.emit({ kind: "coreRestarted" });
+    const answerFirst = api.takeAnswer();
+    api.emit({ kind: "coreClosed", restarting: true });
+    api.emit({ kind: "coreRestarted" });
+    // An event of the latest core, held until its list.
+    api.emit({ kind: "stateChanged", sessionId: "bb", state: "Running" });
+    // The first, stale list arrives late: it must neither apply nor switch the events through to the store.
+    answerFirst([session("a", "Interrupted"), session("zzz")]);
+    await settle();
+    expect(s.getState().coreGeneration).toBe(0);
+    api.emit({ kind: "sessionCreated", session: session("ccc") });
+
+    api.answer([session("a"), session("bb")]);
+    await settle();
+
+    expect(s.getState()).toMatchObject({ coreClosed: false, coreGeneration: 1 });
+    expect(states(s)).toEqual([
+      ["a", "Detached"],
+      ["bb", "Running"],
+      ["ccc", "Detached"],
+    ]);
   });
 
   it("ignores output events", async () => {

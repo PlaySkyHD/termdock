@@ -1,10 +1,10 @@
 // Archive and delete against real WSL and tmux (issue #57): no tmux session outlives an archived or deleted
-// session. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI); socket `termdock-test`.
+// session. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI); own socket `termdock-test-<pid>-<nonce>`.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { SessionInfo } from "@termdock/protocol";
 import { runWsl } from "./backend/wsl/processes.js";
 import { runCore } from "./bin/run-core.js";
@@ -12,14 +12,17 @@ import type { RunCoreResult } from "./bin/run-core.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
 import { historyDir } from "./storage/history-store.js";
+import { cleanStaleWslTestServers, killWslTestServer, wslTestSocket } from "./test/wsl-socket.js";
 
-const SOCKET = "termdock-test";
+// A socket of its own: parallel runs (other worktrees) must not remove our sessions (#147).
+const SOCKET = wslTestSocket();
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
 
 const cores: RunCoreResult[] = [];
 const clients: CoreClient[] = [];
 const tempDirs: string[] = [];
 const distros = new Set<string>();
+const usedDistros = new Set<string>();
 
 async function tmux(distro: string, args: string[]) {
   return runWsl(["-d", distro, "--cd", "~", "--exec", "tmux", "-L", SOCKET, ...args], { timeoutMs: 15_000 });
@@ -75,6 +78,14 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
     return dir;
   }
 
+  afterAll(async () => {
+    // The socket belongs to this file alone: end its server, then the servers of aborted runs.
+    for (const distro of usedDistros) {
+      await killWslTestServer(distro, SOCKET).catch(() => {});
+      await cleanStaleWslTestServers(distro);
+    }
+  });
+
   afterEach(async () => {
     for (const c of clients.splice(0)) await c.close();
     for (const core of cores.splice(0)) await core.close?.();
@@ -84,6 +95,7 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
         await tmux(distro, ["kill-session", "-t", `=${name}`]);
       }
     }
+    for (const distro of distros) usedDistros.add(distro);
     distros.clear();
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });

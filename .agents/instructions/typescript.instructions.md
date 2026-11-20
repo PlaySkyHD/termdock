@@ -36,4 +36,4 @@ Stack: Node 22+ (lokal 25), TypeScript strict, npm Workspaces, Vitest, ESLint, P
 
 - Vitest, Tests neben dem Code unter `src/**/*.test.ts`.
 - Verhalten über die öffentliche Schnittstelle des Pakets testen (Skill `tdd`). Backends über `FakeBackend` ersetzen, nicht interne Klassen mocken.
-- Jeder Test räumt tmux-Sessions (Socket `-L termdock-test`), Pipes und Temp-Verzeichnisse selbst auf.
+- Jeder Test räumt tmux-Sessions (eigener Socket je Testdatei aus `packages/core/src/test/wsl-socket.ts`, `-L termdock-test-<pid>-<nonce>`), Pipes und Temp-Verzeichnisse selbst auf.

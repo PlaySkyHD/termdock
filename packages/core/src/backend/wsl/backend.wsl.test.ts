@@ -1,11 +1,13 @@
 // Integration tests against a real WSL distro with tmux. Only with TERMDOCK_WSL_TESTS=1 (local, not in CI).
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { LaunchSpec } from "@termdock/protocol";
 import type { PtyHandle } from "../types.js";
 import { WslBackend } from "./backend.js";
+import { cleanStaleWslTestServers, killWslTestServer, wslTestSocket } from "../../test/wsl-socket.js";
 import { runWsl } from "./processes.js";
 
-const SOCKET = "termdock-test";
+// A socket of its own: parallel runs (other worktrees) must not remove our sessions (#147).
+const SOCKET = wslTestSocket();
 const enabled = process.env.TERMDOCK_WSL_TESTS === "1";
 const decoder = new TextDecoder();
 
@@ -51,6 +53,13 @@ describe.skipIf(!enabled)("WslBackend against WSL", () => {
     const probe = new WslBackend({ socket: SOCKET });
     distro = process.env.TERMDOCK_WSL_DISTRO ?? (await probe.distros()).defaultDistro ?? "Ubuntu";
     probe.dispose();
+  });
+
+  afterAll(async () => {
+    // The socket belongs to this file alone: end its server, then the servers of aborted runs.
+    if (distro === undefined) return;
+    await killWslTestServer(distro, SOCKET).catch(() => {});
+    await cleanStaleWslTestServers(distro);
   });
 
   afterEach(async () => {

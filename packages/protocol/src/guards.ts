@@ -779,6 +779,8 @@ const PARAMS_CHECK: Record<Method, Check> = {
     optional(obj, "baseRevision", path, isNonNegativeInteger);
   },
   "wsl.distros": checkEmptyParams,
+  // Like the phase-3 requests: unknown fields are refused (#156).
+  "session.restart": idOnly("sessionId"),
 };
 
 const RESULT_CHECK: Record<Method, Check> = {
@@ -817,6 +819,7 @@ const RESULT_CHECK: Record<Method, Check> = {
   "layout.save": (value, path) =>
     isNonNegativeInteger(present(record(value, path), "revision", path), `${path}.revision`),
   "wsl.distros": checkWslDistros,
+  "session.restart": wrapped("session", checkSessionInfo),
 };
 
 const EVENT_CHECK: Record<EventName, Check> = {

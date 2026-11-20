@@ -219,3 +219,107 @@ describe("session management over IPC (issue #57)", () => {
     expect((await client.request("session.list", {})).result.sessions.map((s) => s.id)).toEqual([kept.id]);
   });
 });
+
+describe("session.restart over IPC (issue #156)", () => {
+  /** A session whose start failed: `Interrupted`, as after a Windows restart or a WSL stop. */
+  async function interruptedSession(client: CoreClient, backend: FakeBackend, workspaceId: string) {
+    backend.failNextStart = new Error("WSL is not reachable");
+    expect(await errorCode(client.request("session.create", { name: "build", launch, workspaceId }))).toBe(
+      "backend_unavailable",
+    );
+    const [session] = (await client.request("session.list", {})).result.sessions;
+    expect(session?.state).toBe("Interrupted");
+    return session!;
+  }
+
+  it("restarts an interrupted session with its id, launch spec and workspace and reports the states", async () => {
+    const { backend, pipePath } = await startCore(tempDataDir());
+    const client = await newClient(pipePath);
+    const lister = await newClient(pipePath);
+    await lister.request("session.list", {});
+    const w1 = (await client.request("workspace.create", { name: "Eins" })).result.workspace.id;
+    const session = await interruptedSession(client, backend, w1);
+    const states: string[] = [];
+    lister.on("session.stateChanged", ({ sessionId, state }) => {
+      if (sessionId === session.id) states.push(state);
+    });
+    const starts = backend.starts.length;
+
+    const { result } = await client.request("session.restart", { sessionId: session.id });
+
+    expect(result.session).toMatchObject({
+      id: session.id,
+      name: "build",
+      launch: session.launch,
+      workspaceId: w1,
+      state: "Detached",
+    });
+    expect(backend.starts.slice(starts)).toEqual([
+      { id: session.id, spec: session.launch, size: session.size },
+    ]);
+    await expect.poll(() => states).toEqual(["Starting", "Running", "Detached"]);
+    expect((await client.request("session.list", {})).result.sessions).toHaveLength(1);
+  });
+
+  it("refuses a running, detached or unknown session and starts nothing", async () => {
+    const { backend, pipePath } = await startCore(tempDataDir());
+    const client = await newClient(pipePath);
+    const session = await createSession(client);
+    await client.request("session.attach", { sessionId: session.id });
+    expect((await client.request("session.list", {})).result.sessions[0]?.state).toBe("Running");
+    const other = await createSession(client);
+
+    expect(await errorCode(client.request("session.restart", { sessionId: session.id }))).toBe(
+      "invalid_state",
+    );
+    expect(await errorCode(client.request("session.restart", { sessionId: other.id }))).toBe("invalid_state");
+    expect(await errorCode(client.request("session.restart", { sessionId: "nope" }))).toBe("not_found");
+    expect(backend.starts).toHaveLength(2);
+    expect(backend.pty(session.id).disposed).toBe(false);
+  });
+
+  it("starts once for two requests that do not wait for each other", async () => {
+    const { backend, pipePath } = await startCore(tempDataDir());
+    const a = await newClient(pipePath);
+    const b = await newClient(pipePath);
+    const session = await createSession(a);
+    backend.pty(session.id).emitExit(0);
+    await expect
+      .poll(async () => (await a.request("session.list", {})).result.sessions[0]?.state)
+      .toBe("Exited");
+
+    const outcomes = await Promise.allSettled([
+      a.request("session.restart", { sessionId: session.id }),
+      b.request("session.restart", { sessionId: session.id }),
+    ]);
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === "fulfilled");
+    const rejected = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []));
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toBeInstanceOf(IpcError);
+    expect((rejected[0] as IpcError).code).toBe("invalid_state");
+    expect(backend.starts).toHaveLength(2);
+  });
+
+  it("keeps the history and marks the new run with a separator line", async () => {
+    const { backend, pipePath } = await startCore(tempDataDir());
+    const client = await newClient(pipePath);
+    const session = await createSession(client);
+    backend.pty(session.id).emitData("erster Lauf\r\n");
+    backend.pty(session.id).emitExit(0);
+    await expect
+      .poll(async () => (await client.request("session.list", {})).result.sessions[0]?.state)
+      .toBe("Exited");
+
+    await client.request("session.restart", { sessionId: session.id });
+    backend.pty(session.id).emitData("zweiter Lauf\r\n");
+
+    const lines = async (query: string) =>
+      (await client.request("history.search", { query })).result.hits.map((hit) => hit.line);
+    // Newest hit first: both runs are in the one history of the session.
+    await expect.poll(() => lines("Lauf")).toEqual(["zweiter Lauf", "erster Lauf"]);
+    const [separator] = await lines("Neu gestartet");
+    expect(separator).toMatch(/^--- Neu gestartet \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z ---$/);
+  });
+});

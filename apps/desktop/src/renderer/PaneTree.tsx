@@ -12,6 +12,7 @@ import type {
 } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
+import { failureText } from "./dialog-state.js";
 import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
@@ -378,6 +379,10 @@ function PaneView({
   useEffect(() => {
     if (attachable) setAttached(true);
   }, [attachable]);
+  const [restarting, setRestarting] = useState(false);
+  // Stays until the next click: a failed restart changes the state itself (Starting, Interrupted), and a restart that
+  // worked replaces the placeholder with the view (review PR #156).
+  const [restartError, setRestartError] = useState<string>();
 
   if (attached || attachable) {
     return (
@@ -396,6 +401,16 @@ function PaneView({
     );
   }
   const content = paneContent(session, sessionsLoaded);
+  // "Neu starten" (#156): once the session lives again, the pane attaches like after any start.
+  const restart = (): void => {
+    if (restarting) return;
+    setRestarting(true);
+    setRestartError(undefined);
+    api
+      .restartSession(sessionId)
+      .catch((error: unknown) => setRestartError(failureText(error)))
+      .finally(() => setRestarting(false));
+  };
   if (content.kind !== "placeholder")
     return (
       <div className="empty-state" data-view="loading">
@@ -413,9 +428,27 @@ function PaneView({
         <dt>Letzter Exit-Code</dt>
         <dd data-fact="exit-code">{content.exitCode}</dd>
       </dl>
-      <button className="button" type="button" data-action="close-pane-placeholder" onClick={onClosePane}>
-        Pane schließen
-      </button>
+      {restartError !== undefined && (
+        <p className="empty-state__error" role="alert" data-restart-error="">
+          {restartError}
+        </p>
+      )}
+      <div className="placeholder-actions">
+        {content.restartable && (
+          <button
+            className="button button--primary"
+            type="button"
+            data-action="restart-session"
+            disabled={restarting}
+            onClick={restart}
+          >
+            Neu starten
+          </button>
+        )}
+        <button className="button" type="button" data-action="close-pane-placeholder" onClick={onClosePane}>
+          Pane schließen
+        </button>
+      </div>
     </div>
   );
 }

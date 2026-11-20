@@ -814,6 +814,12 @@ input {
   color: var(--td-foreground);
 }
 
+/* "Neu starten" (#156) next to "Pane schließen". */
+.placeholder-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* --- Status bar ------------------------------------------------------------------------------ */
 
 .status-bar {

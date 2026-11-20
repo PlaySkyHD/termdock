@@ -47,6 +47,7 @@ const api: TermdockApi = {
   updateSession: (sessionId, change) => call({ method: "updateSession", sessionId, ...change }),
   archiveSession: async (sessionId) => void (await call({ method: "archiveSession", sessionId })),
   deleteSession: async (sessionId) => void (await call({ method: "deleteSession", sessionId })),
+  restartSession: async (sessionId) => void (await call({ method: "restartSession", sessionId })),
   windowLayout: () => call({ method: "windowLayout" }),
   reportLayout: async (window) => void (await call({ method: "reportLayout", window })),
   answerQuit: async (requestId, { choice, remember }) =>

@@ -48,6 +48,8 @@ export interface SidebarActions {
   renameSession(sessionId: SessionId, name: string): Promise<void>;
   archiveSession(sessionId: SessionId): Promise<void>;
   deleteSession(sessionId: SessionId): Promise<void>;
+  /** "Neu starten" of an ended or interrupted session (#156). */
+  restartSession(sessionId: SessionId): Promise<void>;
   createWorkspace(name: string): Promise<void>;
   renameWorkspace(workspaceId: string, name: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
@@ -241,6 +243,11 @@ export function Sidebar(props: SidebarProps) {
         return;
       case "delete":
         remove(session);
+        return;
+      case "restart":
+        // The row stays where it is; its state follows the core's events, a refusal goes to the status bar.
+        setPendingFocus(sessionFocus(session.id));
+        quietly(actions.restartSession(session.id));
         return;
     }
   };

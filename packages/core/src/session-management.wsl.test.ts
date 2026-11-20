@@ -268,4 +268,56 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
     expect(existsSync(history)).toBe(false);
     expect((await c.request("session.list", {})).result.sessions).toEqual([]);
   }, 120_000);
+
+  it("restarts an Interrupted session in a new tmux session, and re-attaches one that still lives (issue #156)", async () => {
+    freshDataDir();
+    await startCore();
+    const c1 = await client();
+    const session = await create(c1);
+    const distro = session.launch.distro!;
+    await waitFor(() => hasSession(distro, session.id), "tmux session");
+    // As after a Windows restart: the core ends without stop, the tmux session is lost meanwhile.
+    await c1.close();
+    await cores.pop()!.close?.();
+    expect((await tmux(distro, ["kill-session", "-t", `=td-${session.id}`])).code).toBe(0);
+    await startCore();
+    const c2 = await client();
+    expect((await c2.request("session.list", {})).result.sessions[0]?.state).toBe("Interrupted");
+    const tmuxSessions = async () =>
+      (await tmux(distro, ["list-sessions", "-F", "#{session_name}"])).stdout
+        .split("\n")
+        .filter((name) => name === `td-${session.id}`).length;
+    const panePid = async () =>
+      (
+        await tmux(distro, ["display-message", "-p", "-t", `=td-${session.id}:`, "#{pane_pid}"])
+      ).stdout.trim();
+
+    const restarted = (await c2.request("session.restart", { sessionId: session.id })).result.session;
+
+    expect(restarted).toMatchObject({ id: session.id, launch: session.launch, state: "Detached" });
+    expect(await tmuxSessions()).toBe(1);
+    await waitFor(
+      async () => (await c2.request("history.search", { query: "Neu gestartet" })).result.hits.length === 1,
+      "the separator line in the history",
+    );
+
+    // Lost again while the core runs, then a tmux session under its name turns up (a late client): the restart
+    // takes it over instead of starting a second one.
+    expect((await tmux(distro, ["kill-session", "-t", `=td-${session.id}`])).code).toBe(0);
+    await waitFor(
+      async () => (await c2.request("session.list", {})).result.sessions[0]?.state === "Interrupted",
+      "the session to become Interrupted",
+    );
+    expect((await tmux(distro, ["new-session", "-d", "-s", `td-${session.id}`, "sleep", "600"])).code).toBe(
+      0,
+    );
+    const pid = await panePid();
+    expect(pid).toMatch(/^\d+$/);
+
+    await c2.request("session.restart", { sessionId: session.id });
+
+    expect(await tmuxSessions()).toBe(1);
+    expect(await panePid()).toBe(pid);
+    expect((await c2.request("session.list", {})).result.sessions[0]?.state).toBe("Detached");
+  }, 120_000);
 });

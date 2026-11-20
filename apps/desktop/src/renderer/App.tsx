@@ -147,6 +147,7 @@ export function App({ api }: { api: TermdockApi }) {
       renameSession: async (sessionId, name) =>
         store.mergeSessionUpdate(await api.updateSession(sessionId, { name })),
       archiveSession: (sessionId) => api.archiveSession(sessionId),
+      restartSession: (sessionId) => api.restartSession(sessionId),
       deleteSession: async (sessionId) => {
         await api.deleteSession(sessionId);
         store.sessionRemoved(sessionId);

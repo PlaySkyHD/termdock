@@ -1008,6 +1008,83 @@ describe("SessionRegistry: restart", () => {
     expect(registry.get(id).state).toBe("Interrupted");
   });
 
+  it("writes a separator line as the first output of the new run (issue #156)", async () => {
+    const now = new Date("2026-11-20T08:00:00.000Z");
+    const { registry, backend } = setup({ now: () => now });
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    await registry.attachView(id, "view-a");
+    backend.pty(id).emitData("alt");
+    backend.pty(id).emitExit(0);
+    const outputs: Array<{ seq: number; data: string; viewIds: readonly string[]; fromRedraw: boolean }> = [];
+    registry.onOutput((e) =>
+      outputs.push({
+        seq: e.seq,
+        data: new TextDecoder().decode(e.data),
+        viewIds: e.viewIds,
+        fromRedraw: e.fromRedraw,
+      }),
+    );
+
+    await registry.restart(id);
+    backend.pty(id).emitData("neu");
+
+    const separator = "\r\n--- Neu gestartet 2026-11-20T08:00:00.000Z ---\r\n";
+    expect(outputs).toEqual([
+      { seq: 2, data: separator, viewIds: ["view-a"], fromRedraw: false },
+      { seq: 3, data: "neu", viewIds: ["view-a"], fromRedraw: false },
+    ]);
+    // The old output is gone, the buffer starts with the separator (the fallback snapshot of a new view).
+    const { snapshot } = await registry.attachView(id, "view-b");
+    expect(new TextDecoder().decode(snapshot.data)).toBe(`${separator}neu`);
+  });
+
+  it("writes no separator when the restart re-attaches a backend session that runs on", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitExit();
+    await settle();
+    backend.setExists(id, true);
+    const outputs: string[] = [];
+    registry.onOutput((e) => outputs.push(new TextDecoder().decode(e.data)));
+
+    await registry.restart(id);
+    backend.pty(id).emitData("weiter");
+
+    expect(backend.starts).toHaveLength(1);
+    expect(outputs).toEqual(["weiter"]);
+  });
+
+  it("writes no separator when the restart fails", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitExit(0);
+    backend.failNextStart = new Error("gone");
+    const outputs: string[] = [];
+    registry.onOutput((e) => outputs.push(new TextDecoder().decode(e.data)));
+
+    await expect(registry.restart(id)).rejects.toMatchObject({ code: "backend_unavailable" });
+
+    expect(outputs).toEqual([]);
+  });
+
+  it("starts once when restart is called twice without waiting (issue #156)", async () => {
+    const { registry, backend, states } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitExit(0);
+    states.length = 0;
+
+    const results = await Promise.allSettled([registry.restart(id), registry.restart(id)]);
+
+    expect(results[0]).toMatchObject({ status: "fulfilled", value: { id, state: "Detached" } });
+    expect(results[1]).toMatchObject({ status: "rejected", reason: { code: "invalid_state" } });
+    expect(backend.starts).toHaveLength(2);
+    expect(states.map((s) => `${s.from}->${s.to}`)).toEqual([
+      "Exited->Starting",
+      "Starting->Running",
+      "Running->Detached",
+    ]);
+  });
+
   it.each([["Detached"], ["Archived"]] as const)(
     "rejects restart from %s with invalid_state",
     async (state) => {

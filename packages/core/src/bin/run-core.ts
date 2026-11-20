@@ -284,7 +284,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       onInternalError: (error) => log(`internal error: ${detailOf(error)}`),
     });
   } catch (error) {
-    for (const backend of ownBackends) backend.dispose();
+    // No session is known yet, so there is nothing to hand over.
+    for (const backend of ownBackends) void backend.dispose();
     if (error instanceof AlreadyRunningError) {
       // Only on stderr: a second core must not create or touch the data directory (ADR 0001), and the log
       // file belongs to the core that runs.
@@ -315,7 +316,8 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
       await server.close();
       // Also stops a reconcile still running: it changes and saves nothing more and releases late PTYs.
       registry.dispose();
-      for (const backend of ownBackends) backend.dispose();
+      // Hands the WSL keepalives over (issue #140); the process must not exit before a keepalive runs.
+      await Promise.all(ownBackends.map((backend) => backend.dispose()));
       // Queued output is written before the process may end.
       await history?.dispose();
       storage?.dispose();

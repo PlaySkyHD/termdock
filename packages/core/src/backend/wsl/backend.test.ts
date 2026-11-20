@@ -307,6 +307,27 @@ describe("WslBackend", () => {
     expect(running().sort()).toEqual(["Debian", "Ubuntu"]);
   });
 
+  it("starts the keepalive only after the PTY of tmux, so the tmux server exists (review PR #148)", async () => {
+    const order: string[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async (args) => (args.includes("display-message") ? missing : ok()),
+      spawnPty: () => {
+        order.push("pty");
+        return new FakePtyProcess();
+      },
+      spawnKeepalive: () => {
+        order.push("keepalive");
+        return { kill: () => {}, onExit: () => {} };
+      },
+    });
+    await backend.start("s1", spec, { cols: 80, rows: 24 });
+    await flush();
+    expect(order).toEqual(["pty", "keepalive"]);
+    await backend.dispose();
+  });
+
   it("ends left-behind keepalives of its socket once per distro before its first keepalive (issue #140)", async () => {
     const { backend, calls, running } = setup({ distro: "Ubuntu" });
     await backend.start("s1", spec, { cols: 80, rows: 24 });

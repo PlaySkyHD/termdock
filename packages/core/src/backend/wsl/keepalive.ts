@@ -31,7 +31,12 @@ export interface KeepaliveOptions {
   now?: () => number;
   /** Runs once per distro before its first keepalive starts; a rejection does not stop the start. */
   takeOver?: KeepaliveTakeOver;
+  /** A keepalive started by `dispose` that ends sooner is started once more. Default 1 s. */
+  handOverGraceMs?: number;
 }
+
+/** Starts of a keepalive during `dispose` for one distro. */
+const HAND_OVER_ATTEMPTS = 2;
 
 /**
  * One keepalive process per distro with at least one known session; restarted if it dies unexpectedly. Before the
@@ -42,7 +47,9 @@ export class DistroKeepalive {
   /** Per distro the take-over of left-behind keepalives this instance started; `done` once it settled. */
   private readonly takeOvers = new Map<string, { done: boolean; promise: Promise<void> }>();
   private disposed = false;
+  private handingOver: Promise<void> | undefined;
 
+  private readonly handOverGraceMs: number;
   private readonly maxDelayMs: number;
   private readonly stableMs: number;
   private readonly now: () => number;
@@ -57,6 +64,7 @@ export class DistroKeepalive {
     this.stableMs = options.stableMs ?? 30_000;
     this.now = options.now ?? Date.now;
     this.takeOver = options.takeOver;
+    this.handOverGraceMs = options.handOverGraceMs ?? 1_000;
   }
 
   /** Marks `session` as known in `distro`; starts the keepalive for the first one. */
@@ -92,16 +100,52 @@ export class DistroKeepalive {
 
   /**
    * Hands the keepalives over (issue #140): running ones keep running, so the tmux sessions survive until the next
-   * core takes them over or the tmux server ends; nothing is started or restarted any more.
+   * core takes them over or the tmux server ends. A distro with sessions but no running keepalive (restart pending,
+   * take-over still running) gets one now, after its take-over; one that ends within `handOverGraceMs` (tmux server
+   * not there yet) is started once more. Resolves when that is done; the core must not exit before. Afterwards
+   * nothing is started or restarted any more. Idempotent.
    */
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.handingOver) return this.handingOver;
     this.disposed = true;
-    for (const entry of this.entries.values()) {
+    const work: Promise<void>[] = [];
+    for (const [distro, entry] of this.entries) {
       if (entry.restartTimer) clearTimeout(entry.restartTimer);
       entry.restartTimer = undefined;
+      if (entry.sessions.size > 0) work.push(this.handOver(distro, entry, entry.process));
       entry.process = undefined;
     }
     this.entries.clear();
+    this.handingOver = Promise.all(work).then(() => {});
+    return this.handingOver;
+  }
+
+  /** Makes sure a keepalive of `distro` runs when the core ends; `current` is the one running now, if any. */
+  private async handOver(distro: string, entry: Entry, current: KeepaliveProcess | undefined): Promise<void> {
+    // A keepalive younger than the grace time may still end because the tmux server is not there yet.
+    if (current && (await this.survives(current, entry.startedAt + this.handOverGraceMs - this.now())))
+      return;
+    if (entry.takingOver) await this.takeOvers.get(distro)?.promise;
+    for (let attempt = 0; attempt < HAND_OVER_ATTEMPTS; attempt++) {
+      let process: KeepaliveProcess;
+      try {
+        process = this.spawn(distro);
+      } catch {
+        continue;
+      }
+      if (await this.survives(process, this.handOverGraceMs)) return;
+    }
+  }
+
+  /** True when `process` still runs after `ms`. */
+  private survives(process: KeepaliveProcess, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(true), Math.max(0, ms));
+      process.onExit(() => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
   }
 
   /** First launch for `entry`: once per distro, after the left-behind keepalives were ended. */

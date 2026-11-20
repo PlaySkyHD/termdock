@@ -128,7 +128,7 @@ Solange das Backend mindestens eine Session einer Distro kennt (gestartet, angeh
 #### Scenario: Core wird hart beendet
 
 - **GIVEN** ein Core mit einer laufenden WSL-Session und ihrem Keepalive
-- **WHEN** der Core-Prozess ohne `core.shutdown` beendet wird (Update, Task-Manager) und 30 s vergehen
+- **WHEN** der Core-Prozess ohne `core.shutdown` beendet wird (Update, „Task beenden“ im Task-Manager, Absturz) und 30 s vergehen
 - **THEN** läuft derselbe Keepalive-Prozess weiter und die tmux-Session existiert
 
 #### Scenario: Verwaister Keepalive endet mit dem tmux-Server
@@ -139,7 +139,7 @@ Solange das Backend mindestens eine Session einer Distro kennt (gestartet, angeh
 
 ### Requirement: Keepalive-Neustart und Abbau
 
-Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit exponentiell wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Nach dem Schließen des Backends MUST jeder laufende Keepalive weiterlaufen und keiner mehr starten.
+Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sind, SHALL das Backend ihn neu starten, mit exponentiell wachsender Wartezeit (1 s, 2 s, … höchstens 60 s), die nach einer Laufzeit von mehr als 30 s zurückgesetzt wird. Lässt sich der Zustand einer Session nach dem Ende ihres tmux-Clients nicht feststellen, MUST das Backend sie im Keepalive freigeben. Das Schließen MUST je Distro mit bekannten Sessions einen laufenden Keepalive hinterlassen; danach startet keiner mehr.
 
 #### Scenario: Keepalive stirbt
 
@@ -158,6 +158,18 @@ Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sin
 - **GIVEN** laufende Keepalives
 - **WHEN** das Backend geschlossen wird
 - **THEN** laufen sie weiter, und weder ein Neustart noch eine neue Session startet danach einen Keepalive
+
+#### Scenario: Schließen während ein Neustart wartet
+
+- **GIVEN** eine bekannte Session, deren Keepalive gerade geendet hat (etwa „no server running“), und ein wartender Neustart
+- **WHEN** das Backend geschlossen wird
+- **THEN** startet es sofort einen Keepalive, und das Schließen ist erst danach fertig
+
+#### Scenario: Schließen während der Übernahme
+
+- **GIVEN** eine bekannte Session und eine laufende Übernahme, deren `pkill` den alten Keepalive schon beendet haben kann
+- **WHEN** das Backend geschlossen wird
+- **THEN** startet es nach dem Ende der Übernahme genau einen Keepalive, und das Schließen ist erst danach fertig
 
 ### Requirement: Verfügbarkeit und Distro
 

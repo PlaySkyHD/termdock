@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runWsl } from "./backend/wsl/processes.js";
 import { connect } from "./ipc/client.js";
 import type { CoreClient } from "./ipc/client.js";
@@ -22,7 +22,7 @@ const KEEPALIVE = `tmux -L ${SOCKET} wait-for termdock-keepalive`;
 
 describe.skipIf(!enabled)("WSL keepalive after the end of the core (issue #140)", () => {
   const pipePath = `\\\\.\\pipe\\termdock-keepalive-test-${randomUUID()}`;
-  const dataDir = mkdtempSync(join(tmpdir(), "termdock-keepalive-"));
+  let dataDir = "";
   const cores: ChildProcess[] = [];
   const clients: CoreClient[] = [];
   let distro: string | undefined;
@@ -82,6 +82,10 @@ describe.skipIf(!enabled)("WSL keepalive after the end of the core (issue #140)"
       await sleep(250);
     }
   }
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "termdock-keepalive-"));
+  });
 
   afterEach(async () => {
     for (const client of clients.splice(0)) client.close();
@@ -156,4 +160,26 @@ describe.skipIf(!enabled)("WSL keepalive after the end of the core (issue #140)"
     await waitFor(async () => (await keepalives()) === 0, "no keepalive after stopSessions");
     expect((await tmux(["has-session", "-t", name])).code).not.toBe(0);
   }, 180_000);
+
+  it("ends a left-behind keepalive together with the tmux server (review PR #148)", async () => {
+    expect(existsSync(ENTRY), `${ENTRY} missing: run npm run typecheck first`).toBe(true);
+    const client = await startCore();
+    const { session } = (
+      await client.request("session.create", { name: "orphan", launch: { backend: "wsl", cwd: "/tmp" } })
+    ).result;
+    distro = session.launch.distro!;
+    const name = `=td-${session.id}`;
+    await waitFor(async () => (await tmux(["has-session", "-t", name])).code === 0, "the tmux session");
+    await waitFor(async () => (await keepalives()) === 1, "the keepalive");
+    await killCore();
+    expect(await keepalives()).toBe(1);
+
+    // The only session of the socket ends without a core: the server exits and wakes its waiting clients first.
+    expect((await tmux(["kill-session", "-t", name])).code).toBe(0);
+    await waitFor(
+      async () => (await keepalives()) === 0,
+      "the keepalive to end with the tmux server",
+      15_000,
+    );
+  }, 120_000);
 });

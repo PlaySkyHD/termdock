@@ -11,6 +11,7 @@ import type { NameField } from "./Dialogs.js";
 import { useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
+import { restartFromMenu } from "./restart-session.js";
 import { NO_GROUP_LABEL, stateText } from "./session-display.js";
 import {
   ARCHIVE_TARGET,
@@ -247,7 +248,7 @@ export function Sidebar(props: SidebarProps) {
       case "restart":
         // The row stays where it is; its state follows the core's events, a refusal goes to the status bar.
         setPendingFocus(sessionFocus(session.id));
-        quietly(actions.restartSession(session.id));
+        void restartFromMenu(() => actions.restartSession(session.id), onNotice);
         return;
     }
   };

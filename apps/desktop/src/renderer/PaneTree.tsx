@@ -12,7 +12,8 @@ import type {
 } from "react";
 import type { LayoutTab, SessionId, SessionInfo } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
-import { failureText } from "./dialog-state.js";
+import { RESTART_IDLE, restartFromPlaceholder } from "./restart-session.js";
+import type { RestartStatus } from "./restart-session.js";
 import { DROP_TARGET_ATTRIBUTE, DROP_ZONES_ATTRIBUTE, useDrag } from "./drag/DragProvider.js";
 import { EDGE_SHARE, zonePreview } from "./drag/drop-zones.js";
 import type { KeyCommands } from "./keymap.js";
@@ -379,10 +380,9 @@ function PaneView({
   useEffect(() => {
     if (attachable) setAttached(true);
   }, [attachable]);
-  const [restarting, setRestarting] = useState(false);
-  // Stays until the next click: a failed restart changes the state itself (Starting, Interrupted), and a restart that
-  // worked replaces the placeholder with the view (review PR #156).
-  const [restartError, setRestartError] = useState<string>();
+  // A refusal stays until the next click: a failed restart changes the state itself (Starting, Interrupted), and a
+  // restart that worked replaces the placeholder with the view (review PR #156).
+  const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);
 
   if (attached || attachable) {
     return (
@@ -402,15 +402,9 @@ function PaneView({
   }
   const content = paneContent(session, sessionsLoaded);
   // "Neu starten" (#156): once the session lives again, the pane attaches like after any start.
-  const restart = (): void => {
-    if (restarting) return;
-    setRestarting(true);
-    setRestartError(undefined);
-    api
-      .restartSession(sessionId)
-      .catch((error: unknown) => setRestartError(failureText(error)))
-      .finally(() => setRestarting(false));
-  };
+  const restart = (): void =>
+    void restartFromPlaceholder(restartStatus, () => api.restartSession(sessionId), setRestartStatus);
+  const restartError = restartStatus.error;
   if (content.kind !== "placeholder")
     return (
       <div className="empty-state" data-view="loading">
@@ -439,7 +433,7 @@ function PaneView({
             className="button button--primary"
             type="button"
             data-action="restart-session"
-            disabled={restarting}
+            disabled={restartStatus.running}
             onClick={restart}
           >
             Neu starten

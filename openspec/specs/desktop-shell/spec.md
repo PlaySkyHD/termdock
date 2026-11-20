@@ -1822,6 +1822,18 @@ Der Platzhalter eines Panes SHALL bei `Interrupted` und `Exited` den Knopf „Ne
 - **WHEN** der Benutzer im Platzhalter „Neu starten“ gewählt hat
 - **THEN** zeigt der Platzhalter die Meldung, und der Knopf ist wieder wählbar
 
+#### Scenario: Ablehnung im Menü
+
+- **GIVEN** der Core lehnt den Neustart mit `backend_unavailable` ab
+- **WHEN** der Benutzer im Kontextmenü der Sidebar „Neu starten“ gewählt hat
+- **THEN** zeigt die Statusleiste die Meldung des Core
+
+#### Scenario: Kalte Distro
+
+- **GIVEN** WSL startet die Distro nach einem Windows-Neustart erst
+- **WHEN** der Main `session.restart` sendet
+- **THEN** wartet er so lange wie bei `session.create` statt nach 10 s mit `timeout` abzubrechen
+
 #### Scenario: Ungültiger Aufruf
 
 - **WHEN** ein Renderer `restartSession` ohne oder mit leerer ID sendet

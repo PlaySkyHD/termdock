@@ -171,6 +171,12 @@ Endet ein Keepalive unerwartet, während noch Sessions seiner Distro bekannt sin
 - **WHEN** das Backend geschlossen wird
 - **THEN** startet es sofort einen Keepalive, und das Schließen ist erst danach fertig
 
+#### Scenario: Schließen während ein Start läuft
+
+- **GIVEN** ein `start`, dessen PTY gerade gestartet wird
+- **WHEN** das Backend geschlossen wird
+- **THEN** hinterlässt es für die Session einen laufenden Keepalive, und ein späteres `start` scheitert vor seiner PTY
+
 #### Scenario: Schließen während der Übernahme
 
 - **GIVEN** eine bekannte Session und eine laufende Übernahme, deren `pkill` den alten Keepalive schon beendet haben kann

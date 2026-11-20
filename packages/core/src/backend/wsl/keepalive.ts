@@ -67,8 +67,12 @@ export class DistroKeepalive {
     this.handOverGraceMs = options.handOverGraceMs ?? 1_000;
   }
 
-  /** Marks `session` as known in `distro`; starts the keepalive for the first one. */
-  retain(distro: string, session: string): void {
+  /**
+   * Marks `session` as known in `distro`; starts the keepalive for the first one. With `deferStart` the start waits
+   * for `start(distro)`, e.g. until the PTY of a new session runs, but `dispose` already hands a keepalive over for
+   * the session (review PR #148).
+   */
+  retain(distro: string, session: string, options: { deferStart?: boolean } = {}): void {
     if (this.disposed) return;
     let entry = this.entries.get(distro);
     if (!entry) {
@@ -83,6 +87,13 @@ export class DistroKeepalive {
       this.entries.set(distro, entry);
     }
     entry.sessions.add(session);
+    if (!options.deferStart) this.start(distro);
+  }
+
+  /** Starts the keepalive of `distro` if it has known sessions and none runs, restarts or waits for a take-over. */
+  start(distro: string): void {
+    const entry = this.entries.get(distro);
+    if (this.disposed || !entry || entry.sessions.size === 0) return;
     if (!entry.process && !entry.restartTimer && !entry.takingOver) this.begin(distro, entry);
   }
 
@@ -101,9 +112,10 @@ export class DistroKeepalive {
   /**
    * Hands the keepalives over (issue #140): running ones keep running, so the tmux sessions survive until the next
    * core takes them over or the tmux server ends. A distro with sessions but no running keepalive (restart pending,
-   * take-over still running) gets one now, after its take-over; one that ends within `handOverGraceMs` (tmux server
-   * not there yet) is started once more. Resolves when that is done; the core must not exit before. Afterwards
-   * nothing is started or restarted any more. Idempotent.
+   * take-over still running, start deferred) gets one now, after its take-over; if it ends within `handOverGraceMs`
+   * (tmux server not there yet), it is started up to twice. Resolves when that is done, at the latest after the
+   * take-over (its command timeout) plus three grace times; the core must not exit before. Afterwards nothing is
+   * started or restarted any more. Idempotent.
    */
   dispose(): Promise<void> {
     if (this.handingOver) return this.handingOver;
@@ -125,7 +137,9 @@ export class DistroKeepalive {
     // A keepalive younger than the grace time may still end because the tmux server is not there yet.
     if (current && (await this.survives(current, entry.startedAt + this.handOverGraceMs - this.now())))
       return;
-    if (entry.takingOver) await this.takeOvers.get(distro)?.promise;
+    // Also a take-over that has not started yet (start deferred): it must not end the keepalive handed over here.
+    const takeOver = this.takeOverOnce(distro);
+    if (takeOver) await takeOver;
     for (let attempt = 0; attempt < HAND_OVER_ATTEMPTS; attempt++) {
       let process: KeepaliveProcess;
       try {

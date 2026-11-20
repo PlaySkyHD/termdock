@@ -14,6 +14,7 @@ import type {
 } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
+import type { WslBackendOptions } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
 import { createLogger, logDir } from "../log/index.js";
 import { runAutostart } from "../session/autostart.js";
@@ -51,6 +52,8 @@ export interface RunCoreOptions {
   tmuxSocket?: string;
   /** Replaces the default backends (a `WslBackend`); the caller then owns and disposes them. */
   backends?: readonly Backend[];
+  /** Creates the core's own `WslBackend` when `backends` is unset; the core owns and disposes it. Tests use it. */
+  createWslBackend?: (options: WslBackendOptions) => WslBackend;
   stderr?: { write(text: string): unknown };
   /** Close on SIGINT/SIGTERM. Default true; tests turn it off. */
   installSignalHandlers?: boolean;
@@ -218,9 +221,10 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   // Messages only in the IPC answers and on stderr; a stack trace of an unexpected error goes into the file too.
   const log = (text: string): void => logger.error(text);
   const warn = (text: string): void => logger.warn(text);
+  const createWslBackend = options.createWslBackend ?? ((wslOptions) => new WslBackend(wslOptions));
   const ownBackends: WslBackend[] = options.backends
     ? []
-    : [new WslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
+    : [createWslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
   const wslBackend = (options.backends ?? ownBackends).find(
     (backend): backend is WslBackend => backend instanceof WslBackend,
   );

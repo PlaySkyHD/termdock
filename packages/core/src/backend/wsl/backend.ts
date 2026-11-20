@@ -74,6 +74,7 @@ export class WslBackend implements Backend {
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
   private defaultDistro: Promise<string> | undefined;
+  private disposed = false;
 
   constructor(options: WslBackendOptions = {}) {
     this.socket = options.socket ?? DEFAULT_TMUX_SOCKET;
@@ -216,10 +217,12 @@ export class WslBackend implements Backend {
 
   /**
    * Hands the keepalives over (issue #140): every distro with known sessions keeps one running after the core ends,
-   * until the next core takes it over or the tmux server ends; none is started afterwards. Resolves once that is
-   * done (at most about two seconds); the core exits only then.
+   * until the next core takes it over or the tmux server ends; none is started afterwards, and `start`/`attach` fail
+   * before their PTY. Resolves once that is done: usually within about 3 s, at the latest after a running take-over
+   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then.
    */
   dispose(): Promise<void> {
+    this.disposed = true;
     return this.keepalive.dispose();
   }
 
@@ -231,17 +234,21 @@ export class WslBackend implements Backend {
     releaseOnFailure: boolean,
   ): Promise<WslPty> {
     const name = sessionName(id);
+    // A closed backend starts no tmux client any more: no keepalive would follow it (review PR #148).
+    if (this.disposed) throw new Error("WSL backend is closed");
+    // Known at once, so a `dispose` during `spawnPty` hands a keepalive over for it; started only after the PTY (its
+    // wsl.exe keeps the distro awake meanwhile), because the keepalive is a tmux client and ends at once while
+    // `new-session` has not created the server yet.
+    this.keepalive.retain(target.distro, name, { deferStart: true });
     let process: PtyProcess;
     try {
       process = await this.spawnPty(args, size);
     } catch (error) {
       if (releaseOnFailure) this.keepalive.release(target.distro, name);
-      else this.keepalive.retain(target.distro, name);
+      else this.keepalive.start(target.distro);
       throw error;
     }
-    // Only after the PTY (its wsl.exe keeps the distro awake meanwhile): the keepalive is a tmux client and ends at
-    // once while `new-session` has not created the server yet (review PR #148).
-    this.keepalive.retain(target.distro, name);
+    this.keepalive.start(target.distro);
     return new WslPty(process, () => this.resolveEnd(target, id));
   }
 

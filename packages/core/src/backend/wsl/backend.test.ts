@@ -328,6 +328,37 @@ describe("WslBackend", () => {
     await backend.dispose();
   });
 
+  it("hands a keepalive over for a start whose PTY is still being spawned at dispose (review PR #148)", async () => {
+    const order: string[] = [];
+    let ptyReady: (process: FakePtyProcess) => void = () => {};
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async (args) => {
+        if (args.includes("pkill")) order.push("takeOver");
+        return args.includes("display-message") ? missing : ok();
+      },
+      spawnPty: () => {
+        order.push("pty");
+        return new Promise<FakePtyProcess>((resolve) => (ptyReady = resolve));
+      },
+      spawnKeepalive: () => {
+        order.push("keepalive");
+        return { kill: () => {}, onExit: () => {} };
+      },
+    });
+    const starting = backend.start("s1", spec, { cols: 80, rows: 24 });
+    while (!order.includes("pty")) await flush();
+    const disposed = backend.dispose();
+    ptyReady(new FakePtyProcess());
+    await starting;
+    await disposed;
+    // The session was known before its PTY: the take-over runs, then exactly one keepalive is handed over.
+    expect(order).toEqual(["pty", "takeOver", "keepalive"]);
+    await expect(backend.start("s2", spec, { cols: 80, rows: 24 })).rejects.toThrow(/closed/);
+    expect(order.filter((step) => step === "pty")).toHaveLength(1);
+  });
+
   it("ends left-behind keepalives of its socket once per distro before its first keepalive (issue #140)", async () => {
     const { backend, calls, running } = setup({ distro: "Ubuntu" });
     await backend.start("s1", spec, { cols: 80, rows: 24 });

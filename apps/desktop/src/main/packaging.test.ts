@@ -73,6 +73,17 @@ describe("installer.nsh", () => {
     expect(script).toMatch(/!macro customInstallMode\s+StrCpy \$isForceCurrentInstall "1"/);
     expect(script).toContain("%APPDATA%\\TermDock");
   });
+
+  it("says on both welcome pages that running WSL sessions keep running (issue #140)", () => {
+    const script = readFileSync(path.join(desktop, "resources", "installer.nsh"), "utf8");
+    const texts = [...script.matchAll(/MUI_WELCOMEPAGE_TEXT "([^"]*)"/g)].map((match) => match[1]!);
+
+    expect(texts).toHaveLength(2);
+    for (const text of texts) {
+      expect(text).toContain("Laufende WSL-Sessions laufen weiter");
+      expect(text).not.toContain("enden dabei in der Regel");
+    }
+  });
 });
 
 describe("icon.ico", () => {

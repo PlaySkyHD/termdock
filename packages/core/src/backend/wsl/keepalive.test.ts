@@ -238,6 +238,24 @@ describe("DistroKeepalive", () => {
       expect(spawned).toHaveLength(3);
     });
 
+    it("defers the start of a retained session until start, but hands one over for it (review PR #148)", async () => {
+      vi.useFakeTimers();
+      const { keepalive, spawned, running } = setup(1000);
+      keepalive.retain("Ubuntu", "td-a", { deferStart: true });
+      expect(spawned).toHaveLength(0);
+      keepalive.start("Ubuntu");
+      expect(running("Ubuntu")).toHaveLength(1);
+
+      keepalive.retain("Debian", "td-b", { deferStart: true });
+      let done = false;
+      void keepalive.dispose().then(() => (done = true));
+      expect(running("Debian")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(done).toBe(true);
+      keepalive.start("Debian");
+      expect(spawned).toHaveLength(2);
+    });
+
     it("waits for the dispose of a distro without sessions for nothing", async () => {
       const { keepalive, spawned } = setup(1000);
       keepalive.retain("Ubuntu", "td-a");
@@ -331,6 +349,18 @@ describe("DistroKeepalive", () => {
       expect(spawned).toHaveLength(0);
       await keepalive.dispose();
       expect(spawned).toHaveLength(0);
+    });
+
+    it("takes over before handing a keepalive over for a session whose start was deferred", async () => {
+      vi.useFakeTimers();
+      const { keepalive, order, pending } = takeOverSetup();
+      keepalive.retain("Ubuntu", "td-a", { deferStart: true });
+      expect(order).toEqual([]);
+      void keepalive.dispose();
+      expect(order).toEqual(["takeOver Ubuntu"]);
+      pending[0]!.finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(order).toEqual(["takeOver Ubuntu", "spawn Ubuntu"]);
     });
 
     it("hands over exactly one keepalive when disposed during the take-over (review PR #148)", async () => {

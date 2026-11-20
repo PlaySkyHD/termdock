@@ -64,7 +64,7 @@ describe("buildSections", () => {
     expect(buildSections([], [web]).workspaces).toEqual([{ workspace: web, sessions: [] }]);
   });
 
-  it("puts sessions without workspace under the ungrouped section", () => {
+  it("[V1-12] puts sessions without workspace under the ungrouped section", () => {
     const sections = buildSections([session("a"), session("b", { workspaceId: "w1" })], workspaces);
     expect(ids(sections.ungrouped)).toEqual(["a"]);
   });

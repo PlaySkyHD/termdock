@@ -271,7 +271,7 @@ describe("UiStore split panes", () => {
     });
   });
 
-  it("refuses a fifth pane and leaves the tab unchanged", () => {
+  it("[V1-06] refuses a fifth pane and leaves the tab unchanged", () => {
     const store = newStore();
     const tabId = store.openSession("s1")!;
     let pane = tabOf(store, tabId).root.id;
@@ -364,7 +364,7 @@ describe("UiStore split panes", () => {
     expect(tabOf(store, tabId).activePaneId).toBe(left);
   });
 
-  it("moves a divider between two children and keeps the sum of the shares", () => {
+  it("[V1-06] moves a divider between two children and keeps the sum of the shares", () => {
     const store = newStore();
     const tabId = store.openSession("s1")!;
     const a = tabOf(store, tabId).root.id;

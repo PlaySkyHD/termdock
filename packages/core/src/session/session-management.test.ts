@@ -61,7 +61,7 @@ describe("SessionRegistry.update", () => {
     expect(backend.starts).toHaveLength(1);
   });
 
-  it("moves a session to ungrouped and back into a workspace", async () => {
+  it("[V1-12] moves a session to ungrouped and back into a workspace", async () => {
     const { registry, repository } = setup();
     const session = await registry.create({ name: "shell", launch: spec, workspaceId: "w1" });
 
@@ -113,7 +113,7 @@ describe("SessionRegistry.update", () => {
 });
 
 describe("SessionRegistry.archive keeps the history", () => {
-  it("ends a running process, archives the session and does not remove its history", async () => {
+  it("[V1-10] ends a running process, archives the session and does not remove its history", async () => {
     const { registry, backend, removed, repository } = setup();
     const session = await registry.create({ name: "shell", launch: spec });
     await registry.attachView(session.id, "v1");

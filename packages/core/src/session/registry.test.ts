@@ -158,7 +158,7 @@ describe("SessionRegistry: views", () => {
 });
 
 describe("SessionRegistry: input lock", () => {
-  it("lets only the first view write when two views are attached", async () => {
+  it("[V1-05] lets only the first view write when two views are attached", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     const a = await registry.attachView(id, "view-a");
@@ -229,7 +229,7 @@ describe("SessionRegistry: input lock", () => {
 });
 
 describe("SessionRegistry: resize authority", () => {
-  it("resizes the PTY only for the writer and reports the size to all views", async () => {
+  it("[V1-06] resizes the PTY only for the writer and reports the size to all views", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });
     const resized: Array<{ cols: number; rows: number; viewIds: readonly string[] }> = [];

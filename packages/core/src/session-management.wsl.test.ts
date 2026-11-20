@@ -105,7 +105,7 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
     tempDirs.push(dataDir);
   }
 
-  it("archives a running session: tmux session gone, history kept; then deletes it with its history", async () => {
+  it("[V1-10] archives a running session: tmux session gone, history kept; then deletes it with its history", async () => {
     freshDataDir();
     await startCore();
     const c = await client();
@@ -228,5 +228,44 @@ describe.skipIf(!enabled)("session management against WSL (issue #57)", () => {
     expect(await hasSession(distro, session.id)).toBe(false);
     expect(existsSync(history)).toBe(false);
     expect((await c2.request("session.list", {})).result.sessions).toEqual([]);
+  }, 120_000);
+
+  it("[V1-12] creates a session without group, moves it into a workspace and back, archives and deletes it", async () => {
+    freshDataDir();
+    await startCore();
+    const c = await client();
+    const session = await create(c);
+    expect(session.workspaceId).toBeUndefined();
+    const distro = session.launch.distro!;
+    await waitFor(() => hasSession(distro, session.id), "tmux session");
+    const panePid = async () =>
+      (
+        await tmux(distro, ["display-message", "-p", "-t", `=td-${session.id}:`, "#{pane_pid}"])
+      ).stdout.trim();
+    const pid = await panePid();
+    expect(pid).toMatch(/^\d+$/);
+    const listed = async () =>
+      (await c.request("session.list", {})).result.sessions.find((each) => each.id === session.id);
+    const { workspace } = (await c.request("workspace.create", { name: "v1-12" })).result;
+
+    await c.request("session.update", { sessionId: session.id, workspaceId: workspace.id });
+    expect((await listed())?.workspaceId).toBe(workspace.id);
+    await c.request("session.update", { sessionId: session.id, workspaceId: null });
+    const ungrouped = await listed();
+    expect(ungrouped?.workspaceId).toBeUndefined();
+    expect(["Running", "Detached"]).toContain(ungrouped?.state);
+    // Moving touches neither the process nor the tmux session.
+    expect(await panePid()).toBe(pid);
+
+    const history = writeHistory(session.id);
+    await c.request("session.archive", { sessionId: session.id });
+    expect(await hasSession(distro, session.id)).toBe(false);
+    expect(await listed()).toMatchObject({ state: "Archived" });
+    expect((await listed())?.workspaceId).toBeUndefined();
+    expect(existsSync(join(history, "a.log"))).toBe(true);
+
+    await c.request("session.delete", { sessionId: session.id });
+    expect(existsSync(history)).toBe(false);
+    expect((await c.request("session.list", {})).result.sessions).toEqual([]);
   }, 120_000);
 });

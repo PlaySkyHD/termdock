@@ -106,7 +106,7 @@ describe.skipIf(!enabled)("autostart against WSL (issue #61)", () => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("starts an autostart profile once and re-attaches it after a Core restart", async () => {
+  it("[V1-07] starts an autostart profile once and re-attaches it after a Core restart", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "termdock-autostart-"));
     tempDirs.push(dataDir);
     keepalive = spawn("wsl.exe", ["--cd", "~", "--exec", "sleep", "infinity"], {

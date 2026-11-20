@@ -29,7 +29,7 @@ function decideSetup(over: Partial<DecideDeps> = {}) {
 }
 
 describe("decideQuit", () => {
-  it("asks with the number of running sessions and keeps them on that choice", async () => {
+  it("[V1-13] asks with the number of running sessions and keeps them on that choice", async () => {
     const { deps, calls } = decideSetup();
     expect(await decideQuit(deps, "user")).toEqual({ stopSessions: false });
     expect(calls).toEqual(["ask 1"]);

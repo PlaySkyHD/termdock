@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 describe("LayoutCoordinator load", () => {
-  it("returns the windows of the stored layout and remembers its revision", async () => {
+  it("[V1-08] returns the windows of the stored layout and remembers its revision", async () => {
     const { core, coordinator } = setup();
     core.stored = { version: 1, windows: [windowWith("w1", tab("t1", pane("p1")))] };
     core.revision = 4;

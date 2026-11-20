@@ -306,7 +306,7 @@ describe("two clients on one session", () => {
     return { ...core, a, b, session, viewA, viewB };
   }
 
-  it("gives the first view the writer role, only the writer may input and resize", async () => {
+  it("[V1-05] gives the first view the writer role, only the writer may input and resize", async () => {
     const { a, b, backend, session, viewA, viewB } = await twoViews();
     expect(viewA.writerViewId).toBe(viewA.viewId);
     expect(viewB.writerViewId).toBe(viewA.viewId);
@@ -1154,7 +1154,7 @@ describe("workspaces and projects (issue #56)", () => {
     return { ...core, a, b };
   }
 
-  it("creates, renames and lists workspaces and projects", async () => {
+  it("[V1-01] creates, renames and lists workspaces and projects", async () => {
     const { pipePath } = await startCore();
     const client = await newClient(pipePath);
     const { workspace } = (await client.request("workspace.create", { name: "Web" })).result;

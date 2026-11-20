@@ -6,7 +6,7 @@ describe("defaultCwd", () => {
   const workspace = { defaultCwd: "/w" };
   const settings = { defaultCwd: "/s" };
 
-  it("prefers project, then workspace, then setting, then the home directory", () => {
+  it("[V1-02] prefers project, then workspace, then setting, then the home directory", () => {
     const backend = "wsl";
     expect(defaultCwd({ backend, project, workspace, settings })).toBe("/p");
     expect(defaultCwd({ backend, workspace, settings })).toBe("/w");

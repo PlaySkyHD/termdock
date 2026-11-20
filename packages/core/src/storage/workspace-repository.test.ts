@@ -100,7 +100,7 @@ describe.each(kinds)("WorkspaceRepository (%s)", (_name, make) => {
 });
 
 describe("SqliteWorkspaceRepository", () => {
-  it("keeps workspaces and projects over a restart", () => {
+  it("[V1-01] keeps workspaces and projects over a restart", () => {
     const dir = tempDir();
     const first = open(dir);
     const saved = workspace(

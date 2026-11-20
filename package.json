@@ -17,7 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test:hooks && npm test --workspaces --if-present",
-    "test:hooks": "node --test scripts/guard-commands.test.mjs scripts/attach-screenshots.test.mjs",
+    "test:hooks": "node --test scripts/guard-commands.test.mjs scripts/attach-screenshots.test.mjs scripts/acceptance-check.test.mjs",
+    "acceptance": "node scripts/acceptance-check.mjs",
     "openspec": "openspec"
   },
   "devDependencies": {

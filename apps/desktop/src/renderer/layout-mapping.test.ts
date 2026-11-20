@@ -54,7 +54,7 @@ describe("toLayoutDocument", () => {
 });
 
 describe("store to document and back", () => {
-  it("restores tabs, pane tree, shares and active ids of the store", () => {
+  it("[V1-08] restores tabs, pane tree, shares and active ids of the store", () => {
     const store = busyStore("a");
     const { window } = store.getState();
     const document = toLayoutDocument([window]);
@@ -69,7 +69,7 @@ describe("store to document and back", () => {
     expect(toLayoutDocument([fresh.getState().window])).toEqual(document);
   });
 
-  it("restores two windows with their own tabs", () => {
+  it("[V1-08] restores two windows with their own tabs", () => {
     const a = busyStore("a").getState().window;
     const b = newStore("b");
     b.openSession("s3");

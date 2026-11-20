@@ -133,7 +133,7 @@ describe("HistoryStore: format and layout", () => {
 });
 
 describe("HistoryStore: ring buffer", () => {
-  it("changes segments at limit / 2, never exceeds the limit and keeps at least limit / 2 of the newest output", async () => {
+  it("[V1-11] changes segments at limit / 2, never exceeds the limit and keeps at least limit / 2 of the newest output", async () => {
     const dir = tempDir();
     const limit = 64 * KIB;
     const store = makeStore(dir, {}, limit);
@@ -428,7 +428,7 @@ describe("recordHistory", () => {
     expect(text).toEqual(["before", "again"]);
   });
 
-  it("holds the limit under 50 MiB of output while the PTY keeps flowing (issue #59)", async () => {
+  it("[V1-11] holds the limit under 50 MiB of output while the PTY keeps flowing (issue #59)", async () => {
     const dir = tempDir();
     const limit = 10 * MIB;
     const { backend, registry, store } = recorded(dir, { limit });

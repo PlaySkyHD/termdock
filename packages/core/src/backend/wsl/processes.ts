@@ -31,16 +31,33 @@ export function runWsl(args: readonly string[], options: { timeoutMs: number }):
           resolve({ code: 0, stdout, stderr });
           return;
         }
-        const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: number | string };
+        const failure = error as NodeJS.ErrnoException & {
+          killed?: boolean;
+          code?: number | string;
+          signal?: string | null;
+        };
         resolve({
           code: typeof failure.code === "number" ? failure.code : null,
           stdout,
-          stderr: stderr || failure.message,
+          stderr: stderr || failureText(failure),
           timedOut: failure.killed === true,
         });
       },
     );
   });
+}
+
+/** Prefix of the text `runWsl` puts into an empty stderr; `parseCwdCheck` knows it. */
+export const WSL_FAILURE_PREFIX = "wsl.exe failed: ";
+
+/**
+ * Exit code, signal or start error code only. Never `failure.message`: Node builds it as "Command failed: <the whole
+ * command line>", and the arguments may carry values the user has not released for logs and error responses.
+ */
+export function failureText(failure: { code?: number | string; signal?: string | null }): string {
+  if (typeof failure.code === "number") return `${WSL_FAILURE_PREFIX}exit code ${failure.code}`;
+  if (failure.signal) return `${WSL_FAILURE_PREFIX}ended by signal ${failure.signal}`;
+  return `${WSL_FAILURE_PREFIX}${typeof failure.code === "string" ? failure.code : "could not run"}`;
 }
 
 /**

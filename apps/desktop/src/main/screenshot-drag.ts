@@ -88,6 +88,21 @@ export async function dragScenes(deps: ScenarioDeps): Promise<void> {
   await a.click(`${tabSelector(sa.name)} .tab__main`);
   await a.waitFor(`document.querySelector('${PANES} [data-role="writer"]')`, "the writer of Drag A");
   await b.waitFor(`document.querySelector('${PANES} [data-role="writer"]')`, "the writer of Drag C");
+  // A short prompt without user and host name: the repository is public (as the group `update`, #136).
+  for (const [driver, windowId, session] of [
+    [a, sourceId, sa],
+    [a, sourceId, sb],
+    [b, targetId, sc],
+    [a, sourceId, sd],
+  ] as const) {
+    const viewId = await attachedIn(windowId, session);
+    const input = await bridge.call(windowId, { method: "input", viewId, data: "PS1='$ '; clear\r" });
+    if (!input.ok) throw new Error(`input ${session.name}: ${input.error.message}`);
+    await driver.waitFor(
+      `[...document.querySelectorAll('.pane[data-session-id="${session.id}"] .xterm-rows > div')].some((row) => row.textContent.trim() === "$")`,
+      `the short prompt of ${session.name}`,
+    );
+  }
   await sleep(800);
   const oldView = viewIn(sourceId, sa.id)!;
   expect((await writerOf(sa)) === oldView, "Drag A does not write in the source");

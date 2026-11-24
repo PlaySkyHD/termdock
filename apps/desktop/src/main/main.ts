@@ -13,7 +13,8 @@ import type { LayoutWindow } from "@termdock/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
-import type { WindowLayouts } from "./bridge.js";
+import type { WindowLayouts, WindowMoves } from "./bridge.js";
+import { WindowTransfers } from "./window-transfer.js";
 import {
   connectOrStartCore,
   READY_TIMEOUT_MS,
@@ -58,7 +59,7 @@ import { runScenario } from "./screenshot-scenario.js";
 import { runSmokeTest, smokeTestDataDir, smokeTestRequested, windowsShellCheck } from "./smoke-test.js";
 import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
-import { fitBounds, screenshotOrigin } from "./window-geometry.js";
+import { boundsAtPointer, fitBounds, screenshotOrigin, windowAtPoint } from "./window-geometry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
@@ -279,8 +280,61 @@ async function main(): Promise<void> {
   };
   // The quit dialog (#60) is a view of a window: the prompt sends the question there and takes the answer back.
   const quitPrompt: QuitPrompt = new QuitPrompt((windowId, event): boolean => bridge.sendTo(windowId, event));
-  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor);
+  // Moves of tabs and panes between windows (#68); the coordinator needs the bridge, so the bridge reaches it late.
+  const moves: WindowMoves = {
+    hover: (windowId, item, at) => transfers.hover(windowId, item, at),
+    hoverEnd: (windowId) => transfers.hoverEnd(windowId),
+    drop: (windowId, item, at, whole) => transfers.drop(windowId, item, at, whole),
+    attached: (windowId, transferId, views) => transfers.attached(windowId, transferId, views),
+    ready: (windowId) => transfers.ready(windowId),
+  };
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, moves);
   restartNotes = { ...restartNotes, bridge };
+  /** Windows by `webContents` id, and their ids in the order of the last focus (the window under a drag, #68). */
+  const windowsById = new Map<number, BrowserWindow>();
+  const focusOrder: number[] = [];
+  const liveWindow = (windowId: number): BrowserWindow | undefined => {
+    const win = windowsById.get(windowId);
+    return win && !win.isDestroyed() ? win : undefined;
+  };
+  const transfers: WindowTransfers = new WindowTransfers({
+    toScreen: (windowId, point) => {
+      const bounds = liveWindow(windowId)?.getContentBounds();
+      return bounds && { x: bounds.x + point.x, y: bounds.y + point.y };
+    },
+    toClient: (windowId, point) => {
+      const bounds = liveWindow(windowId)?.getContentBounds();
+      return bounds && { x: point.x - bounds.x, y: point.y - bounds.y };
+    },
+    windowAt: (point) =>
+      windowAtPoint(
+        point,
+        [...windowsById]
+          .filter(([, win]) => !win.isDestroyed() && win.isVisible() && !win.isMinimized())
+          .map(([id, win]) => ({ id, bounds: win.getBounds() })),
+        focusOrder,
+      ),
+    openWindowAt: (point) => createWindow(undefined, undefined, undefined, point)?.webContents.id,
+    moveWindowTo: (windowId, point) => {
+      const win = liveWindow(windowId);
+      if (!win) return;
+      if (win.isMaximized()) win.unmaximize();
+      const { x, y } = boundsAtPointer(point, win.getBounds());
+      win.setPosition(x, y);
+      win.focus();
+    },
+    closeWindow: (windowId) => liveWindow(windowId)?.close(),
+    layoutOf: (windowId) => coordinator.windowOf(windowId),
+    send: (windowId, event) => bridge.sendTo(windowId, event),
+    isWriter: (windowId, viewId) => bridge.isWriter(windowId, viewId),
+    claimWriter: (windowId, viewId) => bridge.claimWriterFor(windowId, viewId),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms);
+      return () => clearTimeout(timer);
+    },
+    newId: () => randomUUID(),
+    log,
+  });
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
@@ -340,7 +394,13 @@ async function main(): Promise<void> {
     log,
   });
 
-  const createWindow = (width = 1000, height = 640, restored?: LayoutWindow): BrowserWindow | undefined => {
+  /** `at`: a window for a tab or pane dropped beside every window opens with its tab bar under the pointer (#68). */
+  const createWindow = (
+    width = 1000,
+    height = 640,
+    restored?: LayoutWindow,
+    at?: { x: number; y: number },
+  ): BrowserWindow | undefined => {
     // The layout document holds at most this many windows, windows that stay in it included; a further one could
     // never be saved.
     if (coordinator.size() >= MAX_LAYOUT_WINDOWS) {
@@ -348,10 +408,11 @@ async function main(): Promise<void> {
       return undefined;
     }
     // A saved position that no screen shows any more would open a window nobody can reach.
+    const wanted = restored?.bounds ?? (at && boundsAtPointer(at, { width, height }));
     const fitted =
-      restored?.bounds &&
+      wanted &&
       fitBounds(
-        restored.bounds,
+        wanted,
         screen.getAllDisplays().map((display) => display.workArea),
         screen.getPrimaryDisplay().workArea,
       );
@@ -378,6 +439,13 @@ async function main(): Promise<void> {
     });
     const contents = win.webContents;
     const id = contents.id;
+    windowsById.set(id, win);
+    focusOrder.unshift(id);
+    win.on("focus", () => {
+      const index = focusOrder.indexOf(id);
+      if (index >= 0) focusOrder.splice(index, 1);
+      focusOrder.unshift(id);
+    });
     bridge.addWindow({
       id,
       send: (event) => void (!contents.isDestroyed() && contents.send(EVENT_CHANNEL, event)),
@@ -392,16 +460,22 @@ async function main(): Promise<void> {
       if (details.isMainFrame && !details.isSameDocument) {
         void bridge.resetWindow(id);
         quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
+        transfers.windowGone(id, true); // and its moves between windows (#68)
       }
     });
     contents.on("render-process-gone", (_event, details) => {
       log(`render-process-gone: window ${id}, reason ${details.reason}, exit code ${details.exitCode}`);
       void bridge.resetWindow(id);
       quitPrompt.windowGone(id);
+      transfers.windowGone(id, true);
     });
     contents.on("destroyed", () => void bridge.removeWindow(id));
     win.on("closed", () => {
       quitPrompt.windowGone(id);
+      transfers.windowGone(id);
+      windowsById.delete(id);
+      const index = focusOrder.indexOf(id);
+      if (index >= 0) focusOrder.splice(index, 1);
       void bridge.removeWindow(id);
     });
 
@@ -499,6 +573,7 @@ async function main(): Promise<void> {
         if (!win) throw new Error("Too many windows");
         return win;
       },
+      allWindows: () => BrowserWindow.getAllWindows(),
       closeAllWindows,
       // Like a restart of the UI: save, drop all state of this process's layout, read it back from the core.
       restartUi: async () => {

@@ -90,6 +90,11 @@ export interface ControllerOptions {
    * breaks at the end move the cursor where the shell left it and stay. A tmux snapshot lists blank rows instead.
    */
   rawSnapshot?: boolean;
+  /**
+   * The attach ended (#68): with the view once it is shown (after a claim of `claimOnOpen`), `failed` when the core
+   * refused it or the controller was disposed before it was shown.
+   */
+  onAttached?: (outcome: { viewId?: ViewId; failed?: boolean }) => void;
 }
 
 function delayLayout(run: () => void): () => void {
@@ -120,6 +125,7 @@ export class TerminalController {
   /** Set while a fit after a change of the element is planned. */
   private cancelLayout: (() => void) | undefined;
   private readonly claimOnOpen: (() => boolean) | undefined;
+  private readonly onAttached: ControllerOptions["onAttached"];
   private readonly rawSnapshot: boolean;
 
   constructor(
@@ -130,9 +136,15 @@ export class TerminalController {
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
     this.claimOnOpen = options.claimOnOpen;
+    this.onAttached = options.onAttached;
     this.rawSnapshot = options.rawSnapshot === true;
     const { commands } = options;
     if (commands) this.surface.onKey((event) => handleKey(event, commands));
+  }
+
+  /** The view attached by this controller; undefined before the attach, after a failure and after `dispose`. */
+  attachedView(): ViewId | undefined {
+    return this.viewId;
   }
 
   /** Text of the terminal's selection (a reader has one too). */
@@ -177,10 +189,12 @@ export class TerminalController {
       this.pending = undefined;
       if (!this.disposed)
         this.setStatus({ role: "error", error: error instanceof Error ? error.message : String(error) });
+      this.onAttached?.({ failed: true });
       return;
     }
     if (this.disposed) {
-      // Disposed while the core attached: give the view back at once.
+      // Disposed while the core attached: give the view back at once. A move waiting for it must not wait on.
+      this.onAttached?.({ failed: true });
       await this.api.detach(view.viewId).catch(() => {});
       return;
     }
@@ -202,9 +216,13 @@ export class TerminalController {
     this.snapshotSeq = view.outputSeq;
     for (const { seq, data } of this.pending ?? []) if (seq > this.snapshotSeq) this.surface.write(data);
     this.pending = undefined;
-    if (this.closed) return;
+    if (this.closed) {
+      this.onAttached?.({ failed: true });
+      return;
+    }
     this.applyRole();
     if (!this.isWriter() && this.claimOnOpen?.()) await this.claimWriter();
+    if (!this.disposed) this.onAttached?.({ viewId: view.viewId });
   }
 
   /** Asks the core for the writer; the role changes when `writerChanged` arrives. A refusal shows in the status. */

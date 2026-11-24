@@ -185,6 +185,37 @@ describe("DragController", () => {
     expect(host.count()).toBe(0);
   });
 
+  it("[#68] hands a release outside the window over and swallows the click after it", () => {
+    const host = new FakeHost();
+    const outside: Array<[DragPayload, number, number]> = [];
+    const states: DragState[] = [];
+    let cancels = 0;
+    const tab: DragPayload = { kind: "tab", id: "t1" };
+    const controller = new DragController({
+      host,
+      hit: () => undefined,
+      targets: () => ["a"],
+      accepts: () => true,
+      leaves: (p) => p.kind === "tab",
+      // The window is 100 px wide: everything left of 0 or right of 100 is outside.
+      outside: (x) => x < 0 || x >= 100,
+      onChange: (state) => states.push(state),
+      onDrop: () => {},
+      onCancel: () => void (cancels += 1),
+      onOutside: (p, x, y) => outside.push([p, x, y]),
+      defer: () => {},
+    });
+
+    controller.press(tab, down);
+    host.fire("pointermove", move(-30));
+    expect(states.at(-1)).toMatchObject({ phase: "dragging", outside: true });
+    host.fire("pointerup", move(-50));
+
+    expect(outside).toEqual([[tab, -50, 10]]);
+    expect(cancels).toBe(0);
+    expect(host.fire("click").stopped).toBe(true);
+  });
+
   it("ignores a second press while a gesture runs", () => {
     const { host, controller } = setup({ current: "a" });
     controller.press(payload, down);

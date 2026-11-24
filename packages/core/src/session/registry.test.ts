@@ -227,6 +227,44 @@ describe("SessionRegistry: input lock", () => {
     expect(changes).toEqual(["view-a", undefined]);
   });
 
+  it("[V1-05] hands a writing view to another window (#68) without two writers or none", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    const changes: Array<string | undefined> = [];
+    registry.onWriterChanged((e) => changes.push(e.writerViewId));
+    await registry.attachView(id, "view-a");
+
+    // The target window attaches first: it reads while the old view is still there.
+    const moved = await registry.attachView(id, "view-b");
+    expect(moved.writer).toBe(false);
+    expect(registry.get(id).writerViewId).toBe("view-a");
+    registry.claimWriter(id, "view-b");
+    expect(errorCode(() => registry.input(id, "view-a", "a"))).toBe("not_writer");
+    registry.detachView(id, "view-a");
+
+    expect(registry.get(id).writerViewId).toBe("view-b");
+    registry.input(id, "view-b", "b");
+    expect(backend.pty(id).input).toBe("b");
+    // One change from the first writer to the next; the detach of the old view changes nothing.
+    expect(changes).toEqual(["view-a", "view-b"]);
+  });
+
+  it("[#68] keeps a reading view reading when it moves to another window", async () => {
+    const { registry } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    await registry.attachView(id, "view-writer");
+    await registry.attachView(id, "view-a");
+    const changes: Array<string | undefined> = [];
+    registry.onWriterChanged((e) => changes.push(e.writerViewId));
+
+    const moved = await registry.attachView(id, "view-b");
+    registry.detachView(id, "view-a");
+
+    expect(moved.writer).toBe(false);
+    expect(registry.get(id).writerViewId).toBe("view-writer");
+    expect(changes).toEqual([]);
+  });
+
   it("rejects input when no process runs", async () => {
     const { registry, backend } = setup();
     const { id } = await registry.create({ name: "shell", launch: spec });

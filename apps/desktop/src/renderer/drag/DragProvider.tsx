@@ -21,8 +21,29 @@ export interface DropHandler {
   onDrop(payload: DragPayload, targetId: string): void;
 }
 
+/**
+ * A drag that leaves the window (#68): which payloads may, and what the main process hears while the pointer is
+ * outside (`hover`), when it comes back or the drag ends (`end`) and at a release outside (`drop`).
+ */
+export interface OutsideRules {
+  leaves(payload: DragPayload): boolean;
+  hover(payload: DragPayload, x: number, y: number): void;
+  end(): void;
+  drop(payload: DragPayload, x: number, y: number): void;
+}
+
+/** A drag of another window over this one, as the main process reports it (#68). */
+export interface ExternalDrag {
+  /** The pointer is at the point; shows the valid targets and the one under it like a drag of this window. */
+  hover(payload: DragPayload, x: number, y: number): void;
+  leave(): void;
+  /** The valid target at the point for the payload, judged now; undefined over none. */
+  targetAt(payload: DragPayload, x: number, y: number): string | undefined;
+}
+
 export interface DragApi {
   state: DragState;
+  external: ExternalDrag;
   /** Props for a source element: its `pointerdown` starts a press. */
   sourceProps(payload: DragPayload): { onPointerDown: (event: ReactPointerEvent) => void };
   /** Class names for a drop target: `drop-target`, plus `--valid` and `--over` while dragging. */
@@ -80,13 +101,37 @@ function allTargets(): string[] {
   });
 }
 
-export function DragProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<DragState>(IDLE);
+export function DragProvider({ children, outside }: { children: ReactNode; outside?: OutsideRules }) {
+  const [local, setLocal] = useState<DragState>(IDLE);
+  // A drag of another window over this one (#68); a drag of this window wins.
+  const [external, setExternal] = useState<DragState>(IDLE);
+  const state = local.phase === "idle" ? external : local;
   const handlers = useRef(new Set<DropHandler>());
+  const outsideRules = useRef(outside);
+  outsideRules.current = outside;
+  /** The main process shows this window's drag elsewhere right now. */
+  const hoveringOutside = useRef(false);
+  /** The valid targets of the external drag, collected once when it enters (like a drag of this window). */
+  const externalValid = useRef<readonly string[] | undefined>(undefined);
+  const handlerFor = useMemo(
+    () =>
+      (payload: DragPayload, targetId: string): DropHandler | undefined =>
+        [...handlers.current].find((handler) => handler.accepts(payload, targetId)),
+    [],
+  );
 
   const controller = useMemo(() => {
-    const handlerFor = (payload: DragPayload, targetId: string): DropHandler | undefined =>
-      [...handlers.current].find((handler) => handler.accepts(payload, targetId));
+    const onChange = (next: DragState): void => {
+      setLocal(next);
+      const rules = outsideRules.current;
+      if (next.phase === "dragging" && next.outside === true && rules?.leaves(next.payload) === true) {
+        hoveringOutside.current = true;
+        rules.hover(next.payload, next.x, next.y);
+      } else if (hoveringOutside.current) {
+        hoveringOutside.current = false;
+        rules?.end();
+      }
+    };
     const created: DragController = new DragController({
       host: window,
       hit: (x, y) => {
@@ -98,12 +143,44 @@ export function DragProvider({ children }: { children: ReactNode }) {
       },
       targets: allTargets,
       accepts: (payload, targetId) => handlerFor(payload, targetId) !== undefined,
-      onChange: setState,
+      leaves: (payload) => outsideRules.current?.leaves(payload) === true,
+      outside: (x, y) => x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight,
+      onChange,
       onDrop: (payload, targetId) => handlerFor(payload, targetId)?.onDrop(payload, targetId),
+      onOutside: (payload, x, y) => outsideRules.current?.drop(payload, x, y),
       setDragging: (active) => document.body.classList.toggle("is-dragging", active),
     });
     return created;
-  }, []);
+  }, [handlerFor]);
+
+  const externalDrag = useMemo<ExternalDrag>(
+    () => ({
+      hover: (payload, x, y) => {
+        const valid = (externalValid.current ??= allTargets().filter(
+          (id) => handlerFor(payload, id) !== undefined,
+        ));
+        const over = targetAt(x, y, (id) => valid.includes(id));
+        setExternal({
+          phase: "dragging",
+          payload,
+          x,
+          y,
+          valid,
+          over: over !== undefined && valid.includes(over) ? over : undefined,
+        });
+      },
+      leave: () => {
+        externalValid.current = undefined;
+        setExternal(IDLE);
+      },
+      targetAt: (payload, x, y) => {
+        const accepts = (id: string): boolean => handlerFor(payload, id) !== undefined;
+        const id = targetAt(x, y, accepts);
+        return id !== undefined && accepts(id) ? id : undefined;
+      },
+    }),
+    [handlerFor],
+  );
   useEffect(() => () => controller.dispose(), [controller]);
 
   const register = useMemo(
@@ -118,6 +195,7 @@ export function DragProvider({ children }: { children: ReactNode }) {
   const api = useMemo<DragApi>(
     () => ({
       state,
+      external: externalDrag,
       register,
       sourceProps: (payload) => ({
         onPointerDown: (event) => controller.press(payload, event),
@@ -138,7 +216,7 @@ export function DragProvider({ children }: { children: ReactNode }) {
         };
       },
     }),
-    [state, controller, register],
+    [state, controller, register, externalDrag],
   );
 
   return (

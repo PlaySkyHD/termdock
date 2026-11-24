@@ -30,6 +30,10 @@ export interface DragControllerOptions extends DragEnvironment {
   onDrop(payload: DragPayload, targetId: string): void;
   /** A drag ended without a drop. */
   onCancel?(): void;
+  /** Whether the point lies outside the window (#68); without it the pointer is always inside. */
+  outside?(x: number, y: number): boolean;
+  /** Released outside the window with a payload that may leave it (`leaves`): the main process takes over. */
+  onOutside?(payload: DragPayload, x: number, y: number): void;
   /** Runs `run` after the current event is done (`setTimeout(run, 0)`); ends the suppression of the click. */
   defer?(run: () => void): void;
   /** Toggles the look of a running drag on the page (cursor, no text selection). */
@@ -65,13 +69,15 @@ export class DragController {
 
   private readonly onMove = (event: DragEventLike): void => {
     const [x, y] = point(event);
-    this.apply({ type: "move", x, y, over: this.options.hit(x, y) });
+    const outside = this.options.outside?.(x, y) === true;
+    this.apply({ type: "move", x, y, over: outside ? undefined : this.options.hit(x, y), outside });
   };
 
   private readonly onUp = (event: DragEventLike): void => {
     const [x, y] = point(event);
     const gesture = isDragGesture(this.state);
-    this.apply({ type: "release", x, y, over: this.options.hit(x, y) });
+    const outside = this.options.outside?.(x, y) === true;
+    this.apply({ type: "release", x, y, over: outside ? undefined : this.options.hit(x, y), outside });
     if (gesture) this.swallowClick();
   };
 
@@ -103,6 +109,7 @@ export class DragController {
     this.set(state);
     if (state.phase === "idle") this.unlisten();
     if (effect?.kind === "drop") this.options.onDrop(effect.payload, effect.targetId);
+    else if (effect?.kind === "outside") this.options.onOutside?.(effect.payload, effect.x, effect.y);
     else if (effect?.kind === "cancel") this.options.onCancel?.();
   }
 

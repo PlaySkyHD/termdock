@@ -568,6 +568,54 @@ describe("TerminalController", () => {
     expect(api.claims).toEqual(["v1"]);
   });
 
+  it("[#68] reports the end of the attach with its view, as a reader and without claiming", async () => {
+    const api = new FakeApi();
+    const outcomes: unknown[] = [];
+    const controller = new TerminalController(api, new FakeSurface(), () => {}, {
+      onAttached: (outcome) => outcomes.push(outcome),
+    });
+
+    const opening = controller.open("s1");
+    expect(outcomes).toEqual([]);
+    api.answerAttach({ writerViewId: "v0" });
+    await opening;
+
+    expect(outcomes).toEqual([{ viewId: "v1" }]);
+    expect(controller.attachedView()).toBe("v1");
+    expect(api.claims).toEqual([]);
+  });
+
+  it("[#68] reports a failed attach", async () => {
+    const api = new FakeApi();
+    const outcomes: unknown[] = [];
+    const controller = new TerminalController(api, new FakeSurface(), () => {}, {
+      onAttached: (outcome) => outcomes.push(outcome),
+    });
+
+    const opening = controller.open("s1");
+    api.failAttach(new Error("[timeout] attach"));
+    await opening;
+
+    expect(outcomes).toEqual([{ failed: true }]);
+    expect(controller.attachedView()).toBeUndefined();
+  });
+
+  it("[#68] reports a view disposed before its attach was shown as failed (review #68)", async () => {
+    const api = new FakeApi();
+    const outcomes: unknown[] = [];
+    const controller = new TerminalController(api, new FakeSurface(), () => {}, {
+      onAttached: (outcome) => outcomes.push(outcome),
+    });
+
+    const opening = controller.open("s1");
+    void controller.dispose();
+    api.answerAttach({ writerViewId: "v0" });
+    await opening;
+
+    expect(outcomes).toEqual([{ failed: true }]);
+    expect(api.detached).toEqual(["v1"]);
+  });
+
   it("claims nothing when it writes already or claimOnOpen says no", async () => {
     const writer = new FakeApi();
     const first = new TerminalController(writer, new FakeSurface(), () => {}, { claimOnOpen: () => true });

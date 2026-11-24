@@ -26,6 +26,7 @@ import { isAttachable, rawSnapshot, warningTexts } from "./session-display.js";
 import type { WarningText } from "./session-display.js";
 import type { TerminalController, ViewRole, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
+import type { PaneOutcome } from "./window-transfer.js";
 import { MIN_SHARE } from "./ui-store.js";
 
 /** No pane gets narrower or lower than this while a divider is dragged. */
@@ -60,6 +61,8 @@ export interface PaneTreeProps {
   coreGeneration: number;
   /** "Core neu starten" in a pane once the automatic restarts gave up; undefined otherwise (#130). */
   onRestartCore: (() => void) | undefined;
+  /** A pane's view attached or failed to, or the pane shows a placeholder (a move waits for it, #68). */
+  onPaneSettled: (paneId: string, outcome: PaneOutcome) => void;
 }
 
 export function PaneTree({
@@ -81,6 +84,7 @@ export function PaneTree({
   onDismissWarnings,
   coreGeneration,
   onRestartCore,
+  onPaneSettled,
 }: PaneTreeProps) {
   const area = useRef<HTMLDivElement>(null);
   // The generation each pane was last committed with (#130). Only a pane that existed before the restart re-attaches
@@ -132,6 +136,7 @@ export function PaneTree({
               onClosePane={() => onClosePane(tabId, paneId)}
               commands={commands}
               onContextPaste={() => onPanePaste(paneId)}
+              onSettled={(outcome) => onPaneSettled(paneId, outcome)}
             />
             <WarningHint
               texts={warningTexts(session, dismissedWarnings)}
@@ -388,6 +393,7 @@ interface PaneViewProps {
   onContextPaste: () => void;
   claimOnOpen: boolean;
   onRestartCore: (() => void) | undefined;
+  onSettled: (outcome: PaneOutcome) => void;
 }
 
 /**
@@ -409,12 +415,20 @@ function PaneView({
   onContextPaste,
   claimOnOpen,
   onRestartCore,
+  onSettled,
 }: PaneViewProps) {
   const attachable = session !== undefined && isAttachable(session.state);
   const [attached, setAttached] = useState(attachable);
   useEffect(() => {
     if (attachable) setAttached(true);
   }, [attachable]);
+  const settled = useRef(onSettled);
+  settled.current = onSettled;
+  // A placeholder has no view to wait for: a move into this window counts the pane as done (#68).
+  const placeholder = !attachable && !attached && paneContent(session, sessionsLoaded).kind === "placeholder";
+  useEffect(() => {
+    if (placeholder) settled.current({});
+  }, [placeholder]);
   // A refusal stays until the next click or until the session lives again (#164): a failed restart changes the state
   // itself (Starting, Interrupted), and a restart that worked replaces the placeholder with the view (review PR #156).
   const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);
@@ -453,6 +467,7 @@ function PaneView({
           onContextPaste={onContextPaste}
           claimOnOpen={claimOnOpen}
           rawSnapshot={session !== undefined && rawSnapshot(session.launch)}
+          onAttached={(outcome) => onSettled(outcome)}
           {...(onRestartCore ? { onRestartCore } : {})}
         />
         <RestartBarView bar={restartBar(session, role, restartStatus)} onRestart={restart} />

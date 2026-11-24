@@ -16,6 +16,7 @@ import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from
 import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { crashScenes } from "./screenshot-crash.js";
 import { cwdScenes } from "./screenshot-cwd.js";
+import { dragScenes } from "./screenshot-drag.js";
 import { windowsScenes } from "./screenshot-windows.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restartScenes } from "./screenshot-restart.js";
@@ -49,6 +50,8 @@ async function wsl(args: readonly string[]): Promise<string> {
 /** What the scenario may do with the windows of the app (main.ts). */
 export interface ScenarioControl {
   createWindow(width: number, height: number): BrowserWindow;
+  /** Every open window, also those the app opened itself (a tab dropped beside every window, #68). */
+  allWindows(): BrowserWindow[];
   /** Closes every window; `forget`: they also leave the layout (otherwise they stay, as when the app quits). */
   closeAllWindows(forget: boolean): Promise<void>;
   /** Restart of the UI: closes the windows, saves the layout and opens what `layout.get` returns (#29). */
@@ -316,6 +319,7 @@ async function playGroups(
   await play("settings", () => settingsScenes(deps));
   await play("cwd", () => cwdScenes(deps));
   await play("windows", () => windowsScenes(deps));
+  await play("drag", () => dragScenes(deps));
   await play("crash", () => crashScenes(deps));
   await play("restart", () => restartScenes(deps));
 }

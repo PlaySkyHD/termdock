@@ -7,6 +7,8 @@ import type {
   HistorySearchResult,
   LaunchProfile,
   LaunchProfileId,
+  LayoutPane,
+  LayoutTab,
   LayoutWindow,
   ProfileCreateParams,
   ProfileUpdateParams,
@@ -80,7 +82,39 @@ export type BridgeCall =
   /** The button "Core neu starten" (#130): restarts the core after the limit of automatic restarts. */
   | { method: "restartCore" }
   /** Whether the core is connected right now; a page that loads while it is gone asks this once (#130). */
-  | { method: "coreConnection" };
+  | { method: "coreConnection" }
+  // Moves between windows (#68): the source reports its drag outside, the target answers once it is attached.
+  /** The pointer of a drag of a tab or pane is outside this window, at `at` in its client coordinates. */
+  | { method: "transferHover"; item: TransferItem; at: ClientPoint }
+  /** The drag came back into this window, ended or was aborted. */
+  | { method: "transferHoverEnd" }
+  /** Released outside this window; `whole`: the item is all the window has. */
+  | { method: "transferDrop"; item: TransferItem; at: ClientPoint; whole: boolean }
+  /** The answer to `transferIn`: the new views by source pane once every pane is attached; none is a refusal. */
+  | { method: "transferAttached"; transferId: string; views?: TransferView[] };
+
+/** A view of the source window and the pane that shows it, for a move to another window (#68). */
+export interface TransferView {
+  paneId: string;
+  viewId: ViewId;
+}
+
+/**
+ * A tab or a pane on its way to another window (#68), with the ids of its source window. `views` names the views
+ * attached in the source; the main process hands the writer of each to its successor in the target.
+ */
+export type TransferItem =
+  | { kind: "tab"; tab: LayoutTab; views: TransferView[] }
+  | { kind: "pane"; pane: LayoutPane; views: TransferView[] };
+
+/** What the source window takes out once the target holds the views (`transferOut`). */
+export type TransferSource = { kind: "tab"; tabId: string } | { kind: "pane"; paneId: string };
+
+/** A point in the client area of a window (CSS px, zoom 1). */
+export interface ClientPoint {
+  x: number;
+  y: number;
+}
 
 /** The connection to the core as a window needs it (#130). */
 export interface CoreConnectionState {
@@ -138,6 +172,10 @@ export interface BridgeResults {
   listDistros: WslDistrosResult;
   restartCore: null;
   coreConnection: CoreConnectionState;
+  transferHover: null;
+  transferHoverEnd: null;
+  transferDrop: null;
+  transferAttached: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -192,7 +230,21 @@ export type BridgeEvent =
    */
   | { kind: "coreClosed"; restarting: boolean }
   /** The main process is connected to a core again: the window lists anew and attaches its views again (#130). */
-  | { kind: "coreRestarted" };
+  | { kind: "coreRestarted" }
+  /**
+   * Another window drags a tab or pane over this one, at `x`, `y` in this window's client coordinates (#68); without
+   * `hover` the drag has left this window.
+   */
+  | { kind: "transferHover"; hover?: { item: TransferItem; x: number; y: number } }
+  /**
+   * Put the item in at `at` (a drop target there), at the end of the tab bar without it (a new window), then answer
+   * with `transferAttached` (#68).
+   */
+  | { kind: "transferIn"; transferId: string; item: TransferItem; at?: ClientPoint }
+  /** The move into this window stopped: take out what it put in (#68). */
+  | { kind: "transferCancel"; transferId: string }
+  /** The other window holds the item now: take it out of this one (#68). */
+  | { kind: "transferOut"; source: TransferSource };
 
 /**
  * API the preload exposes as `window.termdock`. Rejected promises carry the code in the message as
@@ -238,6 +290,11 @@ export interface TermdockApi {
   /** Restarts the core once the automatic restarts gave up; does nothing while connected or restarting. */
   restartCore(): Promise<void>;
   coreConnection(): Promise<CoreConnectionState>;
+  transferHover(item: TransferItem, at: ClientPoint): Promise<void>;
+  transferHoverEnd(): Promise<void>;
+  transferDrop(item: TransferItem, at: ClientPoint, whole: boolean): Promise<void>;
+  /** `views` undefined refuses the move. */
+  transferAttached(transferId: string, views: TransferView[] | undefined): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

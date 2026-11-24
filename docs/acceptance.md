@@ -93,6 +93,9 @@ Status: automatisiert
 - Test `apps/desktop/src/renderer/terminal-controller.test.ts`: `[V1-05] as reader drops input and automatic replies and shows the writer's size`
 - Szene `apps/desktop/src/main/screenshot-scenario.ts` (Gruppe `scenario`): `05-reader.png`
 - Szene `apps/desktop/src/main/screenshot-scenario.ts` (Gruppe `scenario`): `07b-reader-after-take-input.png`
+- Test `packages/core/src/session/registry.test.ts`: `[V1-05] hands a writing view to another window (#68) without two writers or none`
+- Test `apps/desktop/src/main/window-transfer.test.ts`: `[V1-05] attaches in the target, hands the writer over, then lets the source take the item out`
+- Szene `apps/desktop/src/main/screenshot-drag.ts` (Gruppe `drag`): `47-drag-dropped-other-window.png`
 
 ### V1-06: 2–4 Split-Panes verhalten sich korrekt bei Resize.
 

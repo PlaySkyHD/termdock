@@ -57,6 +57,46 @@ export function screenshotOrigin(
   return { x: (area?.workArea.x ?? 0) + SHOT_INSET, y: (area?.workArea.y ?? 0) + SHOT_INSET };
 }
 
+/** Where the pointer lies in a window that opens or moves under it (#68): over its tab bar, a bit right of the edge. */
+export const POINTER_OFFSET = { x: 80, y: 16 } as const;
+
+/** Bounds of a window of `size` whose tab bar lies under the screen point (#68). */
+export function boundsAtPointer(
+  point: { x: number; y: number },
+  size: { width: number; height: number },
+): WindowBounds {
+  return {
+    x: Math.round(point.x - POINTER_OFFSET.x),
+    y: Math.round(point.y - POINTER_OFFSET.y),
+    width: size.width,
+    height: size.height,
+  };
+}
+
+/**
+ * The window under the screen point (#68): of the windows whose frame contains it, the one focused last (Electron
+ * gives no z-order). `recent` lists window ids, the last focused first; a window it does not name comes after them.
+ */
+export function windowAtPoint(
+  point: { x: number; y: number },
+  windows: ReadonlyArray<{ id: number; bounds: WindowBounds }>,
+  recent: readonly number[],
+): number | undefined {
+  const rank = (id: number): number => {
+    const index = recent.indexOf(id);
+    return index < 0 ? recent.length : index;
+  };
+  return windows
+    .filter(
+      ({ bounds }) =>
+        point.x >= bounds.x &&
+        point.x < bounds.x + bounds.width &&
+        point.y >= bounds.y &&
+        point.y < bounds.y + bounds.height,
+    )
+    .sort((a, b) => rank(a.id) - rank(b.id))[0]?.id;
+}
+
 /** Length of the overlap of two intervals (0 when they do not meet). */
 function overlap(start: number, length: number, otherStart: number, otherLength: number): number {
   return Math.max(0, Math.min(start + length, otherStart + otherLength) - Math.max(start, otherStart));

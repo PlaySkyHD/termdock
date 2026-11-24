@@ -494,6 +494,48 @@ describe("UiStore move (#67)", () => {
   });
 });
 
+describe("UiStore moves between windows (#68)", () => {
+  it("receives a tab of another window with new ids, which the layout check accepts, and takes it out again", () => {
+    const store = newStore();
+    store.openSession("s1");
+    const item = {
+      kind: "tab" as const,
+      tab: { id: "id1", root: { kind: "pane" as const, id: "id2", sessionId: "s2" }, activePaneId: "id2" },
+      views: [],
+    };
+    expect(store.canReceive(item, { kind: "tabBar" })).toBe(true);
+
+    const panes = store.receive(item, { kind: "tabBar" });
+
+    expect(Object.values(panes ?? {})).toEqual(["id2"]);
+    expect(sessionsOfTabs(store)).toEqual(["s1", "s2"]);
+    expect(validateLayoutDocument({ version: 1, windows: [store.getState().window] }).ok).toBe(true);
+    store.dropIncoming(Object.keys(panes!));
+    expect(sessionsOfTabs(store)).toEqual(["s1"]);
+  });
+
+  it("refuses a target that does not exist and changes nothing", () => {
+    const store = newStore();
+    store.openSession("s1");
+    const before = store.getState().window;
+    const item = {
+      kind: "pane" as const,
+      pane: { kind: "pane" as const, id: "x", sessionId: "s2" },
+      views: [],
+    };
+    expect(store.receive(item, { kind: "pane", paneId: "nope", zone: "left" })).toBeUndefined();
+    expect(store.getState().window).toBe(before);
+  });
+
+  it("takes out a tab that moved to another window", () => {
+    const store = newStore();
+    const first = store.openSession("s1")!;
+    store.openSession("s2");
+    store.takeOut({ kind: "tab", tabId: first });
+    expect(sessionsOfTabs(store)).toEqual(["s2"]);
+  });
+});
+
 describe("UiStore snap layouts (#78)", () => {
   /** A tab with `count` panes of sessions s1..sN (opened and split to the right); returns its id and pane ids. */
   function tabWithPanes(store: UiStore, count: number): { tabId: string; panes: string[] } {

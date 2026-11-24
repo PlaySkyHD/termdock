@@ -58,6 +58,10 @@ export interface QuitFlowDeps {
   shutdownCore(): Promise<void>;
   /** `core.shutdown { stopSessions: false }`: the core ends, its tmux sessions and WSL keepalive stay (#136). */
   releaseCore(): Promise<void>;
+  /** True while connected to a core: not during a restart and not after the restarts gave up (#130). */
+  coreConnected(): boolean;
+  /** `app.relaunch()`: the app starts again after it quits (#136, a failed start of the installer). */
+  relaunch(): void;
   closeClient(): Promise<void>;
   /** `app.quit()`. */
   quit(): void;
@@ -112,14 +116,20 @@ export class QuitFlow {
   /**
    * "Jetzt neu starten" of the update dialog (#136): like a quit that keeps the sessions, but the core is ended with
    * `core.shutdown { stopSessions: false }` (the installer must replace its files; tmux sessions and the WSL
-   * keepalive stay, Windows shells end with it), then `install` runs and the app quits. The core is gone at that
-   * point, so the app quits even when the installer cannot start (`quitAndInstall` then neither throws nor quits);
-   * the next start brings a new core and offers the update again. False, doing nothing, while a quit or an install
-   * already runs.
+   * keepalive stay, Windows shells end with it), then `install` starts the installer and the app quits. The core is
+   * gone at that point, so the app quits also when the installer cannot start, and then starts itself again; the next
+   * start brings a new core and offers the update again. False, doing nothing, while a quit or an install already
+   * runs or while the core is not connected.
    */
-  installUpdate(install: () => void): boolean {
+  installUpdate(install: () => boolean): boolean {
     if (this.updating || this.flow !== undefined || this.finishing !== undefined || this.retained)
       return false;
+    // During a restart of the core (#130) `core.shutdown` would reach nobody, and the core that the restart brings
+    // up would run on until the installer kills it, perhaps while it takes the WSL keepalive over. Not now.
+    if (!this.deps.coreConnected()) {
+      this.deps.log("update install: the core is not connected");
+      return false;
+    }
     this.updating = true;
     this.retain();
     this.finishing = (async () => {
@@ -132,13 +142,18 @@ export class QuitFlow {
     })();
     void this.finishing.finally(() => {
       this.ready = true;
+      let started = false;
       try {
-        install();
+        started = install();
       } catch (error) {
         this.deps.log(`update install: ${messageOf(error)}`);
       }
-      // A second `app.quit()` after the one of the updater is harmless; without it a failed start of the installer
-      // would leave windows without a core.
+      // The core is gone: the app quits either way. Without a running installer (which starts the new version) it
+      // starts itself again, so the user does not see a crash; the next start offers the update again.
+      if (!started) {
+        this.deps.log("update install: the installer did not start, the app restarts");
+        this.deps.relaunch();
+      }
       this.deps.quit();
     });
     return true;

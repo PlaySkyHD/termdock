@@ -307,8 +307,7 @@ async function main(): Promise<void> {
       // The screenshot run only counts the install; the app saves, releases the core and runs the installer.
       releaseAndInstall: (install) => {
         if (shotDir === undefined) return quitFlow.installUpdate(install);
-        install();
-        return true;
+        return install();
       },
       timers: { setTimeout, clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) },
       log,
@@ -375,6 +374,9 @@ async function main(): Promise<void> {
       supervisor.stop();
       await port.request("core.shutdown", { stopSessions: false });
     },
+    // No update while the core restarts or the restarts gave up (#130): the shutdown would reach nobody.
+    coreConnected: () => !supervisor.disconnected(),
+    relaunch: () => app.relaunch(),
     closeClient: () => supervisor.close(),
     quit: () => app.quit(),
     log,

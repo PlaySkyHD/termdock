@@ -131,6 +131,7 @@ describe("release.yml (#136)", () => {
     expect(workflow).toMatch(/^permissions:\s+contents: read$/m);
     expect([...workflow.matchAll(/^\s+contents: (\w+)$/gm)].map((match) => match[1])).toEqual([
       "read",
+      "read",
       "write",
     ]);
     expect(workflow).not.toMatch(/(packages|actions|id-token|pull-requests): write/);
@@ -150,6 +151,35 @@ describe("release.yml (#136)", () => {
     expect(workflow).toContain("--smoke-test");
     for (const file of ["TermDock-Setup-$VERSION.exe", "TermDock-Setup-$VERSION.exe.blockmap", "latest.yml"])
       expect(workflow).toContain(file);
+  });
+
+  it("builds with a read-only token kept out of git, and writes only in a job that runs no project code (review)", () => {
+    const buildStart = workflow.indexOf("\n  build:\n");
+    const draftStart = workflow.indexOf("\n  draft:\n");
+    expect(buildStart).toBeGreaterThan(0);
+    expect(draftStart).toBeGreaterThan(buildStart);
+    const build = workflow.slice(buildStart, draftStart);
+    const draft = workflow.slice(draftStart);
+
+    // npm ci, electron-builder and the smoke test never see a writing token, nor one in the git config.
+    expect(build).toMatch(/permissions:\s+contents: read/);
+    expect(build).toMatch(
+      /actions\/checkout@\S+[^\n]*\n\s+with:\n(\s+\S+:[^\n]*\n)*?\s+persist-credentials: false/,
+    );
+    expect(build).not.toContain("github.token");
+    expect(build).not.toContain("gh release");
+    // No npm cache on the release path (cache poisoning), and the tagged commit must be on main.
+    expect(build).not.toMatch(/cache: npm/);
+    expect(build).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
+    expect(build).toContain("npm ci");
+
+    // The writing job checks nothing out and runs no npm; it only uploads what the build left.
+    expect(draft).toMatch(/needs: build/);
+    expect(draft).toMatch(/permissions:\s+contents: write/);
+    expect(draft).not.toMatch(/actions\/checkout|setup-node|npm /);
+    expect(draft).toContain("actions/download-artifact@");
+    expect(draft).toContain("gh release create");
+    expect(draft).toContain("GH_REPO: ${{ github.repository }}");
   });
 
   it("lets the CI job package check the update files", () => {

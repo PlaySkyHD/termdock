@@ -226,14 +226,18 @@ describe("UpdateService offer and answers", () => {
     expect(updater.checks).toBe(0);
   });
 
-  it("keeps the offer when a quit already runs", () => {
-    const { updater, releases, logs, service, refuseRelease } = setup();
+  it("keeps the offer and shows it again when the release is refused (quit or core restart)", () => {
+    const { updater, events, releases, logs, service, refuseRelease } = setup();
     refuseRelease();
     updater.offer("0.2.0");
     service.answer("install");
     expect(releases).toHaveLength(1);
     expect(updater.installs).toBe(0);
-    expect(logs).toEqual(["update 0.2.0 downloaded", "update install: the app is already quitting"]);
+    expect(logs).toEqual([
+      "update 0.2.0 downloaded",
+      "update install: not now (the app quits or the core restarts)",
+    ]);
     expect(service.state()).toEqual({ version: "0.2.0" });
+    expect(events.at(-1)).toEqual({ kind: "updateChanged", version: "0.2.0" });
   });
 });

@@ -45,7 +45,7 @@ Scheitert eine Suche oder ein Download (kein Netz, GitHub nicht erreichbar, fals
 
 ### Requirement: Update-Dialog
 
-Ist ein Update geladen, SHALL jedes Fenster unten rechts einen nicht-modalen Dialog zeigen: „Update auf Version <v> ist bereit.“, „Jetzt neu starten“ und „Später“. Er MUST den Fokus nicht aus dem Terminal nehmen. Laufen Windows-Shells (`Running` oder `Detached`), MUST er sagen, dass sie mit dem Neustart enden; WSL-Sessions SHALL er als weiterlaufend nennen. „Später“ SHALL den Dialog in allen Fenstern bis zum nächsten Start der App ausblenden.
+Ist ein Update geladen, SHALL jedes Fenster unten rechts einen nicht-modalen Dialog zeigen: „Update auf Version <v> ist bereit.“, „Jetzt neu starten“ und „Später“. Er MUST den Fokus nicht aus dem Terminal nehmen. Laufen Windows-Shells (`Running` oder `Detached`), MUST er sagen, dass sie mit dem Neustart enden; WSL-Sessions SHALL er als weiterlaufend nennen. „Später“ SHALL ihn in allen Fenstern ausblenden; diese Version kommt erst nach dem nächsten Start wieder, eine neuere sofort.
 
 #### Scenario: Update mit laufender Windows-Shell
 
@@ -59,6 +59,7 @@ Ist ein Update geladen, SHALL jedes Fenster unten rechts einen nicht-modalen Dia
 - **GIVEN** zwei Fenster zeigen den Dialog
 - **WHEN** der Nutzer in einem „Später“ klickt
 - **THEN** verschwindet er in beiden, und bis zum nächsten Start der App erscheint er für diese Version nicht wieder
+- **AND** lädt eine spätere Suche im selben Lauf eine neuere Version, zeigen beide Fenster den Dialog für sie
 
 #### Scenario: Später geöffnetes Fenster
 
@@ -68,7 +69,7 @@ Ist ein Update geladen, SHALL jedes Fenster unten rechts einen nicht-modalen Dia
 
 ### Requirement: Installation mit überlebenden tmux-Sessions
 
-„Jetzt neu starten“ SHALL das Layout speichern, den Core ohne Neustart mit `core.shutdown { stopSessions: false }` beenden (tmux-Sessions und WSL-Keepalive bleiben, Windows-Shells enden), die Verbindung schließen und dann den Installer still mit Neustart der App starten. Läuft schon ein Beenden der App, MUST der Klick nichts tun. Nach dem Neustart SHALL der neue Core wie bei einem Core-Neustart abgleichen und die WSL-Sessions wieder anbinden.
+„Jetzt neu starten“ SHALL das Layout speichern, den Core mit `core.shutdown { stopSessions: false }` beenden (tmux-Sessions und WSL-Keepalive bleiben, Windows-Shells enden), die Verbindung schließen, den Installer still starten und die App beenden (startet er nicht, startet sie neu). Während eines Beendens oder Core-Neustarts MUST der Klick nichts tun und das Angebot bleiben. Danach SHALL der neue Core abgleichen und die WSL-Sessions wieder anbinden.
 
 #### Scenario: Update mit laufender tmux-Session
 
@@ -87,9 +88,21 @@ Ist ein Update geladen, SHALL jedes Fenster unten rechts einen nicht-modalen Dia
 - **WHEN** der Nutzer „Jetzt neu starten“ klickt
 - **THEN** startet keine zweite Installation und kein zweites `core.shutdown`
 
+#### Scenario: Core startet gerade neu
+
+- **GIVEN** der Core startet nach einem Absturz neu oder die Neustarts haben aufgegeben (#130)
+- **WHEN** der Nutzer „Jetzt neu starten“ klickt
+- **THEN** sendet der Main kein `core.shutdown`, installiert nichts, und alle Fenster zeigen den Dialog wieder
+
+#### Scenario: Installer startet nicht
+
+- **GIVEN** die geladene Datei ist vor dem Klick verschwunden
+- **WHEN** der Nutzer „Jetzt neu starten“ klickt
+- **THEN** beendet sich die App nach dem Ende des Core und startet sich selbst neu; der nächste Start bietet das Update wieder an
+
 ### Requirement: Release-Workflow
 
-Ein Push eines Tags `v*` SHALL in GitHub Actions den Installer bauen, den Prüfmodus ausführen und ein Draft-Release zum Tag mit `TermDock-Setup-<version>.exe`, dessen `.blockmap` und `latest.yml` anlegen. Weicht der Tag von `v<version>` aus `apps/desktop/package.json` ab, MUST der Lauf scheitern. Der Workflow MUST nichts veröffentlichen, nur `GITHUB_TOKEN` mit `contents: write` nutzen und Actions mit fester Version (Commit-SHA) einbinden.
+Ein Tag `v*` SHALL den Installer bauen, den Prüfmodus ausführen und ein Draft-Release mit `TermDock-Setup-<version>.exe`, `.blockmap` und `latest.yml` anlegen. Weicht der Tag von `v<version>` ab oder liegt sein Commit nicht auf `main`, MUST der Lauf scheitern. Er MUST nichts veröffentlichen, nur `GITHUB_TOKEN` und Actions per Commit-SHA nutzen; der Bau läuft mit `contents: read`, ohne gespeicherten Token und npm-Cache, nur ein Job ohne Checkout hat `contents: write`.
 
 #### Scenario: Tag passt zur Version
 
@@ -102,6 +115,18 @@ Ein Push eines Tags `v*` SHALL in GitHub Actions den Installer bauen, den Prüfm
 - **GIVEN** `apps/desktop/package.json` hat Version `0.2.0`
 - **WHEN** der Tag `v0.3.0` gepusht wird
 - **THEN** scheitert der Lauf vor dem Bau, und kein Release entsteht
+
+#### Scenario: Tag außerhalb von main
+
+- **GIVEN** ein Tag `v0.2.0` auf einem Commit, der nur auf einem anderen Branch liegt
+- **WHEN** er gepusht wird
+- **THEN** scheitert der Lauf vor dem Bau, und kein Release entsteht
+
+#### Scenario: Rechte der Jobs
+
+- **GIVEN** `.github/workflows/release.yml`
+- **WHEN** der Test die Datei liest
+- **THEN** checkt der Bau-Job mit `persist-credentials: false` aus, hat `contents: read` und kein `cache: npm`, und nur der Job, der `gh release create` aufruft, hat `contents: write` und checkt nichts aus
 
 ### Requirement: Integrität ohne Signatur
 

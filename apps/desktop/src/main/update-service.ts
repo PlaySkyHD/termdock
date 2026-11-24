@@ -13,8 +13,11 @@ export interface UpdaterPort {
   onDownloaded(listener: (version: string) => void): void;
   /** A failed check or download, also one that `check` does not see (the download runs in the background). */
   onError(listener: (error: unknown) => void): void;
-  /** Runs the installer silently and starts the app again afterwards. */
-  install(): void;
+  /**
+   * Starts the installer silently; it starts the app again afterwards. False when it could not start (the downloaded
+   * file is gone, for example). Quitting the app is the caller's job.
+   */
+  install(): boolean;
 }
 
 export interface UpdateTimers {
@@ -32,7 +35,7 @@ export interface UpdateServiceDeps {
    * Saves the layout, ends the core so its tmux sessions stay, closes the connection and then calls `install`.
    * False when the app already quits: then nothing happens.
    */
-  releaseAndInstall(install: () => void): boolean;
+  releaseAndInstall(install: () => boolean): boolean;
   timers: UpdateTimers;
   log(text: string): void;
 }
@@ -77,7 +80,10 @@ export class UpdateService {
       return;
     }
     if (!this.deps.releaseAndInstall(() => this.deps.updater.install())) {
-      this.deps.log("update install: the app is already quitting");
+      // A quit runs, or the core is restarting (#130): nothing is installed, and the windows that hid the dialog on
+      // the click show it again.
+      this.deps.log("update install: not now (the app quits or the core restarts)");
+      this.deps.broadcast({ kind: "updateChanged", version });
       return;
     }
     this.installing = true;
@@ -165,7 +171,7 @@ export function lazyUpdater(load: () => Promise<UpdaterPort>): UpdaterPort {
     // Only reachable after a download, which needs a loaded updater.
     install: () => {
       if (!port) throw new Error("The updater is not loaded");
-      port.install();
+      return port.install();
     },
   };
 }
@@ -186,8 +192,9 @@ export class ManualUpdater implements UpdaterPort {
     this.errorListeners.push(listener);
   }
 
-  install(): void {
+  install(): boolean {
     this.installs += 1;
+    return true;
   }
 
   /** As if a check had found and downloaded `version`. */

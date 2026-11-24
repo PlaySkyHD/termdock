@@ -7,7 +7,9 @@ import type { UpdaterPort } from "./update-service.js";
 
 export async function createElectronUpdater(logger: Logger): Promise<UpdaterPort> {
   const { default: electronUpdater } = await import("electron-updater");
-  const { autoUpdater } = electronUpdater;
+  const { autoUpdater, NsisUpdater } = electronUpdater;
+  // On Windows the updater is the NSIS one; only it says whether the installer started (`install` → boolean).
+  if (!(autoUpdater instanceof NsisUpdater)) throw new Error("TermDock updates only its NSIS installation");
   autoUpdater.logger = {
     info: (message?: unknown) => logger.info(String(message)),
     warn: (message?: unknown) => logger.warn(String(message)),
@@ -27,7 +29,8 @@ export async function createElectronUpdater(logger: Logger): Promise<UpdaterPort
     },
     onDownloaded: (listener) => void autoUpdater.on("update-downloaded", (info) => listener(info.version)),
     onError: (listener) => void autoUpdater.on("error", (error) => listener(error)),
-    // Silent, and the installer starts the new version afterwards (`--updated /S --force-run`).
-    install: () => autoUpdater.quitAndInstall(true, true),
+    // Silent, and the installer starts the new version afterwards (`--updated /S --force-run`). Not
+    // `quitAndInstall`: it hides whether the installer started, and the quit is the job of `QuitFlow`.
+    install: () => autoUpdater.install(true, true),
   };
 }

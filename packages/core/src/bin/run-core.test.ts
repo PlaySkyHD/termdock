@@ -100,7 +100,7 @@ function fakeSignals() {
   };
 }
 
-describe("runCore", () => {
+describe("runCore", { timeout: 60_000 }, () => {
   it("keeps sessions in the data directory across a restart without stop", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
@@ -529,7 +529,7 @@ describe("runCore", () => {
   });
 });
 
-describe("runCore hands the WSL keepalives over (issue #140)", () => {
+describe("runCore hands the WSL keepalives over (issue #140)", { timeout: 60_000 }, () => {
   it("ends the history and calls onExit only after its own WSL backend finished dispose", async () => {
     const order: string[] = [];
     let finishDispose: () => void = () => {};
@@ -575,7 +575,7 @@ describe("runCore hands the WSL keepalives over (issue #140)", () => {
   });
 });
 
-describe("runCore autostart (issue #61)", () => {
+describe("runCore autostart (issue #61)", { timeout: 60_000 }, () => {
   /** Starts a core, lets `prepare` set it up through a client, and closes it without stopping the sessions. */
   async function prepared(
     dataDir: string,

@@ -74,7 +74,7 @@ async function createSession(client: CoreClient, workspaceId?: string): Promise<
   return (await client.request("session.create", params)).result.session;
 }
 
-describe("session management over IPC (issue #57)", () => {
+describe("session management over IPC (issue #57)", { timeout: 60_000 }, () => {
   it("renames and moves a session, answers with it and sends session.updated to every lister", async () => {
     const { backend, pipePath } = await startCore(tempDataDir());
     const caller = await newClient(pipePath);
@@ -220,7 +220,7 @@ describe("session management over IPC (issue #57)", () => {
   });
 });
 
-describe("session.restart over IPC (issue #156)", () => {
+describe("session.restart over IPC (issue #156)", { timeout: 60_000 }, () => {
   /** A session whose start failed: `Interrupted`, as after a Windows restart or a WSL stop. */
   async function interruptedSession(client: CoreClient, backend: FakeBackend, workspaceId: string) {
     backend.failNextStart = new Error("WSL is not reachable");

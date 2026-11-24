@@ -76,6 +76,10 @@ test("evaluate passes the core shutdown only with exit code 0", () => {
   assert.equal(shutdownCheck({ code: 0, signal: null }).ok, true);
 });
 
+test("evaluate shows how long the core shutdown took (issue #160)", () => {
+  assert.equal(shutdownCheck({ code: 0, signal: null, ms: 2345 }).text, "exit 0 (2345 ms)");
+});
+
 test("evaluate fails the core shutdown after a crash, as in the access violation of issue #160", () => {
   const check = shutdownCheck({ code: 3221225477, signal: null });
   assert.equal(check.ok, false);

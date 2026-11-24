@@ -7,6 +7,8 @@ export interface PtyProcess {
   write(data: string | Buffer): void;
   resize(cols: number, rows: number): void;
   kill(): void;
+  /** After `kill`: resolves once the process ended (or the wait for it gave up). Without it, `kill` counts as done. */
+  closed?(): Promise<void>;
   onData(listener: (data: string) => void): Disposable;
   onExit(listener: (event: { exitCode: number }) => void): Disposable;
 }
@@ -80,6 +82,11 @@ export class WslPty implements PtyHandle {
     this.exitListeners.clear();
     for (const subscription of this.subscriptions) subscription.dispose();
     if (!this.ended) this.process.kill();
+  }
+
+  /** After `dispose`: resolves once the tmux client's process ended (#160); at once before `dispose`. */
+  closed(): Promise<void> {
+    return this.disposed ? (this.process.closed?.() ?? Promise.resolve()) : Promise.resolve();
   }
 
   private handleData(data: string): void {

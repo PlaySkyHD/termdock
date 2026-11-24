@@ -87,6 +87,11 @@ export const DEFAULT_PERSIST_RETRY_MS = 5_000;
 export const DEFAULT_REATTACH_DELAYS_MS: readonly number[] = [0, 500, 2000];
 /** A re-attached PTY that lives this long gives the session a fresh re-attach budget. */
 const REATTACH_STABLE_MS = 30_000;
+/**
+ * How long `killAll` waits for the PTYs in all (issue #160). With the 5 s `core.shutdown` waits for starting sessions it
+ * stays below the 15 s the desktop waits for the answer.
+ */
+export const DEFAULT_KILL_ALL_PTY_WAIT_MS = 8_000;
 
 export interface CreateSessionInput {
   name: string;
@@ -510,7 +515,29 @@ export class SessionRegistry {
    * A running re-attach is cancelled first (a backend call in flight is awaited), so the backend session
    * cannot outlive the kill.
    */
-  async kill(sessionId: SessionId): Promise<SessionInfo> {
+  kill(sessionId: SessionId): Promise<SessionInfo> {
+    return this.killSession(sessionId);
+  }
+
+  /**
+   * Ends several sessions as `kill` does (`core.shutdown { stopSessions }`), but closes each PTY before its backend
+   * session: the PTYs close one after the other (issue #160), each backend session ends as soon as its PTY is closed,
+   * while the next PTY closes. Ended by the backend first, all tmux clients would end at the same moment, which
+   * crashes node-pty 1.1.0 now and then. The waits for the PTYs end together after `ptyWaitMs` (default 8 s); the
+   * remaining backend sessions are ended then without waiting, so a few hanging PTYs do not let the request time out.
+   * If ending a backend session fails, its PTY is gone already and the session becomes `Interrupted`. Resolves per
+   * session like `Promise.allSettled`.
+   */
+  killAll(
+    sessionIds: readonly SessionId[],
+    ptyWaitMs = DEFAULT_KILL_ALL_PTY_WAIT_MS,
+  ): Promise<PromiseSettledResult<SessionInfo>[]> {
+    const deadline = Date.now() + ptyWaitMs;
+    return Promise.allSettled(sessionIds.map((sessionId) => this.killSession(sessionId, deadline)));
+  }
+
+  /** `ptyDeadline` (see `killAll`): the PTY is closed first and awaited until then (`Date.now()` time). */
+  private async killSession(sessionId: SessionId, ptyDeadline?: number): Promise<SessionInfo> {
     const entry = this.entry(sessionId);
     const reattaching = entry.busy === "reattach";
     if (!reattaching) this.assertIdle(entry);
@@ -520,7 +547,7 @@ export class SessionRegistry {
         `Session ${sessionId} in state ${entry.info.state} has no process to kill`,
       );
     }
-    await this.endProcess(entry, "kill", () => this.terminate(entry));
+    await this.endProcess(entry, "kill", () => this.terminate(entry, ptyDeadline));
     this.setState(entry, "Exited");
     return snapshotInfo(entry.info);
   }
@@ -1017,10 +1044,24 @@ export class SessionRegistry {
 
   /**
    * Stops a running re-attach, then ends the backend session and releases the PTY. An exit the PTY reports
-   * meanwhile only records its code.
+   * meanwhile only records its code. With `ptyDeadline` (see `killAll`) the PTY is released first and its process
+   * awaited until that time.
    */
-  private async terminate(entry: SessionEntry): Promise<void> {
+  private async terminate(entry: SessionEntry, ptyDeadline?: number): Promise<void> {
     await this.cancelReattach(entry);
+    if (ptyDeadline !== undefined) {
+      const pty = entry.pty;
+      this.releasePty(entry);
+      const closed = pty?.closed?.();
+      if (closed) {
+        let timer: NodeJS.Timeout | undefined;
+        const late = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, ptyDeadline - Date.now()));
+        });
+        await Promise.race([closed, late]);
+        clearTimeout(timer);
+      }
+    }
     const backend = this.backendFor(entry.info.launch);
     if (backend) await this.killBackend(entry, backend);
     this.releasePty(entry);

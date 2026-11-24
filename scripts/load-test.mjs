@@ -106,7 +106,8 @@ export function evaluate(result, limits = LIMITS) {
     limit: 0,
     unit: "",
     text: shutdown
-      ? `exit ${shutdown.code ?? "-"}${shutdown.signal ? `, signal ${shutdown.signal}` : ""}`
+      ? `exit ${shutdown.code ?? "-"}${shutdown.signal ? `, signal ${shutdown.signal}` : ""}` +
+        (typeof shutdown.ms === "number" ? ` (${shutdown.ms} ms)` : "")
       : "-",
     rule: "exit 0",
     ok: shutdown?.code === 0,
@@ -256,6 +257,8 @@ async function main() {
       return;
     }
     const exited = new Promise((done) => current.once("exit", (code, signal) => done({ code, signal })));
+    // From the request until the process ended: with its PTYs closed one after the other (#160).
+    const started = Date.now();
     try {
       await clients.at(-1)?.request("core.shutdown", { stopSessions: false });
     } catch {
@@ -269,7 +272,9 @@ async function main() {
     const { code, signal } = await exited;
     clearTimeout(timer);
     // A core that had to be killed did not shut down: no code, so the check fails.
-    coreShutdown = timedOut ? { code: null, signal: signal ?? "timeout" } : { code, signal };
+    coreShutdown = timedOut
+      ? { code: null, signal: signal ?? "timeout" }
+      : { code, signal, ms: Date.now() - started };
     for (const client of clients.splice(0)) await client.close();
   }
 

@@ -158,14 +158,17 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     for (const { pty } of ptys) pty.write("for /L %i in (1,1,1000000) do @echo line %i\r");
     await waitFor(() => ptys.every((entry) => entry.output().includes("line 2000")), "full output");
     let slowest = 0;
-    // One after another, each awaited: several kills in a row crash node-pty 1.1.0 now and then (#160).
+    // One after another, each awaited: several kills in a row crash node-pty 1.1.0 now and then (#160). `kill()` only
+    // queues the close, so the time runs until the process ended (`closed()`), which includes `ClosePseudoConsole`.
     for (const { pty, exited } of ptys) {
       const started = performance.now();
       pty.kill();
+      await pty.closed();
       slowest = Math.max(slowest, performance.now() - started);
       await exited;
     }
-    // Measured at most 1.3 ms; a ClosePseudoConsole waiting for the output to drain would take seconds or forever.
+    // Measured at most 1.3 ms for the call alone; a ClosePseudoConsole waiting for the output to drain would take
+    // seconds or forever (the wait for the process gives up after 2.5 s).
     expect(slowest).toBeLessThan(1_000);
     await Promise.all(ptys.map((entry) => entry.exited));
     const reader = await conoutReader();

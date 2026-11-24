@@ -31,7 +31,7 @@ import {
 } from "./commands.js";
 import { DistroKeepalive, type KeepaliveSpawner } from "./keepalive.js";
 import { WslPty, type PtyProcess } from "./pty.js";
-import { runWsl, spawnKeepalive, spawnPty } from "./processes.js";
+import { ptysClosed, runWsl, spawnKeepalive, spawnPty } from "./processes.js";
 
 /** Runs `wsl.exe <args>` without PTY (with `WSL_UTF8=1`); never rejects. */
 export type WslRunner = (args: readonly string[], options: { timeoutMs: number }) => Promise<RunResult>;
@@ -57,6 +57,8 @@ export interface WslBackendOptions {
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
+  /** Resolves once the closes of all PTYs are done (#160); `dispose` waits for it. Defaults to the ConPTY queue. */
+  ptysClosed?: () => Promise<unknown>;
 }
 
 export const DEFAULT_TMUX_SOCKET = "termdock";
@@ -75,6 +77,7 @@ export class WslBackend implements Backend {
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
+  private readonly ptysClosed: () => Promise<unknown>;
   private defaultDistro: Promise<string> | undefined;
   private disposed = false;
 
@@ -87,6 +90,7 @@ export class WslBackend implements Backend {
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
+    this.ptysClosed = options.ptysClosed ?? (() => ptysClosed());
     const socket = this.socket;
     this.keepalive = new DistroKeepalive(
       options.spawnKeepalive ?? ((distro) => spawnKeepalive({ distro, socket })),
@@ -267,11 +271,12 @@ export class WslBackend implements Backend {
    * Hands the keepalives over (issue #140): every distro with known sessions keeps one running after the core ends,
    * until the next core takes it over or the tmux server ends; none is started afterwards, and `start`/`attach` fail
    * before their PTY. Resolves once that is done: usually within about 3 s, at the latest after a running take-over
-   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then.
+   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then. Meanwhile it waits for the PTYs the registry
+   * released to end one after the other (#160, at most `PTYS_CLOSED_TIMEOUT_MS`, 15 s).
    */
-  dispose(): Promise<void> {
+  async dispose(): Promise<void> {
     this.disposed = true;
-    return this.keepalive.dispose();
+    await Promise.all([this.keepalive.dispose(), this.ptysClosed()]);
   }
 
   private async open(

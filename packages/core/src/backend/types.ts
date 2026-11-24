@@ -19,6 +19,11 @@ export interface PtyHandle {
   /** Closes the PTY without ending the backend session (WSL: detaches from tmux; Windows: ends the shell). */
   dispose(): void;
   /**
+   * After `dispose`: resolves once the PTY's process has ended, or the wait for it gave up (WSL: ConPTYs end one
+   * after the other, issue #160). Optional: without it a disposed PTY counts as closed at once.
+   */
+  closed?(): Promise<void>;
+  /**
    * Problems `start` found that did not stop it (WSL: the working directory is missing, issue #113). Only on a PTY
    * from `start`; undefined or empty when there are none or the backend could not tell.
    */

@@ -459,3 +459,31 @@ Der Core SHALL `history.search` mit der Suche im gespeicherten Verlauf beantwort
 - **GIVEN** eine WSL-Session, die `Interrupted` ist, und eine tmux-Session unter ihrem Namen
 - **WHEN** ein Client `session.restart` sendet
 - **THEN** bindet der Core sich an diese tmux-Session an, und es gibt danach genau eine tmux-Session unter dem Namen
+
+### Requirement: PTYs vor den Sessions beim Shutdown mit Stop
+
+Bei `core.shutdown { stopSessions: true }` SHALL der Core je Session zuerst ihre PTY schließen und auf deren Prozessende warten, die PTYs nacheinander, zusammen höchstens 8 s. Erst danach SHALL er die Backend-Session beenden; die Backend-Sessions dürfen dabei gleichzeitig enden. Scheitert das Beenden einer Backend-Session, MUST diese Session `Interrupted` werden; die Antwort nennt sie als nicht beendet.
+
+#### Scenario: Reihenfolge
+
+- **GIVEN** zwei laufende Sessions
+- **WHEN** der Core beide mit Stop beendet
+- **THEN** ist jede PTY geschlossen, bevor das Backend ihre Session beendet, und keine Backend-Session wird beendet, solange ihre PTY noch schließt
+
+#### Scenario: Keine gleichzeitigen Enden
+
+- **GIVEN** zehn Sessions, deren PTYs `cmd.exe` über den Pfad des Core ausführen
+- **WHEN** der Core alle mit Stop beendet
+- **THEN** läuft keiner dieser Prozesse mehr, wenn das Backend die zugehörige Session beendet, und alle Sessions sind `Exited`
+
+#### Scenario: Backend scheitert
+
+- **GIVEN** zwei laufende Sessions, bei einer scheitert das Beenden der Backend-Session
+- **WHEN** der Core beide mit Stop beendet
+- **THEN** ist diese Session `Interrupted` und die andere `Exited`
+
+#### Scenario: Hängende PTY
+
+- **GIVEN** eine laufende Session, deren PTY nach dem Schließen nicht endet
+- **WHEN** der Core sie mit Stop beendet und die Wartezeit für die PTYs abgelaufen ist
+- **THEN** beendet das Backend die Session trotzdem, und sie ist `Exited`

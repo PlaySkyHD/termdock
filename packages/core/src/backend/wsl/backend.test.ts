@@ -389,6 +389,25 @@ describe("WslBackend", () => {
     expect(running().sort()).toEqual(["Debian", "Ubuntu"]);
   });
 
+  it("dispose resolves only once the closes of the PTYs are done (issue #160)", async () => {
+    let closed: () => void = () => {};
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async () => ok(),
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+      ptysClosed: () => new Promise<void>((resolve) => (closed = resolve)),
+    });
+    let done = false;
+    const disposed = backend.dispose().then(() => (done = true));
+    for (let i = 0; i < 5; i++) await flush();
+    expect(done).toBe(false);
+    closed();
+    await disposed;
+    expect(done).toBe(true);
+  });
+
   it("starts the keepalive only after the PTY of tmux, so the tmux server exists (review PR #148)", async () => {
     const order: string[] = [];
     const backend = new WslBackend({

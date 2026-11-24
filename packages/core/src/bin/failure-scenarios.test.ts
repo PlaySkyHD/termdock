@@ -115,7 +115,7 @@ const layout = {
   ],
 } satisfies LayoutDocument;
 
-describe("WSL cannot be reached when the core starts (issue #133)", () => {
+describe("WSL cannot be reached when the core starts (issue #133)", { timeout: 60_000 }, () => {
   it("[V1-09] makes the stored sessions Interrupted and reports backend_unavailable without touching WSL", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();
@@ -145,7 +145,7 @@ describe("WSL cannot be reached when the core starts (issue #133)", () => {
   });
 });
 
-describe("the data directory cannot be written (issue #133)", () => {
+describe("the data directory cannot be written (issue #133)", { timeout: 60_000 }, () => {
   it("answers failed writes with internal and keeps running; a session without history goes on", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

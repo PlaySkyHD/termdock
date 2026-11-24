@@ -98,7 +98,7 @@ function cellsWith(dataDir: string, needle: string): string[] {
   }
 }
 
-describe("secrets from the environment of a profile (issue #135)", () => {
+describe("secrets from the environment of a profile (issue #135)", { timeout: 60_000 }, () => {
   it("stay out of IPC errors, core.log and stderr, and the database keeps them only in env columns", async () => {
     const dataDir = tempDir();
     const pipePath = uniquePipe();

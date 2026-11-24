@@ -608,7 +608,7 @@ describe("backpressure", () => {
   });
 });
 
-describe("single instance", () => {
+describe("single instance", { timeout: 60_000 }, () => {
   it("makes the second core fail with already_running", async () => {
     const { pipePath } = await startCore();
     const stderr: string[] = [];

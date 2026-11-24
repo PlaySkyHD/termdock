@@ -43,6 +43,8 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
 - **`useConptyDll: true` setzen.** Mit der System-ConPTY wirft `kill()` im Hilfsprozess `conpty_console_list_agent` „AttachConsole failed“ auf stderr. Die mitgelieferte ConPTY fragt beim Start DA1 (`ESC [ c`) ab und wartet bis zu 3 s; xterm.js antwortet selbst, Node-Skripte ohne xterm müssen `ESC [ ? 1 ; 2 c` zurückschreiben.
 - **Agent-Shells setzen `ELECTRON_RUN_AS_NODE=1`.** Electron startet dann als Node („does not provide an export named 'BrowserWindow'“). Vor `electron .` mit `unset ELECTRON_RUN_AS_NODE` starten.
 - **tmux läuft selbst im Alternate Screen von xterm.js.** Ob eine TUI im Pane den Alternate Screen nutzt, nur über `tmux display-message -p '#{alternate_on}'` prüfen.
+- **Viele ConPTYs nie gleichzeitig enden lassen (#160).** node-pty 1.1.0 stürzt gelegentlich mit 0xC0000005 ab, wenn mehrere ConPTY-Prozesse im selben Moment enden. Das gilt auch für ein natürliches Ende, z. B. `exit` an viele Shells oder `kill-session` vieler Sessions. Im Core: PTYs aus `spawnConpty` mit `kill()` schließen, das reiht in die Schlange (`CloseQueue`) ein; auf `closed()` bzw. `ptysClosed()` warten (`packages/core/src/backend/wsl/processes.ts`). In Tests und Skripten mit node-pty direkt: nacheinander beenden, jede bis zu ihrem Ende. Prüfen mit `node scripts/pty-shutdown-repro.mjs --runs 50 --ptys 20 --mode dispose|kill`.
+- **Handle-Lecks messen (#177).** `backend/wsl/conpty-handles.test.ts` misst `(Get-Process -Id <pid>).HandleCount` über PowerShell (Median aus drei Messungen vor und nach N PTYs mit `cmd /c echo x`). Je natürlich endender ConPTY bleiben 2 Handles (HPCON), das ist eine bekannte Grenze (ADR 0008); nach `kill` bleiben keine.
 
 ## 3. Tests
 

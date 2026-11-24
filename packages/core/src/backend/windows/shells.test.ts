@@ -96,6 +96,17 @@ describe("findProgram", () => {
     expect(await findProgram("C:\\x\\app", files)).toEqual({ file: "C:\\x\\app.exe" });
   });
 
+  it("refuses a batch file given by absolute path, whatever the case of its extension (BatBadBut)", async () => {
+    const files = lookup(["C:\\tools\\build.cmd", "C:\\tools\\run.BAT"]);
+    expect(await findProgram("C:\\tools\\build.cmd", files)).toEqual({
+      missing:
+        'Program C:\\tools\\build.cmd is a batch file (build.cmd): run it as ["cmd.exe", "/d", "/c", "build.cmd", ...]',
+    });
+    expect(await findProgram("C:\\tools\\run.BAT", files)).toMatchObject({
+      missing: expect.stringContaining("is a batch file (run.BAT)"),
+    });
+  });
+
   it("explains a batch file, a missing program and a relative path", async () => {
     const files = lookup(["D:\\bin\\npm.cmd"]);
     expect(await findProgram("npm", files)).toEqual({
@@ -171,6 +182,21 @@ describe("shellEnvironment", () => {
     expect(
       shellEnvironment({ ELECTRON_RUN_AS_NODE: "1", electron_run_as_node: "1", A: "a", U: undefined }, {}),
     ).toEqual({ A: "a" });
+  });
+
+  it("drops every TERMDOCK_* variable of the core, so a TermDock in the shell does not take over its pipe or data", () => {
+    expect(
+      shellEnvironment(
+        {
+          TERMDOCK_PIPE: "\\\\.\\pipe\\x",
+          TERMDOCK_DATA_DIR: "C:\\data",
+          termdock_tmux_socket: "s",
+          TERMDOCKER: "kept",
+          A: "a",
+        },
+        undefined,
+      ),
+    ).toEqual({ TERMDOCKER: "kept", A: "a" });
   });
 
   it("lets launch.env replace a variable of the core whatever its case", () => {

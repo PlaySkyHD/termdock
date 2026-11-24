@@ -144,11 +144,16 @@ export function pendingPtyCloses(): number {
   return closes.size;
 }
 
-function endProcess(pid: number): void {
+/**
+ * Ends the process; false when it was already gone (`ESRCH`), so it ended by itself. Any other failure (no right to
+ * end it) counts as an end by the core: the process still runs and is closed another way.
+ */
+function endProcess(pid: number): boolean {
   try {
     process.kill(pid);
-  } catch {
-    // Already gone.
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
@@ -223,9 +228,10 @@ function withQueuedKill(terminal: NodePty.IPty, closer: Closer): ConptyProcess {
  * `terminal`, closed when its output is lost. Its end is reported once, only when its process has ended, with the exit
  * code the ConPTY reported (-1 if it reported none in time) and `lost` when the core closed it for the loss. node-pty
  * reports an end as soon as its output socket closes, which a lost worker does while the process still runs; reported
- * then, the registry would attach a second tmux client while the first still lives.
+ * then, the registry would attach a second tmux client while the first still lives. Exported for tests only; the
+ * core reaches it through `spawnConpty`.
  */
-function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): ConptyProcess {
+export function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): ConptyProcess {
   let ended = false;
   let closing = false;
   const closer = closerOf(terminal);
@@ -252,13 +258,11 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
       // that runs `ClosePseudoConsole` on the native handle while the exit thread, woken by this very end of the
       // process, releases it (crashed the test process), and node-pty defers it until the first output, which may
       // never come without the worker. The ConPTY ends with its process (node-pty released it after the start).
-      // A process that ended by itself before the close (`exit 3` at the moment of the loss) keeps its exit code.
+      // A process that ended by itself before the close (`exit 3` at the moment of the loss) keeps its exit code, also
+      // when node-pty has not set it yet: then `process.kill` finds no process (`ESRCH`).
       let endedByCore = false;
       try {
-        if (!processEnded()) {
-          endedByCore = true;
-          endProcess(terminal.pid);
-        }
+        if (!processEnded()) endedByCore = endProcess(terminal.pid);
         if (!(await waitUntil(processEnded, PTY_END_WAIT_MS))) {
           // The process did not end (e.g. no right to end it): node-pty's `kill` as the last resort.
           try {

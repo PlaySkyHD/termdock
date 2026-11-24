@@ -389,6 +389,35 @@ describe("WindowsBackend without a real shell", () => {
     expect(spawned).toEqual([]);
   });
 
+  it("never starts a batch file given by absolute path, so cmd.exe cannot parse its arguments (BatBadBut)", async () => {
+    const { registry, spawned } = fake({ isFile: async (file) => file === "C:\\tools\\build.cmd" });
+    await expect(
+      registry.create({ name: "x", launch: cmd("C:\\", { command: ["C:\\tools\\build.cmd", "x&calc"] }) }),
+    ).rejects.toMatchObject({
+      code: "backend_unavailable",
+      message: expect.stringContaining("is a batch file (build.cmd)"),
+    });
+    expect(spawned).toEqual([]);
+  });
+
+  it("starts the shell without the TERMDOCK_* variables of the core", async () => {
+    const envs: Readonly<Record<string, string>>[] = [];
+    const { registry } = fake({
+      env: {
+        SystemRoot: "C:\\Windows",
+        TERMDOCK_PIPE: "\\\\.\\pipe\\core",
+        TERMDOCK_DATA_DIR: "C:\\d",
+        KEEP: "1",
+      },
+      spawnPty: async (_file, _args, _size, _cwd, env) => {
+        envs.push(env);
+        return new FakeProcess();
+      },
+    });
+    await registry.create({ name: "x", launch: cmd("C:\\") });
+    expect(envs).toEqual([{ SystemRoot: "C:\\Windows", KEEP: "1" }]);
+  });
+
   it("counts a directory check that does not answer as missing", async () => {
     const { registry, spawned } = fake({ isDirectory: () => new Promise(() => {}), cwdCheckTimeoutMs: 20 });
     const session = await registry.create({ name: "x", launch: cmd("\\\\offline\\share") });

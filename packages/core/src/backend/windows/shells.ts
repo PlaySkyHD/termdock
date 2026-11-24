@@ -103,29 +103,35 @@ export async function findProgram(
   const hasExtension = /\.[^\\/.]+$/.test(program);
   const forms = (base: string, extensions: readonly string[]): string[] =>
     hasExtension ? [base] : extensions.map((extension) => `${base}${extension}`);
+  // CreateProcess runs a `.cmd`/`.bat` through cmd.exe, which parses the arguments again (`&calc` would run, BatBadBut):
+  // a batch file is refused wherever it was found, also by absolute path.
+  const batchMessage = (file: string): { missing: string } => {
+    const shown = path.win32.basename(file);
+    return {
+      missing: `Program ${name} is a batch file (${shown}): run it as ["cmd.exe", "/d", "/c", "${shown}", ...]`,
+    };
+  };
+  const isBatch = (file: string): boolean => BATCH.includes(path.win32.extname(file).toLowerCase());
   if (/[\\/]/.test(program)) {
     if (!isWindowsPath(program)) return { missing: `Program ${name} must be a name or an absolute path` };
+    if (isBatch(program)) return batchMessage(program);
     const file = await firstFile(hasExtension ? [program] : [program, ...forms(program, RUNNABLE)], lookup);
-    return file === undefined ? { missing: `Program ${name} was not found` } : { file };
+    if (file === undefined) return { missing: `Program ${name} was not found` };
+    return isBatch(file) ? batchMessage(file) : { file };
   }
   const dirs = pathDirs(lookup.env);
   const file = await firstFile(
     dirs.flatMap((dir) => forms(path.win32.join(dir, program), RUNNABLE)),
     lookup,
   );
-  if (file !== undefined && !BATCH.includes(path.win32.extname(file).toLowerCase())) return { file };
+  if (file !== undefined && !isBatch(file)) return { file };
   const batch =
     file ??
     (await firstFile(
       dirs.flatMap((dir) => forms(path.win32.join(dir, program), BATCH)),
       lookup,
     ));
-  if (batch !== undefined) {
-    const shown = path.win32.basename(batch);
-    return {
-      missing: `Program ${name} is a batch file (${shown}): run it as ["cmd.exe", "/d", "/c", "${shown}", ...]`,
-    };
-  }
+  if (batch !== undefined) return batchMessage(batch);
   return { missing: `Program ${name} was not found in PATH` };
 }
 
@@ -189,8 +195,18 @@ export function windowsCwd(cwd: string, home: string): string | undefined {
 const CORE_ONLY_VARIABLES = new Set(["ELECTRON_RUN_AS_NODE"]);
 
 /**
- * Environment of a shell: the core's own without `CORE_ONLY_VARIABLES`, then `extra` (`launch.env`). A name of `extra`
- * replaces the variable of the core whatever its case, so the block never holds `Path` and `PATH` side by side.
+ * Whether a variable of the core stays out of a shell: `ELECTRON_RUN_AS_NODE`, and every `TERMDOCK_*` (pipe, data
+ * folder, tmux socket of this core), so a TermDock started in the shell does not take over this core's pipe or data.
+ */
+function coreOnly(name: string): boolean {
+  const upper = name.toUpperCase();
+  return CORE_ONLY_VARIABLES.has(upper) || upper.startsWith("TERMDOCK_");
+}
+
+/**
+ * Environment of a shell: the core's own without the core-only variables (`coreOnly`), then `extra` (`launch.env`). A
+ * name of `extra` replaces the variable of the core whatever its case, so the block never holds `Path` and `PATH`
+ * side by side.
  */
 export function shellEnvironment(
   base: Readonly<Record<string, string | undefined>>,
@@ -198,7 +214,7 @@ export function shellEnvironment(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(base)) {
-    if (value !== undefined && !CORE_ONLY_VARIABLES.has(name.toUpperCase())) env[name] = value;
+    if (value !== undefined && !coreOnly(name)) env[name] = value;
   }
   for (const [name, value] of Object.entries(extra ?? {})) {
     for (const existing of Object.keys(env)) {

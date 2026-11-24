@@ -43,6 +43,12 @@ Die Suche nach Shell und Programm SHALL asynchron laufen, alle Orte zugleich, je
 - **WHEN** ein Client die Session anlegt
 - **THEN** startet kein Prozess, und die Meldung sagt, dass `npm.cmd` eine Batch-Datei ist und als `["cmd.exe", "/d", "/c", "npm.cmd", ...]` laufen kann
 
+#### Scenario: Batch-Datei mit absolutem Pfad
+
+- **GIVEN** `launch.command` ist `["C:\\tools\\build.cmd", "x&calc"]`
+- **WHEN** ein Client die Session anlegt
+- **THEN** startet kein Prozess (`cmd.exe` würde `&calc` ausführen), und die Meldung nennt `build.cmd` als Batch-Datei, auch bei Endung `.BAT`
+
 ### Requirement: Fehlende Shell
 
 Ist die gewählte Shell nicht installiert, MUST der Start mit einem `CoreError` `backend_unavailable` scheitern, dessen Text die Shell und die anderen Shells nennt, ohne einen Prozess zu starten; die Session wird `Interrupted`.
@@ -86,13 +92,19 @@ Nennt der `LaunchSpec` keine Shell (auch nicht über `defaultShell` der Einstell
 
 ### Requirement: Umgebung der Windows-Shell
 
-Die Shell SHALL die Umgebung des Core ohne `ELECTRON_RUN_AS_NODE` erhalten, dazu `launch.env`. Ein Name aus `launch.env` MUST die Variable des Core ohne Rücksicht auf Groß- und Kleinschreibung ersetzen.
+Die Shell SHALL die Umgebung des Core ohne `ELECTRON_RUN_AS_NODE` und ohne jede Variable `TERMDOCK_*` (Pipe, Datenordner, tmux-Socket dieses Core) erhalten, dazu `launch.env`. Ein Name aus `launch.env` MUST die Variable des Core ohne Rücksicht auf Groß- und Kleinschreibung ersetzen.
 
 #### Scenario: Electron-Variable fehlt
 
 - **GIVEN** ein Core mit `ELECTRON_RUN_AS_NODE=1` und `launch.env` `{ TD_VALUE_65: "abc" }`
 - **WHEN** die Shell `%TD_VALUE_65%` ausgibt und prüft, ob `ELECTRON_RUN_AS_NODE` gesetzt ist
 - **THEN** zeigt sie `abc`, und die Variable ist nicht gesetzt
+
+#### Scenario: Variablen des Core
+
+- **GIVEN** ein Core mit `TERMDOCK_PIPE` und `TERMDOCK_DATA_DIR`
+- **WHEN** eine Windows-Shell startet
+- **THEN** fehlen beide in ihrer Umgebung, und ein darin gestartetes TermDock nutzt Pipe und Datenordner nach Standard
 
 ### Requirement: Größe und Snapshot der Windows-Shell
 

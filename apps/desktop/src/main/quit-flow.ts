@@ -2,8 +2,8 @@
 // sessions, and the order of it all. Electron (windows, `app`) and the core connection come in as functions, so
 // the order, "Abbrechen", a second quit and the error paths run in tests.
 import { DEFAULT_SETTINGS } from "@termdock/protocol";
-import type { SessionState, SettingsPatch } from "@termdock/protocol";
-import { countActive, outcomeOfAnswer, planQuit } from "../shared/quit-decision.js";
+import type { BackendKind, SessionState, SettingsPatch } from "@termdock/protocol";
+import { countActive, countActiveWindows, outcomeOfAnswer, planQuit } from "../shared/quit-decision.js";
 import type { QuitAnswer, QuitReason, QuitSettings } from "../shared/quit-decision.js";
 
 /** `undefined`: the user cancelled, the app stays. */
@@ -11,12 +11,15 @@ export type QuitDecision = { stopSessions: boolean } | undefined;
 
 export interface DecideDeps {
   /** The sessions of the core; `undefined` when the core did not answer (the dep has logged why). */
-  listSessions(): Promise<readonly { state: SessionState }[] | undefined>;
+  listSessions(): Promise<readonly { state: SessionState; launch?: { backend: BackendKind } }[] | undefined>;
   /** The settings; `undefined` when the core did not answer (a core of protocol 1.2 has none). */
   getSettings(): Promise<QuitSettings | undefined>;
   saveSettings(patch: SettingsPatch): Promise<void>;
-  /** Shows the dialog and returns the answer; `undefined` when there is no window to ask in. */
-  ask(activeSessions: number): Promise<QuitAnswer | undefined>;
+  /**
+   * Shows the dialog and returns the answer; `undefined` when there is no window to ask in. `windowsSessions`: how
+   * many of the active ones run a Windows shell, which ends with the core (#65).
+   */
+  ask(activeSessions: number, windowsSessions: number): Promise<QuitAnswer | undefined>;
   log(text: string): void;
 }
 
@@ -33,7 +36,7 @@ export async function decideQuit(deps: DecideDeps, reason: QuitReason): Promise<
   const activeSessions = countActive(sessions);
   const plan = planQuit({ reason, activeSessions, settings });
   if (plan.kind === "quit") return { stopSessions: plan.stopSessions };
-  const answer = await deps.ask(activeSessions);
+  const answer = await deps.ask(activeSessions, countActiveWindows(sessions));
   if (answer === undefined) return { stopSessions: false };
   const outcome = outcomeOfAnswer(answer);
   if (outcome.kind === "cancel") return undefined;

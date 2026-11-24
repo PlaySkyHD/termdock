@@ -634,18 +634,39 @@ input {
   color: var(--td-muted);
 }
 
-.new-session__field input {
+.new-session__field input,
+.new-session__field select {
   height: 24px;
   padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 2px;
   background: var(--td-input);
   color: var(--td-foreground);
+  font: inherit;
+  font-size: 13px;
 }
 
-.new-session__field input:focus {
+.new-session__field input:focus,
+.new-session__field select:focus {
   border-color: var(--td-accent);
   outline: none;
+}
+
+.new-session__limit {
+  margin: 0;
+  font-size: 11px;
+  color: var(--td-muted);
+}
+
+/* Windows shells end with the core (#65): a badge in the row, the full sentence in its tooltip. */
+.backend-badge {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--td-status-warning);
+  border-radius: 2px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--td-status-warning);
 }
 
 .new-session__note {
@@ -948,6 +969,12 @@ input {
   border-radius: 2px;
   background: var(--td-status-warning);
   color: #1e1e1e;
+}
+
+.status-bar__item--persistence {
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  line-height: 14px;
 }
 
 .status-bar__spacer {

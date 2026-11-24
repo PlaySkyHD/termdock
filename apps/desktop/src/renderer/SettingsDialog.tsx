@@ -9,6 +9,7 @@ import type { TermdockApi } from "../shared/bridge.js";
 import { failureText } from "./dialog-state.js";
 import { trapFocus } from "./focus-trap.js";
 import { overviewRows } from "./keymap.js";
+import { WINDOWS_PERSISTENCE_TEXT } from "./session-display.js";
 import {
   emptyProfileForm,
   generalForm,
@@ -790,7 +791,7 @@ function ProfileEditor({
           onChange={(distro) => set("distro", distro)}
         />
       ) : (
-        <Field label="Shell">
+        <Field label="Shell" note={`${WINDOWS_PERSISTENCE_TEXT}.`}>
           <select
             value={form.shell}
             data-field="shell"

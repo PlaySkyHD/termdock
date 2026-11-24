@@ -22,7 +22,7 @@ import { claimsAfterRestart, layoutWindow } from "./pane-layout.js";
 import type { PlacedDivider, ShareRect } from "./pane-layout.js";
 import { paneContent } from "./pane-placeholder.js";
 import { paneCount } from "./pane-tree.js";
-import { isAttachable, warningTexts } from "./session-display.js";
+import { isAttachable, rawSnapshot, warningTexts } from "./session-display.js";
 import type { WarningText } from "./session-display.js";
 import type { TerminalController, ViewRole, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
@@ -452,6 +452,7 @@ function PaneView({
           commands={commands}
           onContextPaste={onContextPaste}
           claimOnOpen={claimOnOpen}
+          rawSnapshot={session !== undefined && rawSnapshot(session.launch)}
           {...(onRestartCore ? { onRestartCore } : {})}
         />
         <RestartBarView bar={restartBar(session, role, restartStatus)} onRestart={restart} />

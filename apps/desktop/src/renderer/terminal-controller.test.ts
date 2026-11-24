@@ -282,6 +282,19 @@ describe("TerminalController", () => {
     expect(surface.screen).toEqual(["<reset>", "user@host:~$ \x1b[?25l\x1b[?12l\x1b[?25h"]);
   });
 
+  it("keeps the line breaks at the end of a raw snapshot, so later output starts on the next line (#65)", async () => {
+    const api = new FakeApi();
+    const surface = new FakeSurface();
+    const controller = new TerminalController(api, surface, () => {}, { rawSnapshot: true });
+
+    const opening = controller.open("s1");
+    // A restarted Windows shell: the separator, then the shell's first output arrives live.
+    api.answerAttach({ snapshot: bytes("\r\n--- Neu gestartet 2026-11-24T00:00:00.000Z ---\r\n") });
+    await opening;
+
+    expect(surface.screen).toEqual(["<reset>", "\r\n--- Neu gestartet 2026-11-24T00:00:00.000Z ---\r\n"]);
+  });
+
   it("trusts writer and size events that arrive during the attach over the attach answer", async () => {
     const api = new FakeApi();
     const surface = new FakeSurface();

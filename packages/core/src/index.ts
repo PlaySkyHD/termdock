@@ -86,8 +86,12 @@ export type { PtySpawner, WslBackendOptions, WslRunner } from "./backend/wsl/bac
 export type { RunResult } from "./backend/wsl/commands.js";
 export { DistroKeepalive } from "./backend/wsl/keepalive.js";
 export type { KeepaliveProcess, KeepaliveSpawner } from "./backend/wsl/keepalive.js";
-export type { PtyProcess } from "./backend/wsl/pty.js";
+export type { PtyProcess, PtyProcessExit } from "./backend/conpty/pty.js";
 export { wslPath } from "./backend/wsl/paths.js";
+
+// windows backend (issue #65)
+export { WindowsBackend } from "./backend/windows/backend.js";
+export type { WindowsBackendOptions, WindowsPtySpawner } from "./backend/windows/backend.js";
 
 // pipe security
 export { DEFAULT_HELLO_TIMEOUT_MS, DEFAULT_MAX_PENDING_HANDSHAKES } from "./ipc/server.js";

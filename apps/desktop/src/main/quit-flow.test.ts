@@ -35,6 +35,23 @@ describe("decideQuit", () => {
     expect(calls).toEqual(["ask 1"]);
   });
 
+  it("[V1-13][V1-15] tells the dialog how many of the running sessions are Windows shells (#65)", async () => {
+    const counts: number[][] = [];
+    const { deps } = decideSetup({
+      listSessions: async () => [
+        { state: "Running", launch: { backend: "windows" } },
+        { state: "Detached", launch: { backend: "wsl" } },
+        { state: "Exited", launch: { backend: "windows" } },
+      ],
+      ask: async (active, windows) => {
+        counts.push([active, windows]);
+        return { choice: "keepSessions", remember: false };
+      },
+    });
+    expect(await decideQuit(deps, "user")).toEqual({ stopSessions: false });
+    expect(counts).toEqual([[2, 1]]);
+  });
+
   it("does not ask without a running session", async () => {
     const { deps, calls } = decideSetup({ listSessions: async () => [{ state: "Exited" }] });
     expect(await decideQuit(deps, "user")).toEqual({ stopSessions: false });

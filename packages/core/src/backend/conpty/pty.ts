@@ -1,8 +1,15 @@
-// PtyHandle around the node-pty process that runs the tmux client (ADR 0003).
+// PtyHandle around a node-pty ConPTY process: the tmux client of a WSL session or the shell of a Windows session
+// (ADR 0003, ADR 0008).
 import type { SessionWarning, TerminalSize } from "@termdock/protocol";
 import type { Disposable, PtyHandle } from "../types.js";
 
-/** The part of node-pty's `IPty` the backend uses. */
+/** How a PTY process ended. `lost`: the core closed it because its output was lost (ADR 0008), not by itself. */
+export interface PtyProcessExit {
+  exitCode: number;
+  lost?: boolean;
+}
+
+/** The part of node-pty's `IPty` the backends use. */
 export interface PtyProcess {
   write(data: string | Buffer): void;
   resize(cols: number, rows: number): void;
@@ -10,7 +17,7 @@ export interface PtyProcess {
   /** After `kill`: resolves once the process ended (or the wait for it gave up). Without it, `kill` counts as done. */
   closed?(): Promise<void>;
   onData(listener: (data: string) => void): Disposable;
-  onExit(listener: (event: { exitCode: number }) => void): Disposable;
+  onExit(listener: (event: PtyProcessExit) => void): Disposable;
 }
 
 type ExitEvent = { exitCode?: number };
@@ -26,13 +33,13 @@ const DA1_REPLY = "\x1b[?1;2c";
 const encoder = new TextEncoder();
 
 /**
- * One tmux client. Answers the first DA1 query of the bundled ConPTY itself and removes it from the output,
- * so the start does not wait up to 3 s for a view; skipped once a DA1 answer came from outside. No view
- * sees the removed query, so none answers it twice. When the client ends, `resolveEnd` decides whether the session ended
- * (exit code) or only the client was lost (no exit code).
+ * One ConPTY process. Answers the first DA1 query of the bundled ConPTY itself and removes it from the output, so the
+ * start does not wait up to 3 s for a view; skipped once a DA1 answer came from outside. No view sees the removed
+ * query, so none answers it twice. When the process ends, `resolveEnd` decides what that means for the session: WSL
+ * asks tmux (program ended with exit code, or only the client was lost), Windows takes the exit code of the shell.
  */
-export class WslPty implements PtyHandle {
-  /** Set by `WslBackend.start` (issue #113). */
+export class ConptyPty implements PtyHandle {
+  /** Set by the backend's `start` (issue #113). */
   warnings: readonly SessionWarning[] | undefined;
   private readonly dataListeners = new Set<(data: Uint8Array) => void>();
   private readonly exitListeners = new Set<(event: ExitEvent) => void>();
@@ -40,14 +47,16 @@ export class WslPty implements PtyHandle {
   private answerDa1 = true;
   private ended = false;
   private disposed = false;
+  private markReported: () => void = () => {};
+  private readonly reported = new Promise<void>((resolve) => (this.markReported = resolve));
 
   constructor(
     private readonly process: PtyProcess,
-    private readonly resolveEnd: () => Promise<ExitEvent>,
+    private readonly resolveEnd: (exit: PtyProcessExit) => Promise<ExitEvent>,
   ) {
     this.subscriptions = [
       process.onData((data) => this.handleData(data)),
-      process.onExit(() => this.handleExit()),
+      process.onExit((exit) => this.handleExit(exit)),
     ];
   }
 
@@ -74,7 +83,7 @@ export class WslPty implements PtyHandle {
     return { dispose: () => this.exitListeners.delete(listener) };
   }
 
-  /** Ends the tmux client only; the session keeps running and no end is reported. */
+  /** Closes the process (WSL: the tmux client only, the session keeps running; Windows: the shell). Reports no end. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -82,11 +91,21 @@ export class WslPty implements PtyHandle {
     this.exitListeners.clear();
     for (const subscription of this.subscriptions) subscription.dispose();
     if (!this.ended) this.process.kill();
+    this.markReported();
   }
 
-  /** After `dispose`: resolves once the tmux client's process ended (#160); at once before `dispose`. */
+  /** After `dispose`: resolves once the process ended (#160); at once before `dispose`. */
   closed(): Promise<void> {
     return this.disposed ? (this.process.closed?.() ?? Promise.resolve()) : Promise.resolve();
+  }
+
+  /**
+   * Resolves once the end of the process has been reported to the exit listeners, or once the handle was disposed
+   * without reporting it. A backend that ends the process itself (Windows `kill`) waits for it, so the registry has
+   * the exit code before the kill returns.
+   */
+  endReported(): Promise<void> {
+    return this.reported;
   }
 
   private handleData(data: string): void {
@@ -102,15 +121,16 @@ export class WslPty implements PtyHandle {
     for (const listener of [...this.dataListeners]) listener(bytes);
   }
 
-  private handleExit(): void {
+  private handleExit(exit: PtyProcessExit): void {
     if (this.ended || this.disposed) return;
     this.ended = true;
-    void this.resolveEnd()
+    void this.resolveEnd(exit)
       .catch((): ExitEvent => ({}))
       .then((event) => {
         if (this.disposed) return;
         for (const listener of [...this.exitListeners]) listener(event);
         this.exitListeners.clear();
+        this.markReported();
       });
   }
 }

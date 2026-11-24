@@ -1,0 +1,183 @@
+import { describe, expect, it } from "vitest";
+import {
+  defaultShell,
+  envValue,
+  findProgram,
+  findShell,
+  launchProgram,
+  shellCandidates,
+  shellEnvironment,
+  shellMissingMessage,
+  windowsCwd,
+} from "./shells.js";
+import type { ShellLookup } from "./shells.js";
+
+const env = {
+  SystemRoot: "C:\\Windows",
+  ProgramFiles: "C:\\Program Files",
+  Path: 'relative\\bin;C:\\Tools;"C:\\Quoted Dir";;D:\\bin',
+};
+
+/** A file system with `files`; a path in `hanging` never answers. */
+function lookup(
+  files: string[],
+  overrides: Record<string, string | undefined> = {},
+  hanging: string[] = [],
+): ShellLookup {
+  const known = new Set(files.map((file) => file.toLowerCase()));
+  return {
+    env: { ...env, ...overrides },
+    isFile: (file) =>
+      hanging.some((dir) => file.startsWith(dir))
+        ? new Promise<boolean>(() => {})
+        : Promise.resolve(known.has(file.toLowerCase())),
+    timeoutMs: 20,
+  };
+}
+
+describe("findShell (issue #65)", () => {
+  it("takes the known places first: System32 for cmd and powershell, the PowerShell 7 folder for pwsh", async () => {
+    const all = lookup([
+      "C:\\Windows\\System32\\cmd.exe",
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "C:\\Tools\\cmd.exe",
+    ]);
+    expect(await findShell("cmd", all)).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(await findShell("powershell", all)).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(await findShell("pwsh", all)).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+  });
+
+  it("then searches each absolute PATH directory, skips relative and empty ones and strips quotes", async () => {
+    expect(shellCandidates("pwsh", env)).toEqual([
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "C:\\Tools\\pwsh.exe",
+      "C:\\Quoted Dir\\pwsh.exe",
+      "D:\\bin\\pwsh.exe",
+    ]);
+    expect(await findShell("pwsh", lookup(["D:\\bin\\pwsh.exe", "C:\\Quoted Dir\\pwsh.exe"]))).toBe(
+      "C:\\Quoted Dir\\pwsh.exe",
+    );
+  });
+
+  it("is undefined when the shell is installed nowhere", async () => {
+    expect(await findShell("pwsh", lookup([]))).toBeUndefined();
+  });
+
+  it("counts a PATH directory that does not answer as absent and still finds a later one (hung share)", async () => {
+    const hung = lookup(["D:\\bin\\pwsh.exe"], { Path: "\\\\nas\\tools;D:\\bin" }, ["\\\\nas"]);
+    const started = Date.now();
+    expect(await findShell("pwsh", hung)).toBe("D:\\bin\\pwsh.exe");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("reads PATH and SystemRoot in any case", async () => {
+    expect(envValue({ PATH: "x" }, "Path")).toBe("x");
+    const upper = lookup(["E:\\w\\System32\\cmd.exe"], { SystemRoot: undefined, SYSTEMROOT: "E:\\w" });
+    expect(await findShell("cmd", upper)).toBe("E:\\w\\System32\\cmd.exe");
+  });
+});
+
+describe("defaultShell", () => {
+  it("is pwsh when PowerShell 7 is installed, else Windows PowerShell", async () => {
+    expect(await defaultShell(lookup(["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]))).toBe("pwsh");
+    expect(await defaultShell(lookup([]))).toBe("powershell");
+  });
+});
+
+describe("findProgram", () => {
+  it("finds a bare name in PATH with .exe or .com, and an absolute path as it is or with .exe", async () => {
+    const files = lookup(["D:\\bin\\git.exe", "C:\\Tools\\more.com", "C:\\x\\app.exe"]);
+    expect(await findProgram("git", files)).toEqual({ file: "D:\\bin\\git.exe" });
+    expect(await findProgram("git.exe", files)).toEqual({ file: "D:\\bin\\git.exe" });
+    expect(await findProgram("more", files)).toEqual({ file: "C:\\Tools\\more.com" });
+    expect(await findProgram("C:\\x\\app", files)).toEqual({ file: "C:\\x\\app.exe" });
+  });
+
+  it("explains a batch file, a missing program and a relative path", async () => {
+    const files = lookup(["D:\\bin\\npm.cmd"]);
+    expect(await findProgram("npm", files)).toEqual({
+      missing: 'Program npm is a batch file (npm.cmd): run it as ["cmd.exe", "/d", "/c", "npm.cmd", ...]',
+    });
+    expect(await findProgram("npm.cmd", files)).toMatchObject({
+      missing: expect.stringContaining("batch file"),
+    });
+    expect(await findProgram("nope", files)).toEqual({ missing: "Program nope was not found in PATH" });
+    expect(await findProgram("bin\\tool", files)).toEqual({
+      missing: "Program bin\\tool must be a name or an absolute path",
+    });
+  });
+});
+
+describe("launchProgram", () => {
+  const shells = lookup([
+    "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "C:\\Windows\\System32\\cmd.exe",
+    "D:\\bin\\git.exe",
+  ]);
+
+  it("runs the shell with its own arguments", async () => {
+    expect(await launchProgram({}, "pwsh", shells)).toEqual({
+      file: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      args: ["-NoLogo"],
+    });
+    expect(await launchProgram({}, "powershell", shells)).toMatchObject({ args: ["-NoLogo"] });
+    expect(await launchProgram({ command: [] }, "cmd", shells)).toEqual({
+      file: "C:\\Windows\\System32\\cmd.exe",
+      args: [],
+    });
+  });
+
+  it("runs a command as an argument array, its program found in PATH, without the shell", async () => {
+    const program = await launchProgram(
+      { command: ["git", "log", "--format=%H; rm -rf /"] },
+      "pwsh",
+      lookup(["D:\\bin\\git.exe"]),
+    );
+    expect(program).toEqual({ file: "D:\\bin\\git.exe", args: ["log", "--format=%H; rm -rf /"] });
+  });
+
+  it("names a missing shell and the other shells", async () => {
+    expect(await launchProgram({}, "pwsh", lookup([]))).toEqual({ error: shellMissingMessage("pwsh") });
+    expect(shellMissingMessage("pwsh")).toBe(
+      "PowerShell 7 (pwsh.exe) is not installed on this computer: install it or choose powershell or cmd",
+    );
+  });
+});
+
+describe("windowsCwd", () => {
+  const home = "C:\\Users\\dev";
+  it("puts ~ and paths below it into the home directory and keeps absolute Windows paths", () => {
+    expect(windowsCwd("~", home)).toBe(home);
+    expect(windowsCwd("~\\src", home)).toBe("C:\\Users\\dev\\src");
+    expect(windowsCwd("~/src/app", home)).toBe("C:\\Users\\dev\\src\\app");
+    expect(windowsCwd("D:\\work", home)).toBe("D:\\work");
+    expect(windowsCwd("\\\\server\\share\\x", home)).toBe("\\\\server\\share\\x");
+  });
+
+  it("names no directory for Linux, relative or drive-relative paths", () => {
+    expect(windowsCwd("/home/dev", home)).toBeUndefined();
+    expect(windowsCwd("src", home)).toBeUndefined();
+    expect(windowsCwd("C:dev", home)).toBeUndefined();
+    expect(windowsCwd("~dev", home)).toBeUndefined();
+  });
+});
+
+describe("shellEnvironment", () => {
+  it("drops ELECTRON_RUN_AS_NODE of the core in any case and keeps the rest", () => {
+    expect(
+      shellEnvironment({ ELECTRON_RUN_AS_NODE: "1", electron_run_as_node: "1", A: "a", U: undefined }, {}),
+    ).toEqual({ A: "a" });
+  });
+
+  it("lets launch.env replace a variable of the core whatever its case", () => {
+    expect(shellEnvironment({ Path: "C:\\old", HOME: "x" }, { PATH: "C:\\new", EXTRA: "1" })).toEqual({
+      HOME: "x",
+      PATH: "C:\\new",
+      EXTRA: "1",
+    });
+  });
+});

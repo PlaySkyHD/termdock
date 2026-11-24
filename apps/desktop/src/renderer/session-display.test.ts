@@ -7,8 +7,11 @@ import {
   endedNotice,
   isAttachable,
   isRunning,
+  persistenceLimit,
+  rawSnapshot,
   stateText,
   warningTexts,
+  WINDOWS_PERSISTENCE_TEXT,
 } from "./session-display.js";
 
 function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
@@ -79,6 +82,16 @@ describe("endedNotice", () => {
     expect(notice?.detail).not.toMatch(/läuft/i);
   });
 
+  it("[V1-15] says an interrupted Windows session ended with the core, which it only runs alongside", () => {
+    const notice = endedNotice(
+      session("w", { state: "Interrupted", launch: { backend: "windows", shell: "pwsh", cwd: "~" } }),
+    );
+    expect(notice?.title).toBe("Unterbrochen");
+    expect(notice?.detail).toContain("mit dem Core beendet");
+    expect(notice?.detail).toContain("nur, solange der TermDock-Core läuft");
+    expect(notice?.detail).not.toContain("tmux");
+  });
+
   it("says a starting session is starting", () => {
     expect(endedNotice(session("a", { state: "Starting" }))?.title).toBe("Startet");
   });
@@ -100,6 +113,28 @@ describe("backendText", () => {
 
   it("names the shell of the windows backend", () => {
     expect(backendText({ backend: "windows", shell: "pwsh", cwd: "C:\\" })).toBe("Windows · pwsh");
+  });
+});
+
+describe("persistenceLimit (#65)", () => {
+  it("[V1-15] marks Windows shells with a badge, a tooltip and the note of the status bar", () => {
+    expect(persistenceLimit({ backend: "windows", shell: "cmd" })).toEqual({
+      label: "Win",
+      title:
+        "Windows-Shell (cmd) · Läuft nur, solange der TermDock-Core läuft; ein Neustart des Core oder von Windows unterbricht sie.",
+      note: WINDOWS_PERSISTENCE_TEXT,
+    });
+    expect(persistenceLimit({ backend: "windows" })?.title).toMatch(/^Windows-Shell · Läuft nur/);
+    expect(WINDOWS_PERSISTENCE_TEXT).toBe("Läuft nur, solange der TermDock-Core läuft");
+  });
+
+  it("[V1-15] says nothing for WSL sessions, which live on in tmux", () => {
+    expect(persistenceLimit({ backend: "wsl" })).toBeUndefined();
+  });
+
+  it("takes the snapshot of a Windows session as raw output, that of a WSL session as tmux screen", () => {
+    expect(rawSnapshot({ backend: "windows" })).toBe(true);
+    expect(rawSnapshot({ backend: "wsl" })).toBe(false);
   });
 });
 
@@ -161,6 +196,17 @@ describe("warningTexts", () => {
     });
     expect(warningTexts(withoutDistro, []).map((each) => each.text)).toEqual([
       "Verzeichnis /srv/api fehlt in Debian – die Session läuft im Wurzelverzeichnis /.",
+    ]);
+  });
+
+  it("says a Windows shell runs in the user folder instead (#65)", () => {
+    const windows = session("w", {
+      state: "Running",
+      launch: { backend: "windows", shell: "cmd", cwd: "D:\\gone" },
+      warnings: [{ code: "cwd_missing", path: "D:\\gone" }],
+    });
+    expect(warningTexts(windows, []).map((each) => each.text)).toEqual([
+      "Verzeichnis D:\\gone fehlt – die Session läuft im Benutzerordner.",
     ]);
   });
 

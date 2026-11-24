@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { LaunchSpec, SessionId } from "@termdock/protocol";
 import { WslBackend } from "./backend/wsl/backend.js";
-import { conoutReader, runWsl } from "./backend/wsl/processes.js";
+import { conoutReader } from "./backend/conpty/spawn.js";
+import { runWsl } from "./backend/wsl/processes.js";
 import { SessionRegistry } from "./session/registry.js";
 import { cleanStaleWslTestServers, killWslTestServer, wslTestSocket } from "./test/wsl-socket.js";
 

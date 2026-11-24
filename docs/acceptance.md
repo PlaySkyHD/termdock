@@ -40,7 +40,7 @@ Nachweis der 15 V1-Abnahmekriterien aus `docs/concept/v1-konzept.txt`, Abschnitt
 | 12  | Gruppenlose Sessions lassen sich anlegen, verschieben, archivieren und löschen.            | automatisiert             |
 | 13  | Der Schließen-Dialog bietet verständliche Optionen zum Session-Lifecycle.                  | automatisiert und manuell |
 | 14  | Mehrere UI-Fenster verursachen weder doppelte Sessions noch doppelte Autostarts.           | automatisiert und manuell |
-| 15  | Windows-Shells funktionieren mit erkennbaren Persistenzgrenzen.                            | offen, #65                |
+| 15  | Windows-Shells funktionieren mit erkennbaren Persistenzgrenzen.                            | automatisiert und manuell |
 
 ## Kriterien
 
@@ -177,7 +177,10 @@ Status: automatisiert und manuell
 - Test `apps/desktop/src/shared/quit-decision.test.ts`: `[V1-13] asks while sessions run and the question is on`
 - Test `apps/desktop/src/shared/quit-decision.test.ts`: `[V1-13] keeps or stops the sessions without storing when the checkbox is off`
 - Test `apps/desktop/src/main/quit-flow.test.ts`: `[V1-13] asks with the number of running sessions and keeps them on that choice`
+- Test `apps/desktop/src/main/quit-flow.test.ts`: `[V1-13][V1-15] tells the dialog how many of the running sessions are Windows shells (#65)`
+- Test `apps/desktop/src/shared/quit-decision.test.ts`: `[V1-13][V1-15] says that Windows shells run only as long as the core does`
 - Szene `apps/desktop/src/main/screenshot-scenario.ts` (Gruppe `quit`): `24-quit-dialog.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `37-windows-quit-dialog.png`
 - Szene `apps/desktop/src/main/screenshot-scenario.ts` (Gruppe `quit`): `25-quit-dialog-do-not-ask-again.png`
 - Manuell: Mit zwei laufenden Sessions die App beenden und den Dialog lesen. Erwartet: Er nennt die Zahl der laufenden Sessions, die Optionen sagen ohne Fachbegriffe, ob die Sessions weiterlaufen oder beendet werden, „Abbrechen“ lässt alles, wie es ist. Beide Optionen einmal wählen und danach prüfen, ob die Sessions noch laufen bzw. beendet sind.
 
@@ -195,6 +198,34 @@ Alle Fenster einer App teilen einen Main-Prozess und eine Verbindung zum Core; n
 
 ### V1-15: Windows-Shells funktionieren mit erkennbaren Persistenzgrenzen.
 
-Status: offen, #65
+Status: automatisiert und manuell
 
-Das Windows-Backend (ConPTY) ist noch nicht gebaut (#65). Der Nachweis kommt mit diesem Issue.
+Windows-Shells (`pwsh`, `powershell`, `cmd`) laufen als ConPTY im Core (#65, ADR 0003, Nachtrag in ADR 0005). Sie überleben das Schließen der Oberfläche, aber nicht das Ende des Core; Sidebar, Statusleiste, Formulare und Schließen-Dialog sagen das. Die Backend-Tests laufen mit echtem `cmd.exe` ohne WSL, auch in der CI.
+
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] starts cmd.exe in the working directory, takes input from the writer and delivers the output`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] lets only the writer type and resize; the ConPTY takes the new size`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] ends Exited with the exit code of the shell, and exists is false afterwards`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] kill ends the shell, Exited with its exit code, no process left`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] restart starts a new shell after a separator line, never a second one`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] shows a late view the output so far from the raw buffer`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] archive and delete end the shell; a deleted session leaves no process`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] starts in the home directory with the warning cwd_missing when the directory is missing`
+- Test `packages/core/src/backend/windows/backend.test.ts`: `[V1-15] refuses pwsh when it is not installed, with a message that names it; the session is Interrupted`
+- Test `packages/core/src/bin/run-core-windows.test.ts`: `[V1-15] ends the shells on core.shutdown without stop; the next core finds the session Interrupted and restarts it`
+- Test `packages/core/src/bin/run-core-windows.test.ts`: `[V1-15] starts a Windows autostart profile once after the core start, and stops it with core.shutdown { stopSessions }`
+- Test `apps/desktop/src/main/smoke-test.test.ts`: `[V1-15] starts cmd.exe as an argument array, waits for its exit code and deletes the session`
+- Test `apps/desktop/src/renderer/session-display.test.ts`: `[V1-15] marks Windows shells with a badge, a tooltip and the note of the status bar`
+- Test `apps/desktop/src/renderer/session-display.test.ts`: `[V1-15] says nothing for WSL sessions, which live on in tmux`
+- Test `apps/desktop/src/renderer/session-display.test.ts`: `[V1-15] says an interrupted Windows session ended with the core, which it only runs alongside`
+- Test `apps/desktop/src/renderer/new-session.test.ts`: `[V1-15] builds a Windows launch spec with the chosen shell and directory`
+- Test `apps/desktop/src/renderer/sidebar-model.test.ts`: `[V1-15] asks for name, backend and path; the backend note names the limit of Windows shells`
+- Test `apps/desktop/src/renderer/sidebar-model.test.ts`: `[V1-15] starts a Windows shell in a Windows project; the shell comes from the settings (#65)`
+- Test `apps/desktop/src/main/quit-flow.test.ts`: `[V1-13][V1-15] tells the dialog how many of the running sessions are Windows shells (#65)`
+- Test `apps/desktop/src/shared/quit-decision.test.ts`: `[V1-13][V1-15] says that Windows shells run only as long as the core does`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `34-windows-new-session.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `35-windows-session.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `36-windows-project-dialog.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `37-windows-quit-dialog.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `38-windows-interrupted.png`
+- Szene `apps/desktop/src/main/screenshot-windows.ts` (Gruppe `windows`): `39-windows-restarted.png`
+- Manuell: In der installierten App eine Session „Neue Session“ mit Windows-Shell `pwsh` anlegen, `$PSVersionTable.PSVersion` eingeben, die Oberfläche mit „Sessions behalten“ schließen und neu öffnen. Erwartet: Die Shell läuft noch, Badge „Win“ und Statusleiste nennen die Grenze. Dann den Core im Task-Manager beenden (Details, `electron.exe` mit `termdock-core` in der Befehlszeile). Erwartet: Der Tab zeigt nach dem Neustart des Core „Unterbrochen“ mit dem Satz zum Core, „Neu starten“ startet eine neue Shell nach der Trennzeile, WSL-Sessions laufen weiter.

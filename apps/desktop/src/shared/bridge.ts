@@ -173,7 +173,13 @@ export type BridgeEvent =
   /** The complete list of workspaces after any change (`workspace.changed`), from any client (#63). */
   | { kind: "workspaceChanged"; workspaces: Workspace[] }
   /** The app is about to quit while sessions run: this window shows the quit dialog and answers (#60). */
-  | { kind: "quitRequested"; requestId: string; activeSessions: number }
+  | {
+      kind: "quitRequested";
+      requestId: string;
+      activeSessions: number;
+      /** Active sessions with a Windows shell, which end with the core (#65); missing means none. */
+      windowsSessions?: number;
+    }
   /** The settings after any change (`settings.changed`), from any client (#64). */
   | { kind: "settingsChanged"; settings: Settings }
   /** The complete list of launch profiles after any change (`profile.changed`), from any client (#64). */

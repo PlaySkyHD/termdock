@@ -120,6 +120,10 @@ export interface NameField {
   value: string;
   /** The first field is selected on open. */
   spellCheck?: boolean;
+  /** A choice instead of a text field (the backend of a project, #65); `value` is one of them. */
+  options?: ReadonlyArray<{ value: string; label: string }>;
+  /** A sentence under the field; it may depend on the values of the dialog (`values` in field order). */
+  note?: (values: readonly string[]) => string | undefined;
 }
 
 export function NameDialog({
@@ -185,21 +189,44 @@ export function NameDialog({
         <h2 className="dialog__title" id="name-title">
           {title}
         </h2>
-        {fields.map((field, index) => (
-          <label className="new-session__field dialog__field" key={field.key}>
-            {field.label}
-            <input
-              ref={index === 0 ? first : undefined}
-              value={values[index]}
-              data-field={field.key}
-              disabled={busy}
-              spellCheck={field.spellCheck ?? false}
-              onChange={(event) =>
-                setValues(values.map((value, i) => (i === index ? event.target.value : value)))
-              }
-            />
-          </label>
-        ))}
+        {fields.map((field, index) => {
+          const set = (text: string): void =>
+            setValues(values.map((value, i) => (i === index ? text : value)));
+          const note = field.note?.(values);
+          return (
+            <label className="new-session__field dialog__field" key={field.key}>
+              {field.label}
+              {field.options ? (
+                <select
+                  value={values[index]}
+                  data-field={field.key}
+                  disabled={busy}
+                  onChange={(event) => set(event.target.value)}
+                >
+                  {field.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  ref={index === 0 ? first : undefined}
+                  value={values[index]}
+                  data-field={field.key}
+                  disabled={busy}
+                  spellCheck={field.spellCheck ?? false}
+                  onChange={(event) => set(event.target.value)}
+                />
+              )}
+              {note && (
+                <span className="new-session__limit" data-field-note={field.key}>
+                  {note}
+                </span>
+              )}
+            </label>
+          );
+        })}
         {error && (
           <p className="new-session__error" data-name="error">
             {error}

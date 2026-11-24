@@ -383,7 +383,7 @@ describe("process calls use argument arrays (issue #135)", () => {
       expect.arrayContaining([
         "packages/core/src/backend/wsl/processes.ts execFile",
         "packages/core/src/backend/wsl/processes.ts spawn",
-        "packages/core/src/backend/wsl/processes.ts node-pty spawn",
+        "packages/core/src/backend/conpty/spawn.ts node-pty spawn",
         "apps/desktop/src/main/core-process.ts spawn",
         "apps/desktop/src/main/screenshot.ts execFile",
         "apps/desktop/src/main/screenshot-scenario.ts execFile",

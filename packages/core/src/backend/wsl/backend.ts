@@ -29,16 +29,10 @@ import {
   type RunResult,
   type TmuxTarget,
 } from "./commands.js";
+import { ConptyPty, type PtyProcess } from "../conpty/pty.js";
+import { pendingPtyCloses, PTYS_CLOSED_TIMEOUT_MS, ptysClosed } from "../conpty/spawn.js";
 import { DistroKeepalive, type KeepaliveSpawner } from "./keepalive.js";
-import { WslPty, type PtyProcess } from "./pty.js";
-import {
-  pendingPtyCloses,
-  PTYS_CLOSED_TIMEOUT_MS,
-  ptysClosed,
-  runWsl,
-  spawnKeepalive,
-  spawnPty,
-} from "./processes.js";
+import { runWsl, spawnKeepalive, spawnPty } from "./processes.js";
 
 /** Runs `wsl.exe <args>` without PTY (with `WSL_UTF8=1`); never rejects. */
 export type WslRunner = (args: readonly string[], options: { timeoutMs: number }) => Promise<RunResult>;
@@ -310,7 +304,7 @@ export class WslBackend implements Backend {
     args: string[],
     size: TerminalSize,
     releaseOnFailure: boolean,
-  ): Promise<WslPty> {
+  ): Promise<ConptyPty> {
     const name = sessionName(id);
     // A closed backend starts no tmux client any more: no keepalive would follow it (review PR #148).
     if (this.disposed) throw new Error("WSL backend is closed");
@@ -327,7 +321,8 @@ export class WslBackend implements Backend {
       throw error;
     }
     this.keepalive.start(target.distro);
-    return new WslPty(process, () => this.resolveEnd(target, id));
+    // The exit code of the tmux client says nothing about the program in the pane; tmux decides.
+    return new ConptyPty(process, () => this.resolveEnd(target, id));
   }
 
   /**

@@ -16,6 +16,7 @@ import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from
 import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { crashScenes } from "./screenshot-crash.js";
 import { cwdScenes } from "./screenshot-cwd.js";
+import { windowsScenes } from "./screenshot-windows.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restartScenes } from "./screenshot-restart.js";
 import { restoreScenes } from "./screenshot-restore.js";
@@ -314,6 +315,7 @@ async function playGroups(
   await play("search", () => searchScenes(deps));
   await play("settings", () => settingsScenes(deps));
   await play("cwd", () => cwdScenes(deps));
+  await play("windows", () => windowsScenes(deps));
   await play("crash", () => crashScenes(deps));
   await play("restart", () => restartScenes(deps));
 }

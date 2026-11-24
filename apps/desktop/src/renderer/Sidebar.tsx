@@ -1,9 +1,17 @@
 // Sidebar (#63): workspaces with their projects and sessions, the sessions without a group, and the archive.
 // Sessions move by drag and drop or the context menu (same rules, `sidebar-model.ts`); deleting and archiving ask
-// first. The form for a new WSL session sits at the top.
+// first. The form for a new session (WSL or a Windows shell, #65) sits at the top.
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import type { Project, SessionId, SessionInfo, Workspace } from "@termdock/protocol";
+import type {
+  BackendKind,
+  LaunchSpec,
+  Project,
+  SessionId,
+  SessionInfo,
+  WindowsShell,
+  Workspace,
+} from "@termdock/protocol";
 import { ContextMenu } from "./ContextMenu.js";
 import { closeIfCurrent, failureText } from "./dialog-state.js";
 import { ConfirmDialog, NameDialog } from "./Dialogs.js";
@@ -11,8 +19,16 @@ import type { NameField } from "./Dialogs.js";
 import { useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
+import {
+  BACKEND_CHOICES,
+  emptyNewSession,
+  newSessionRequest,
+  SHELL_CHOICES,
+  withBackend,
+} from "./new-session.js";
+import type { NewSessionForm } from "./new-session.js";
 import { restartFromMenu } from "./restart-session.js";
-import { NO_GROUP_LABEL, stateText } from "./session-display.js";
+import { NO_GROUP_LABEL, persistenceLimit, stateText } from "./session-display.js";
 import {
   ARCHIVE_TARGET,
   buildSections,
@@ -24,6 +40,8 @@ import {
   focusReady,
   isDraggable,
   NEW_WORKSPACE_FOCUS,
+  newProjectFields,
+  newProjectInput,
   openModeOf,
   parseTarget,
   projectFocus,
@@ -54,7 +72,7 @@ export interface SidebarActions {
   createWorkspace(name: string): Promise<void>;
   renameWorkspace(workspaceId: string, name: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
-  createProject(workspaceId: string, name: string, path: string): Promise<void>;
+  createProject(workspaceId: string, name: string, path: string, backend: BackendKind): Promise<void>;
   renameProject(projectId: string, name: string): Promise<void>;
   deleteProject(projectId: string): Promise<void>;
   /** Starts a session in the project and opens it (#104); rejects with the reason (core, or a start still running). */
@@ -82,7 +100,7 @@ export interface SidebarProps {
   /** Opens the session in a zone of the active pane (the menu's way to dropping it on the pane). */
   onPlace?: (sessionId: SessionId, zone: PaneZone) => void;
   /** Starts creating the session and opening its tab; `creating` and `createError` report the outcome. */
-  onCreate: (name: string, cwd: string) => void;
+  onCreate: (name: string, launch: LaunchSpec) => void;
 }
 
 type Dialog =
@@ -267,12 +285,12 @@ export function Sidebar(props: SidebarProps) {
       case "addProject":
         ask(
           `Projekt in „${workspace.name}“`,
-          [
-            { key: "name", label: "Name", value: "" },
-            { key: "path", label: "Pfad in WSL (absolut)", value: "/home" },
-          ],
+          newProjectFields(),
           "Anlegen",
-          ([name, path]) => actions.createProject(workspace.id, name!, path!),
+          (values) => {
+            const { name, path, backend } = newProjectInput(values);
+            return actions.createProject(workspace.id, name, path, backend);
+          },
           workspaceFocus(workspace.id),
         );
         return;
@@ -386,8 +404,8 @@ export function Sidebar(props: SidebarProps) {
             className="icon-button"
             type="button"
             data-action="new-session"
-            title="Neue WSL-Session"
-            aria-label="Neue WSL-Session"
+            title="Neue Session"
+            aria-label="Neue Session"
             onClick={() => props.onFormOpen(!props.formOpen)}
           >
             +
@@ -433,26 +451,34 @@ export function Sidebar(props: SidebarProps) {
                 </button>
               </div>
               <ul className="sidebar__list">
-                {workspace.projects.map((project) => (
-                  <li key={project.id}>
-                    <button
-                      className="project-item"
-                      type="button"
-                      data-project-name={project.name}
-                      data-project-id={project.id}
-                      aria-haspopup="menu"
-                      title={`${project.name} · ${project.path}\nKlick: neue Session im Projekt\nStrg+Klick: in neuem Tab\nUmschalt+Klick: neben dem aktiven Pane\nRechtsklick oder Menütaste: Aktionen`}
-                      onClick={(event) => startInProject(project, openModeOf(event))}
-                      onContextMenu={(event) =>
-                        openMenu(event, `Aktionen für ${project.name}`, projectEntries(project))
-                      }
-                    >
-                      <span className="project-icon" aria-hidden="true" />
-                      <span className="session-item__name">{project.name}</span>
-                      <span className="session-item__state">{project.path}</span>
-                    </button>
-                  </li>
-                ))}
+                {workspace.projects.map((project) => {
+                  const limit = persistenceLimit(project);
+                  return (
+                    <li key={project.id}>
+                      <button
+                        className="project-item"
+                        type="button"
+                        data-project-name={project.name}
+                        data-project-id={project.id}
+                        aria-haspopup="menu"
+                        title={`${project.name} · ${project.path}${limit ? `\n${limit.title}` : ""}\nKlick: neue Session im Projekt\nStrg+Klick: in neuem Tab\nUmschalt+Klick: neben dem aktiven Pane\nRechtsklick oder Menütaste: Aktionen`}
+                        onClick={(event) => startInProject(project, openModeOf(event))}
+                        onContextMenu={(event) =>
+                          openMenu(event, `Aktionen für ${project.name}`, projectEntries(project))
+                        }
+                      >
+                        <span className="project-icon" aria-hidden="true" />
+                        <span className="session-item__name">{project.name}</span>
+                        {limit && (
+                          <span className="backend-badge" data-badge="windows">
+                            {limit.label}
+                          </span>
+                        )}
+                        <span className="session-item__state">{project.path}</span>
+                      </button>
+                    </li>
+                  );
+                })}
                 {inside.map((session) => row(session))}
                 {inside.length === 0 && workspace.projects.length === 0 && (
                   <li className="sidebar__empty">Leer – Session hierher ziehen</li>
@@ -586,6 +612,7 @@ function SessionRow({
 }) {
   const drag = useDrag();
   const sourceProps = isDraggable(session) ? drag.sourceProps(sessionPayload(session)) : {};
+  const limit = persistenceLimit(session.launch);
   return (
     <li className="session-row">
       <button
@@ -599,13 +626,18 @@ function SessionRow({
         data-row-session-id={session.id}
         data-state={session.state}
         aria-haspopup="menu"
-        title={`${session.name} · ${stateText(session)}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace, das Archiv oder ein Pane, Rechtsklick oder Menütaste für Aktionen`}
+        title={`${session.name} · ${stateText(session)}${limit ? `\n${limit.title}` : ""}\nStrg+Klick: in neuem Tab öffnen\nUmschalt+Klick: neben dem aktiven Pane öffnen (dieselbe Session liest dort mit)\nZiehen auf einen Workspace, das Archiv oder ein Pane, Rechtsklick oder Menütaste für Aktionen`}
         {...sourceProps}
         onClick={(event) => onOpen(session.id, openModeOf(event))}
         onContextMenu={onMenu}
       >
         <StateIcon session={session} />
         <span className="session-item__name">{session.name}</span>
+        {limit && (
+          <span className="backend-badge" data-badge="windows">
+            {limit.label}
+          </span>
+        )}
         <span className="session-item__state">{stateText(session)}</span>
       </button>
       {onDelete && (
@@ -635,16 +667,26 @@ function NewSessionForm({
   onCreate: SidebarProps["onCreate"];
   onCancel: () => void;
 }) {
-  const [name, setName] = useState("WSL");
-  const [cwd, setCwd] = useState("~");
+  const [form, setForm] = useState<NewSessionForm>(emptyNewSession);
+  const [problem, setProblem] = useState<string>();
   const nameField = useRef<HTMLInputElement>(null);
   useEffect(() => nameField.current?.select(), []);
+  const change = (next: NewSessionForm): void => {
+    setForm(next);
+    setProblem(undefined);
+  };
+  const limit = persistenceLimit({ backend: form.backend });
 
   const submit = (): void => {
-    if (busy || name.trim() === "") return;
+    if (busy || form.name.trim() === "") return;
+    const request = newSessionRequest(form);
+    if (!request.ok) {
+      setProblem(request.error);
+      return;
+    }
     // The creating may take long when WSL starts cold (up to 60 s); the window keeps its state, also when the
     // sidebar is hidden meanwhile.
-    onCreate(name.trim(), cwd.trim() === "" ? "~" : cwd.trim());
+    onCreate(request.name, request.launch);
   };
 
   return (
@@ -660,27 +702,73 @@ function NewSessionForm({
       }}
     >
       <label className="new-session__field">
+        Backend
+        <select
+          value={form.backend}
+          data-field="backend"
+          disabled={busy}
+          onChange={(event) =>
+            change(withBackend(form, event.target.value === "windows" ? "windows" : "wsl"))
+          }
+        >
+          {BACKEND_CHOICES.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {form.backend === "windows" && (
+        <label className="new-session__field">
+          Shell
+          <select
+            value={form.shell}
+            data-field="shell"
+            disabled={busy}
+            onChange={(event) => change({ ...form, shell: event.target.value as WindowsShell | "" })}
+          >
+            {SHELL_CHOICES.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {limit && (
+        <p className="new-session__limit" data-form-note="persistence" title={limit.title}>
+          {limit.note}.
+        </p>
+      )}
+      <label className="new-session__field">
         Name
         <input
           ref={nameField}
-          value={name}
+          value={form.name}
+          data-field="name"
           disabled={busy}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => change({ ...form, name: event.target.value })}
         />
       </label>
       <label className="new-session__field">
         Arbeitsverzeichnis
         <input
-          value={cwd}
+          value={form.cwd}
+          data-field="cwd"
           disabled={busy}
           spellCheck={false}
-          onChange={(event) => setCwd(event.target.value)}
+          placeholder={form.backend === "windows" ? "~ oder C:\\dev" : "~ oder /home/dev"}
+          onChange={(event) => change({ ...form, cwd: event.target.value })}
         />
       </label>
       {busy && <p className="new-session__note">Wird angelegt …</p>}
-      {error && <p className="new-session__error">{error}</p>}
+      {(problem ?? error) && (
+        <p className="new-session__error" data-form-error="new-session">
+          {problem ?? error}
+        </p>
+      )}
       <div className="new-session__actions">
-        <button className="button button--primary" type="submit" disabled={busy || name.trim() === ""}>
+        <button className="button button--primary" type="submit" disabled={busy || form.name.trim() === ""}>
           Anlegen
         </button>
         <button className="button" type="button" disabled={busy} onClick={onCancel}>

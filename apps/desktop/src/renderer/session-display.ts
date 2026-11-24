@@ -43,7 +43,10 @@ export function endedNotice(session: SessionInfo): { title: string; detail: stri
     case "Interrupted":
       return {
         title: "Unterbrochen",
-        detail: "Der Prozess der Session ist verloren gegangen, etwa weil WSL oder tmux beendet wurde.",
+        detail:
+          session.launch.backend === "windows"
+            ? "Die Windows-Shell ist mit dem Core beendet worden, etwa bei einem Neustart des Core oder von Windows. Windows-Shells laufen nur, solange der TermDock-Core läuft."
+            : "Der Prozess der Session ist verloren gegangen, etwa weil WSL oder tmux beendet wurde.",
       };
     case "Archived":
       return { title: "Archiviert", detail: "Die Session ist archiviert." };
@@ -64,6 +67,34 @@ export function backendText(launch: LaunchSpec): string {
   const name = backendName(launch.backend);
   if (launch.backend === "wsl") return `${name} · ${launch.distro ?? "Standard-Distro"}`;
   return launch.shell === undefined ? name : `${name} · ${launch.shell}`;
+}
+
+/**
+ * Whether the snapshot of the session is the raw output the core kept (ADR 0003): Windows shells have no screen of
+ * their own (#65). Its line breaks at the end place the cursor and must stay; a tmux snapshot lists blank rows.
+ */
+export function rawSnapshot(launch: Pick<LaunchSpec, "backend">): boolean {
+  return launch.backend === "windows";
+}
+
+/** The persistence limit of Windows shells (ADR 0001, #65), as the status bar and the tooltips say it. */
+export const WINDOWS_PERSISTENCE_TEXT = "Läuft nur, solange der TermDock-Core läuft";
+
+/**
+ * What a session or project says about how long its process lives (#65): Windows shells run in the core and end
+ * with it (core restart, Windows restart), WSL sessions live on in tmux and say nothing. `label` is the short badge
+ * of the sidebar, `title` its tooltip, `note` the hint of the status bar.
+ */
+export function persistenceLimit(
+  launch: Pick<LaunchSpec, "backend" | "shell">,
+): { label: string; title: string; note: string } | undefined {
+  if (launch.backend !== "windows") return undefined;
+  const shell = launch.shell === undefined ? "Windows-Shell" : `Windows-Shell (${launch.shell})`;
+  return {
+    label: "Win",
+    title: `${shell} · ${WINDOWS_PERSISTENCE_TEXT}; ein Neustart des Core oder von Windows unterbricht sie.`,
+    note: WINDOWS_PERSISTENCE_TEXT,
+  };
 }
 
 /** What a pane and the status bar say while the core connection is gone (#130). */
@@ -102,16 +133,22 @@ export interface WarningText {
 
 /**
  * Texts of the warnings of a session's run that the window has not dismissed (#113), one per known code; codes of a
- * newer core are left out. `cwd_missing`: wsl.exe cannot change into the directory and starts the shell in `/`.
+ * newer core are left out. `cwd_missing`: wsl.exe cannot change into the directory and starts the shell in `/`; the
+ * Windows backend starts the shell in the user folder instead (#65).
  */
 export function warningTexts(session: SessionInfo | undefined, dismissed: readonly string[]): WarningText[] {
   if (!session?.warnings || dismissed.includes(session.id) || !isAttachable(session.state)) return [];
   const texts: WarningText[] = [];
   for (const warning of session.warnings) {
     if (warning.code !== "cwd_missing" || warning.path === undefined) continue;
-    const distro = warning.distro ?? session.launch.distro ?? "der WSL-Distribution";
     const before = "Verzeichnis ";
-    const after = ` fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`;
+    let after: string;
+    if (session.launch.backend === "windows") {
+      after = " fehlt – die Session läuft im Benutzerordner.";
+    } else {
+      const distro = warning.distro ?? session.launch.distro ?? "der WSL-Distribution";
+      after = ` fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`;
+    }
     texts.push({ text: `${before}${warning.path}${after}`, before, path: warning.path, after });
   }
   return texts;

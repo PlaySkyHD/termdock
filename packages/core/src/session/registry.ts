@@ -998,7 +998,10 @@ export class SessionRegistry {
       // The Core ended meanwhile: the session stays as stored for the next reconcile.
       if (this.disposed) throw cause instanceof CoreError ? cause : shutDown(cause);
       this.setState(entry, "Interrupted");
-      throw new CoreError("backend_unavailable", `Session ${info.id} could not be started`, {
+      // A backend states a reason meant for the client as a CoreError (Windows: the shell is not installed, #65);
+      // other errors may carry command lines and stay in the cause.
+      const reason = cause instanceof CoreError ? `: ${cause.message}` : "";
+      throw new CoreError("backend_unavailable", `Session ${info.id} could not be started${reason}`, {
         cause,
         sessionId: info.id,
       });

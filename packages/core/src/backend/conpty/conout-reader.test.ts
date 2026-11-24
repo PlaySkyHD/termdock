@@ -12,14 +12,16 @@ import {
   nodePtyVersion,
   SUPPORTED_NODE_PTY_VERSION,
 } from "./conout-reader.js";
-import { conoutReader, spawnConpty } from "./processes.js";
-import type { ConptyProcess } from "./processes.js";
+import { conoutReader, spawnConpty } from "./spawn.js";
+import type { ConptyProcess } from "./spawn.js";
 
 const MiB = 1024 * 1024;
 
 /** What held when a PTY reported its end. */
 interface ExitSeen {
   exitCode: unknown;
+  /** Set when the core closed the PTY because its output was lost (#65: a Windows shell then counts as lost). */
+  lost: boolean;
   processAlive: boolean;
   output: string;
 }
@@ -49,8 +51,8 @@ async function openCmd(args: string[] = []): Promise<Opened> {
     }
   });
   const exited = new Promise<void>((resolve) =>
-    pty.onExit(({ exitCode }) => {
-      exitSeen.push({ exitCode, processAlive: alive(pty.pid), output: text });
+    pty.onExit(({ exitCode, lost }) => {
+      exitSeen.push({ exitCode, lost: lost === true, processAlive: alive(pty.pid), output: text });
       resolve();
     }),
   );
@@ -184,6 +186,7 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     await entry.exited;
     expect(entry.exitSeen[0]!.output).toContain("marker-153");
     expect(entry.exitSeen[0]!.exitCode).toBe(0);
+    expect(entry.exitSeen[0]!.lost).toBe(false);
     expect(entry.exitSeen[0]!.processAlive).toBe(false);
     await waitFor(() => reader.activeConnections === before, "the worker closed the pipe");
   }, 60_000);
@@ -294,6 +297,7 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     }
     expect(broken.exitSeen[0]!.processAlive).toBe(false);
     expect(broken.exitSeen[0]!.exitCode).toBeTypeOf("number");
+    expect(broken.exitSeen[0]!.lost).toBe(true);
     await sleep(500);
     expect(broken.exits()).toBe(1);
     // The relay of the broken PTY is closed in the worker as well, although its client holds its side open (#177).
@@ -340,7 +344,9 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     for (const entry of ptys) {
       expect(entry.exitSeen[0]!.processAlive).toBe(false);
       expect(entry.exitSeen[0]!.exitCode).toBeTypeOf("number");
+      expect(entry.exitSeen[0]!.lost).toBe(true);
     }
+    expect(done.exitSeen[0]!.lost).toBe(false);
     expect(pids.every((pid) => !alive(pid))).toBe(true);
     // Reported once, even though node-pty sees its output socket close as well.
     await sleep(500);

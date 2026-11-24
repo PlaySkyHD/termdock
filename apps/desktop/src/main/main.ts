@@ -55,7 +55,7 @@ import {
 } from "./screenshot.js";
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
-import { runSmokeTest, smokeTestDataDir, smokeTestRequested } from "./smoke-test.js";
+import { runSmokeTest, smokeTestDataDir, smokeTestRequested, windowsShellCheck } from "./smoke-test.js";
 import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { fitBounds, screenshotOrigin } from "./window-geometry.js";
@@ -71,6 +71,8 @@ const QUIT_SAVE_TIMEOUT_MS = 3_000;
 const LOG_FLUSH_TIMEOUT_MS = 1_000;
 /** Upper bound of `--smoke-test` until the first answer: the core start plus `core.status` (reconcile). */
 const SMOKE_TIMEOUT_MS = 90_000;
+/** Longest wait of `--smoke-test` for its Windows shell to end (#65); it ends at once when the package works. */
+const SMOKE_SHELL_TIMEOUT_MS = 15_000;
 
 // Stderr only until the data directory is known (a screenshot run uses its own); then `desktop.log` as well.
 let logger = createDesktopLogger(undefined);
@@ -310,13 +312,13 @@ async function main(): Promise<void> {
       getSettings: () =>
         port.request("settings.get", {}).then((reply) => reply.result.settings, failed("settings.get")),
       saveSettings: async (patch) => void (await port.request("settings.set", { settings: patch })),
-      ask: async (activeSessions) => {
+      ask: async (activeSessions, windowsSessions) => {
         const win = target ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
         if (!win) return undefined;
         if (win.isMinimized()) win.restore();
         win.show();
         win.focus();
-        return quitPrompt.ask(win.webContents.id, activeSessions);
+        return quitPrompt.ask(win.webContents.id, activeSessions, windowsSessions);
       },
       log,
     };
@@ -589,6 +591,13 @@ async function smokeTestRun(): Promise<0 | 1> {
         sleep: (ms) => sleep(ms),
       }),
     coreAlive: () => corePid !== undefined && isAlive(corePid),
+    // node-pty with the bundled ConPTY from the package (#65); needs no WSL, so it runs in CI as well.
+    checkWindowsShell: (client) =>
+      windowsShellCheck(client, {
+        timeoutMs: SMOKE_SHELL_TIMEOUT_MS,
+        sleep: (ms) => sleep(ms),
+        now: () => Date.now(),
+      }),
     log,
     timeoutMs: SMOKE_TIMEOUT_MS,
   });

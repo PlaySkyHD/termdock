@@ -125,7 +125,7 @@ Der Core SHALL `session.create` mit einer `workspaceId`, die keinen bestehenden 
 
 ### Requirement: Standardverzeichnis für neue Sessions
 
-Der Core SHALL eine reine Funktion `defaultCwd` bereitstellen, die für das Ziel-Backend einer Session ohne `cwd` das erste gesetzte aus Projektpfad, `defaultCwd` des Workspace und `defaultCwd` der Einstellungen liefert, dessen Syntax zum Backend passt (wie die Pfadprüfung der Projekte), sonst `~`. Für `windows` ist `~` ein Platzhalter bis #65. Die Einstellungen MUST als Parameter übergeben werden; die Funktion MUST weder das Dateisystem noch ein Repository lesen.
+Der Core SHALL eine reine Funktion `defaultCwd` bereitstellen, die für das Ziel-Backend einer Session ohne `cwd` das erste gesetzte aus Projektpfad, `defaultCwd` des Workspace und `defaultCwd` der Einstellungen liefert, dessen Syntax zum Backend passt (wie die Pfadprüfung der Projekte), sonst `~` (WSL: Home der Distro, `windows`: Benutzerordner). Die Einstellungen MUST als Parameter kommen; die Funktion MUST weder Dateisystem noch Repository lesen.
 
 #### Scenario: Rangfolge
 

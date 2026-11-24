@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { conoutReader, spawnConpty } from "./processes.js";
+import { conoutReader, spawnConpty } from "./spawn.js";
 
 /** 40 PTYs leave 80 handles with the fix and 120 without; the limit of 100 keeps 20 on either side for noise. */
 const PTYS = 40;

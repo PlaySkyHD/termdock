@@ -8,7 +8,7 @@
 // `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/pty-shutdown-repro.mjs` tests Electron.
 // Modes:
 // - `dispose` (default): the core path of a core that ends without stopping its sessions. A `SessionRegistry` with a
-//   backend whose PTYs come from the core's `spawnConpty` and `WslPty`, N sessions, then `registry.dispose()` and the
+//   backend whose PTYs come from the core's `spawnConpty` and `ConptyPty`, N sessions, then `registry.dispose()` and the
 //   wait for the PTYs (`ptysClosed`), as `runCore` does it.
 // - `kill`: the path of `core.shutdown { stopSessions }`: `registry.killAll` for all sessions; the backend ends each
 //   shell itself (`exit`), as tmux `kill-session` ends its client. Before #160 all those ends came at once.
@@ -53,9 +53,21 @@ export function parseArgs(argv) {
 }
 
 const load = (path) => import(pathToFileURL(join(CORE_DIST, ...path.split("/"))).href);
+/** The first of `paths` that exists: builds before #65 kept the ConPTY code under `backend/wsl/`. */
+async function loadFirst(...paths) {
+  for (const path of paths) {
+    try {
+      return await load(path);
+    } catch (error) {
+      if (error?.code !== "ERR_MODULE_NOT_FOUND" || path === paths.at(-1)) throw error;
+    }
+  }
+  throw new Error("no path given");
+}
 
 /** A backend of `cmd.exe` PTYs through the core's ConPTY path; no persistence. */
-function cmdBackend({ spawnConpty }, { WslPty }) {
+function cmdBackend({ spawnConpty }, { ConptyPty, WslPty }) {
+  const Pty = ConptyPty ?? WslPty;
   const live = new Map();
   return {
     kind: "wsl",
@@ -65,7 +77,7 @@ function cmdBackend({ spawnConpty }, { WslPty }) {
       const ended = new Promise((done) => pty.onExit(() => done()));
       live.set(id, { pty, ended });
       ended.then(() => live.delete(id));
-      return new WslPty(pty, async () => ({}));
+      return new Pty(pty, async () => ({}));
     },
     attach: async () => {
       throw new Error("no persistence");
@@ -119,8 +131,8 @@ async function child({ mode, ptys }) {
     await sleep(1_000);
     process.exit(0);
   }
-  const processes = await load("backend/wsl/processes.js");
-  const pty = await load("backend/wsl/pty.js");
+  const processes = await loadFirst("backend/conpty/spawn.js", "backend/wsl/processes.js");
+  const pty = await loadFirst("backend/conpty/pty.js", "backend/wsl/pty.js");
   const { SessionRegistry } = await load("session/registry.js");
   const registry = new SessionRegistry({ backends: [cmdBackend(processes, pty)], onListenerError: () => {} });
   const seen = new Set();

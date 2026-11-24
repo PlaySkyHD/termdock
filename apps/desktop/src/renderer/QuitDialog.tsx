@@ -1,17 +1,21 @@
 // Quit dialog (#60): shown when the app is about to quit while sessions run. Three choices and "Nicht mehr
 // fragen"; Escape cancels. A click on the backdrop does nothing, so a stray click never quits.
 import { useEffect, useRef, useState } from "react";
-import { quitMessage } from "../shared/quit-decision.js";
+import { quitMessage, quitWindowsNote } from "../shared/quit-decision.js";
 import { trapFocus } from "./focus-trap.js";
 import type { QuitAnswer } from "../shared/quit-decision.js";
 
 export function QuitDialog({
   activeSessions,
+  windowsSessions = 0,
   onAnswer,
 }: {
   activeSessions: number;
+  /** Active sessions with a Windows shell (#65); the dialog names their limit. */
+  windowsSessions?: number;
   onAnswer: (answer: QuitAnswer) => void;
 }) {
+  const windowsNote = quitWindowsNote(windowsSessions);
   const [remember, setRemember] = useState(false);
   const keep = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
@@ -54,6 +58,11 @@ export function QuitDialog({
         <p className="dialog__text" id="quit-message" data-quit="message">
           {quitMessage(activeSessions)} Sie können weiterlaufen, auch wenn die Oberfläche geschlossen ist.
         </p>
+        {windowsNote && (
+          <p className="dialog__text" data-quit="windows">
+            {windowsNote}
+          </p>
+        )}
         <label className="dialog__check">
           <input
             type="checkbox"

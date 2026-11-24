@@ -14,6 +14,8 @@ interface Pending {
   requestId: string;
   windowId: number;
   activeSessions: number;
+  /** Active sessions with a Windows shell (#65). */
+  windowsSessions: number;
   acked: boolean;
   timers: NodeJS.Timeout[];
   resolve: (answer: QuitAnswer) => void;
@@ -21,6 +23,13 @@ interface Pending {
 }
 
 const CANCEL: QuitAnswer = { choice: "cancel", remember: false };
+
+/** The event of the question; `windowsSessions` only when there are any, as before #65 otherwise. */
+function question({ requestId, activeSessions, windowsSessions }: Pending): BridgeEvent {
+  return windowsSessions > 0
+    ? { kind: "quitRequested", requestId, activeSessions, windowsSessions }
+    : { kind: "quitRequested", requestId, activeSessions };
+}
 
 export class QuitPrompt {
   private pending: Pending | undefined;
@@ -38,7 +47,7 @@ export class QuitPrompt {
    * user can quit again). The question is sent again every `QUIT_ASK_RETRY_MS` until then. Once the dialog is
    * shown there is no time limit: the user answers when ready.
    */
-  ask(windowId: number, activeSessions: number): Promise<QuitAnswer> {
+  ask(windowId: number, activeSessions: number, windowsSessions = 0): Promise<QuitAnswer> {
     if (this.pending) return this.pending.promise;
     const requestId = this.newId();
     let resolve: (answer: QuitAnswer) => void = () => {};
@@ -47,13 +56,14 @@ export class QuitPrompt {
       requestId,
       windowId,
       activeSessions,
+      windowsSessions,
       acked: false,
       timers: [],
       resolve,
       promise,
     };
     this.pending = pending;
-    if (!this.send(windowId, { kind: "quitRequested", requestId, activeSessions })) {
+    if (!this.send(windowId, question(pending))) {
       this.windowGone(windowId);
       return promise;
     }
@@ -73,8 +83,7 @@ export class QuitPrompt {
   resend(windowId: number): void {
     const pending = this.pending;
     if (pending?.windowId !== windowId || pending.acked) return;
-    const { requestId, activeSessions } = pending;
-    this.send(windowId, { kind: "quitRequested", requestId, activeSessions });
+    this.send(windowId, question(pending));
   }
 
   /** The window shows the dialog for this question: no more retries, no more timeout. */

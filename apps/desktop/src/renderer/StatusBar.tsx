@@ -1,7 +1,13 @@
 // Status bar of the window: backend and distro, the active session and its state, the role of its view,
 // and notes about the core. Its colour follows the role of the active view, as in the first desktop shell.
 import type { SessionInfo } from "@termdock/protocol";
-import { backendText, CORE_CLOSED_TEXT, CORE_RESTARTING_TEXT, stateText } from "./session-display.js";
+import {
+  backendText,
+  CORE_CLOSED_TEXT,
+  CORE_RESTARTING_TEXT,
+  persistenceLimit,
+  stateText,
+} from "./session-display.js";
 import type { ViewStatus } from "./terminal-controller.js";
 
 export interface StatusBarProps {
@@ -20,13 +26,23 @@ export interface StatusBarProps {
 
 export function StatusBar({ session, view, hints, notice, onClaimWriter, onRestartCore }: StatusBarProps) {
   const reader = view?.role === "reader";
+  const limit = session && persistenceLimit(session.launch);
   return (
     <footer className={`status-bar status-bar--${view?.role ?? "none"}`} role="status">
       {session && (
         <>
-          <span className="status-bar__item" data-status="backend">
+          <span className="status-bar__item" data-status="backend" title={limit?.title}>
             {backendText(session.launch)}
           </span>
+          {limit && (
+            <span
+              className="status-bar__item status-bar__item--persistence"
+              data-status="persistence"
+              title={limit.title}
+            >
+              {limit.note}
+            </span>
+          )}
           <span className="status-bar__item" data-status="session">
             {session.name}
           </span>

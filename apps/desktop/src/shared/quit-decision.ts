@@ -1,6 +1,6 @@
 // Quit decision (issue #60, concept chapters 2 and 6): whether quitting asks, and what an answer means. Pure, so
 // the main process, the renderer and the tests share it. No Electron, no I/O.
-import type { QuitAction, SessionState, SettingsPatch } from "@termdock/protocol";
+import type { BackendKind, QuitAction, SessionState, SettingsPatch } from "@termdock/protocol";
 
 /** `user`: menu, Ctrl+Q, closing the last window. `session-end`: Windows logoff or shutdown. */
 export type QuitReason = "user" | "session-end";
@@ -29,7 +29,21 @@ export type QuitOutcome =
 
 /** Sessions the user would lose or leave behind: the ones whose process lives (`Running`, `Detached`). */
 export function countActive(sessions: readonly { state: SessionState }[]): number {
-  return sessions.filter((session) => session.state === "Running" || session.state === "Detached").length;
+  return sessions.filter(isActive).length;
+}
+
+/**
+ * Active sessions that run a Windows shell (#65): they keep running while the core runs, but end with it (Windows
+ * restart, logoff, a crash), unlike WSL sessions in tmux. A session without `launch` counts as WSL.
+ */
+export function countActiveWindows(
+  sessions: readonly { state: SessionState; launch?: { backend: BackendKind } }[],
+): number {
+  return sessions.filter((session) => isActive(session) && session.launch?.backend === "windows").length;
+}
+
+function isActive(session: { state: SessionState }): boolean {
+  return session.state === "Running" || session.state === "Detached";
 }
 
 /**
@@ -63,4 +77,15 @@ export function outcomeOfAnswer(answer: QuitAnswer): QuitOutcome {
 /** The sentence of the dialog. */
 export function quitMessage(activeSessions: number): string {
   return activeSessions === 1 ? "1 Session läuft noch." : `${activeSessions} Sessions laufen noch.`;
+}
+
+/**
+ * What the dialog says about the Windows shells among the active sessions (#65), or undefined without one: they keep
+ * running after the window closes, but only as long as the TermDock core runs.
+ */
+export function quitWindowsNote(windowsSessions: number): string | undefined {
+  if (windowsSessions <= 0) return undefined;
+  const which =
+    windowsSessions === 1 ? "Die Windows-Shell läuft" : `Die ${windowsSessions} Windows-Shells laufen`;
+  return `${which} nur, solange der TermDock-Core läuft; ein Neustart von Windows oder des Core beendet sie.`;
 }

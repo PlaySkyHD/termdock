@@ -30,6 +30,20 @@ describe("QuitPrompt", () => {
     await expect(answer).resolves.toEqual({ choice: "stopSessions", remember: true });
   });
 
+  it("names the Windows shells among the running sessions, also when it asks again (#65)", async () => {
+    vi.useFakeTimers();
+    const { prompt, sent } = setup();
+    const answer = prompt.ask(7, 3, 2);
+    vi.advanceTimersByTime(QUIT_ASK_RETRY_MS);
+    const question = { kind: "quitRequested", requestId: "q1", activeSessions: 3, windowsSessions: 2 };
+    expect(sent).toEqual([
+      [7, question],
+      [7, question],
+    ]);
+    prompt.answer(7, "q1", KEEP);
+    await expect(answer).resolves.toEqual(KEEP);
+  });
+
   it("gives a second ask the answer of the open question without a second dialog", async () => {
     const { prompt, sent } = setup();
     const first = prompt.ask(7, 3);

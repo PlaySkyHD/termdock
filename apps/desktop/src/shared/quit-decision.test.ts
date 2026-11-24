@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { countActive, outcomeOfAnswer, planQuit, quitMessage } from "./quit-decision.js";
+import {
+  countActive,
+  countActiveWindows,
+  outcomeOfAnswer,
+  planQuit,
+  quitMessage,
+  quitWindowsNote,
+} from "./quit-decision.js";
 
 const asking = { confirmQuitWhileRunning: true };
 
@@ -7,6 +14,33 @@ describe("countActive", () => {
   it("counts Running and Detached only", () => {
     const states = ["Running", "Detached", "Starting", "Exited", "Interrupted", "Running"] as const;
     expect(countActive(states.map((state) => ({ state })))).toBe(3);
+  });
+
+  it("counts the active Windows shells among them (#65)", () => {
+    const windows = { backend: "windows" } as const;
+    const wsl = { backend: "wsl" } as const;
+    expect(
+      countActiveWindows([
+        { state: "Running", launch: windows },
+        { state: "Detached", launch: windows },
+        { state: "Interrupted", launch: windows },
+        { state: "Running", launch: wsl },
+        { state: "Running" },
+      ]),
+    ).toBe(2);
+  });
+});
+
+describe("quitWindowsNote (#65)", () => {
+  it("[V1-13][V1-15] says that Windows shells run only as long as the core does", () => {
+    expect(quitWindowsNote(1)).toBe(
+      "Die Windows-Shell läuft nur, solange der TermDock-Core läuft; ein Neustart von Windows oder des Core beendet sie.",
+    );
+    expect(quitWindowsNote(3)).toMatch(/^Die 3 Windows-Shells laufen nur, solange der TermDock-Core läuft;/);
+  });
+
+  it("says nothing without a Windows shell", () => {
+    expect(quitWindowsNote(0)).toBeUndefined();
   });
 });
 

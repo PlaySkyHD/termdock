@@ -112,6 +112,8 @@ export interface TerminalViewProps {
   claimOnOpen?: boolean;
   /** "Core neu starten" once the automatic restarts gave up (#130). */
   onRestartCore?: () => void;
+  /** The snapshot is the core's raw output (Windows session, #65); read when the view attaches. */
+  rawSnapshot?: boolean;
 }
 
 export function TerminalView({
@@ -125,7 +127,10 @@ export function TerminalView({
   onContextPaste,
   claimOnOpen = false,
   onRestartCore,
+  rawSnapshot = false,
 }: TerminalViewProps) {
+  const rawNow = useRef(rawSnapshot);
+  rawNow.current = rawSnapshot;
   const host = useRef<HTMLDivElement>(null);
   const pressed = useRef<{ x: number; y: number }>(undefined);
   const terminal = useRef<Terminal>(undefined);
@@ -168,6 +173,7 @@ export function TerminalView({
         },
         // Only one window has the focus, and in it only one pane is active: one writer per session (#130).
         claimOnOpen: () => claim && activeNow.current && document.hasFocus(),
+        rawSnapshot: rawNow.current,
       },
     );
     controller.current = current;

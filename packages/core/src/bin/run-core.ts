@@ -13,6 +13,8 @@ import type {
   Workspace,
 } from "@termdock/protocol";
 import type { Backend } from "../backend/types.js";
+import { WindowsBackend } from "../backend/windows/backend.js";
+import type { WindowsBackendOptions } from "../backend/windows/backend.js";
 import { DEFAULT_TMUX_SOCKET, WslBackend } from "../backend/wsl/backend.js";
 import type { WslBackendOptions } from "../backend/wsl/backend.js";
 import { AlreadyRunningError, CoreServer } from "../ipc/server.js";
@@ -50,10 +52,12 @@ export interface RunCoreOptions {
   dataDir?: string;
   /** tmux socket of the WSL backend; defaults to `termdock`. Tests use `termdock-test`. */
   tmuxSocket?: string;
-  /** Replaces the default backends (a `WslBackend`); the caller then owns and disposes them. */
+  /** Replaces the default backends (a `WslBackend` and a `WindowsBackend`); the caller then owns and disposes them. */
   backends?: readonly Backend[];
   /** Creates the core's own `WslBackend` when `backends` is unset; the core owns and disposes it. Tests use it. */
   createWslBackend?: (options: WslBackendOptions) => WslBackend;
+  /** Creates the core's own `WindowsBackend` when `backends` is unset (issue #65); the core owns and disposes it. */
+  createWindowsBackend?: (options: WindowsBackendOptions) => WindowsBackend;
   stderr?: { write(text: string): unknown };
   /** Close on SIGINT/SIGTERM. Default true; tests turn it off. */
   installSignalHandlers?: boolean;
@@ -64,6 +68,9 @@ export interface RunCoreOptions {
   /** Opens the database; defaults to `openStorage`. Tests wrap it to inject write errors (full disk, issue #133). */
   openStorage?: (options: OpenStorageOptions) => Storage;
 }
+
+/** A backend the core created itself and disposes on close. */
+type OwnBackend = Backend & { dispose(): Promise<void> };
 
 /** The part of `process` the core uses for its signal handlers. */
 export interface SignalSource {
@@ -82,7 +89,8 @@ export interface RunCoreResult {
   autostart?: AutostartResult;
   /**
    * Set when the core runs. Closes the pipe, releases all PTYs without changing session states, disposes the
-   * backends the core created (WSL: keepalives and tmux sessions stay, issue #140) and closes the database. Idempotent.
+   * backends the core created (WSL: keepalives and tmux sessions stay, issue #140; Windows: the shells end, #65) and
+   * closes the database. Idempotent.
    */
   close?: () => Promise<void>;
 }
@@ -224,9 +232,15 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   const log = (text: string): void => logger.error(text);
   const warn = (text: string): void => logger.warn(text);
   const createWslBackend = options.createWslBackend ?? ((wslOptions) => new WslBackend(wslOptions));
-  const ownBackends: WslBackend[] = options.backends
+  const createWindowsBackend =
+    options.createWindowsBackend ?? ((windowsOptions) => new WindowsBackend(windowsOptions));
+  // WSL and the Windows shells (issue #65); both hand their PTYs to the same close queue (ADR 0008).
+  const ownBackends: OwnBackend[] = options.backends
     ? []
-    : [createWslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET, log: warn })];
+    : [
+        createWslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET, log: warn }),
+        createWindowsBackend({ log: warn }),
+      ];
   const wslBackend = (options.backends ?? ownBackends).find(
     (backend): backend is WslBackend => backend instanceof WslBackend,
   );

@@ -1,7 +1,7 @@
 // Window content: sidebar, tab bar, the panes of every tab with one terminal view each, and the status bar
 // (ADR 0006). All tabs of the window stay mounted and attached; the inactive ones are only hidden.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { SessionId } from "@termdock/protocol";
+import type { LaunchSpec, SessionId } from "@termdock/protocol";
 import type { TermdockApi } from "../shared/bridge.js";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
@@ -114,13 +114,13 @@ export function App({ api }: { api: TermdockApi }) {
   );
 
   const create = useCallback(
-    (name: string, cwd: string) => {
+    (name: string, launch: LaunchSpec) => {
       if (creatingNow.current) return;
       creatingNow.current = true;
       setCreating(true);
       setCreateError(undefined);
       api
-        .createSession({ name, launch: { backend: "wsl", cwd } })
+        .createSession({ name, launch })
         .then(
           (session) => {
             // The event of the main process may have added the session already; the store keeps what it has.
@@ -155,7 +155,8 @@ export function App({ api }: { api: TermdockApi }) {
       createWorkspace: (name) => api.createWorkspace(name),
       renameWorkspace: (workspaceId, name) => api.updateWorkspace(workspaceId, name),
       deleteWorkspace: (workspaceId) => api.deleteWorkspace(workspaceId),
-      createProject: (workspaceId, name, path) => api.createProject(workspaceId, name, path, "wsl"),
+      createProject: (workspaceId, name, path, backend) =>
+        api.createProject(workspaceId, name, path, backend),
       renameProject: (projectId, name) => api.updateProject(projectId, name),
       deleteProject: (projectId) => api.deleteProject(projectId),
       startProjectSession: (project, mode) =>
@@ -200,7 +201,7 @@ export function App({ api }: { api: TermdockApi }) {
   // The history search (#62, Ctrl+Shift+F) is a dialog like the overview; only one of them is open.
   const [searchOpen, setSearchOpen] = useState(false);
   // The main process asks this window to show the quit dialog (#60); it answers once.
-  const [quit, setQuit] = useState<{ requestId: string; activeSessions: number }>();
+  const [quit, setQuit] = useState<{ requestId: string; activeSessions: number; windowsSessions: number }>();
   useEffect(
     () =>
       api.onEvent((event) => {
@@ -209,7 +210,11 @@ export function App({ api }: { api: TermdockApi }) {
           setQuit((open) =>
             open?.requestId === event.requestId
               ? open
-              : { requestId: event.requestId, activeSessions: event.activeSessions },
+              : {
+                  requestId: event.requestId,
+                  activeSessions: event.activeSessions,
+                  windowsSessions: event.windowsSessions ?? 0,
+                },
           );
       }),
     [api],
@@ -474,6 +479,7 @@ export function App({ api }: { api: TermdockApi }) {
         {quit && (
           <QuitDialog
             activeSessions={quit.activeSessions}
+            windowsSessions={quit.windowsSessions}
             onAnswer={(answer) => {
               const { requestId } = quit;
               answeredQuits.current.add(requestId);
@@ -579,11 +585,11 @@ function EmptyState({
       <p>
         {loaded
           ? "Wähle eine Session in der Seitenleiste oder lege eine neue an."
-          : "Lege eine WSL-Session an, um zu beginnen."}
+          : "Lege eine Session an, um zu beginnen."}
       </p>
       {error && <p className="empty-state__error">Sessions nicht verfügbar: {error}</p>}
       <button className="button button--primary" type="button" onClick={onNewSession}>
-        Neue WSL-Session
+        Neue Session
       </button>
     </div>
   );

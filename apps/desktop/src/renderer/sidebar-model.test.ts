@@ -13,6 +13,8 @@ import {
   projectFocus,
   openModeOf,
   projectMenu,
+  newProjectFields,
+  newProjectInput,
   projectSessionParams,
   SIDEBAR_FOCUS,
   sessionFocus,
@@ -364,6 +366,42 @@ describe("projectSessionParams (#104)", () => {
   it("leaves the distro out when the project has none, so the configured default applies", () => {
     const { distro: _distro, ...withoutDistro } = project;
     expect(projectSessionParams(withoutDistro).launch).toEqual({ backend: "wsl", cwd: "/srv/api" });
+  });
+
+  it("[V1-15] starts a Windows shell in a Windows project; the shell comes from the settings (#65)", () => {
+    const windows: Project = {
+      id: "p2",
+      workspaceId: "w1",
+      name: "web",
+      path: "C:\\dev\\web",
+      backend: "windows",
+    };
+    expect(projectSessionParams(windows).launch).toEqual({ backend: "windows", cwd: "C:\\dev\\web" });
+  });
+});
+
+describe("new project dialog (#65)", () => {
+  it("[V1-15] asks for name, backend and path; the backend note names the limit of Windows shells", () => {
+    const fields = newProjectFields();
+    expect(fields.map((field) => [field.key, field.value])).toEqual([
+      ["name", ""],
+      ["backend", "wsl"],
+      ["path", "/home"],
+    ]);
+    expect(fields[1]!.options?.map((option) => option.value)).toEqual(["wsl", "windows"]);
+    expect(fields[1]!.note?.(["api", "wsl", "/srv"])).toBeUndefined();
+    expect(fields[1]!.note?.(["web", "windows", "C:\\dev"])).toBe(
+      "Läuft nur, solange der TermDock-Core läuft",
+    );
+  });
+
+  it("turns the values into project.create, an unknown backend into WSL", () => {
+    expect(newProjectInput(["web", "windows", "C:\\dev\\web"])).toEqual({
+      name: "web",
+      backend: "windows",
+      path: "C:\\dev\\web",
+    });
+    expect(newProjectInput(["api", "other", "/srv/api"]).backend).toBe("wsl");
   });
 });
 

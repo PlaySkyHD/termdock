@@ -390,14 +390,30 @@ Der Main SHALL über das Menü „Neues Fenster“ ein Fenster öffnen, das eige
 - **WHEN** der Benutzer „Neues Fenster“ wählt
 - **THEN** öffnet sich Fenster B ohne Tabs mit Sidebar und Leerzustand, und die Tabs von A bleiben unverändert
 
-### Requirement: Neue WSL-Session aus der Sidebar
+### Requirement: Neue Session aus der Sidebar
 
-Die Sidebar SHALL eine Aktion „Neue WSL-Session“ mit Name und Arbeitsverzeichnis (Standard `~`) anbieten. Nach dem Anlegen SHALL sie die Session als Tab öffnen; scheitert das Anlegen, SHALL sie den Fehler im Formular zeigen.
+Die Sidebar SHALL eine Aktion „Neue Session“ mit Backend (WSL oder Windows-Shell), bei Windows der Shell (Standard aus den Einstellungen, `pwsh`, `powershell`, `cmd`), Name und Arbeitsverzeichnis (Standard `~`) anbieten. Ein Windows-Verzeichnis MUST `~`, ein Pfad darunter oder ein Laufwerks- oder UNC-Pfad sein, sonst steht ein Fehler im Formular. Nach dem Anlegen SHALL sie die Session als Tab öffnen; scheitert das Anlegen, zeigt sie den Fehler im Formular.
 
 #### Scenario: Anlegen mit Standard
 
 - **WHEN** der Benutzer nur einen Namen eingibt und bestätigt
 - **THEN** sendet das Fenster `createSession` mit `launch: { backend: "wsl", cwd: "~" }` und öffnet den Tab
+
+#### Scenario: Windows-Shell anlegen
+
+- **WHEN** der Benutzer Backend Windows-Shell, Shell `cmd`, Name „Windows cmd“ und Verzeichnis `C:\` wählt und bestätigt
+- **THEN** sendet das Fenster `launch: { backend: "windows", cwd: "C:\\", shell: "cmd" }`, öffnet den Tab, und das Formular nannte vorher „Läuft nur, solange der TermDock-Core läuft“
+
+#### Scenario: Linux-Pfad für Windows
+
+- **WHEN** der Benutzer Windows-Shell wählt und `/home/dev` als Verzeichnis bestätigt
+- **THEN** sendet das Fenster nichts, und das Formular meldet „Für Windows ein Pfad wie C:\dev oder \\server\freigabe“
+
+#### Scenario: Backend wechseln
+
+- **GIVEN** das Formular mit dem Standardnamen „WSL“ und Verzeichnis `/srv/app`
+- **WHEN** der Benutzer Windows-Shell wählt
+- **THEN** heißt die Session „Windows“, und das Verzeichnis ist `~`; ein selbst getippter Name bleibt
 
 ### Requirement: Statusleiste mit Backend, Session und Hinweisen
 
@@ -901,7 +917,7 @@ Der Screenshot-Modus SHALL den Schließen-Dialog bei laufenden Sessions ohne und
 
 ### Requirement: Workspaces und Projekte in der Sidebar verwalten
 
-Die Sidebar SHALL das Anlegen, Umbenennen und Löschen von Workspaces und das Anlegen, Umbenennen und Löschen von Projekten anbieten. Namen und Pfade werden in einem kleinen Dialog erfasst (Esc bricht ab, Enter bestätigt); Löschen verlangt eine Bestätigung, deren Standard „Abbrechen“ ist. Ein Fehler des Core SHALL im Dialog stehen und ihn offen lassen.
+Die Sidebar SHALL das Anlegen, Umbenennen und Löschen von Workspaces und das Anlegen, Umbenennen und Löschen von Projekten anbieten. Namen, Backend (WSL oder Windows-Shell) und Pfade werden in einem kleinen Dialog erfasst (Esc bricht ab, Enter bestätigt); Löschen verlangt eine Bestätigung, deren Standard „Abbrechen“ ist. Ein Fehler des Core SHALL im Dialog stehen und ihn offen lassen.
 
 #### Scenario: Workspace anlegen und umbenennen
 
@@ -912,6 +928,11 @@ Die Sidebar SHALL das Anlegen, Umbenennen und Löschen von Workspaces und das An
 
 - **WHEN** der Benutzer im Menü eines Workspace „Projekt hinzufügen“ wählt und Name und Pfad `/srv/api` bestätigt
 - **THEN** erscheint das Projekt unter dem Workspace mit Backend WSL
+
+#### Scenario: Windows-Projekt hinzufügen
+
+- **WHEN** der Benutzer im Dialog Backend Windows-Shell wählt, „web“ und `C:\` bestätigt
+- **THEN** nannte der Dialog „Läuft nur, solange der TermDock-Core läuft“, der Core erhielt `project.create` mit `backend: "windows"`, und das Projekt trägt in der Sidebar das Badge „Win“
 
 #### Scenario: Workspace löschen
 
@@ -1005,7 +1026,7 @@ Rechtsklick, Menütaste und Umschalt+F10 auf einer Session, einem Workspace oder
 #### Scenario: Fokus nach der Aktion
 
 - **WHEN** eine Menüaktion oder ein Dialog der Sidebar endet (Verschieben, Umbenennen, Abbrechen, Bestätigen)
-- **THEN** hat die auslösende oder verschobene Zeile den Fokus, und wo es sie nicht mehr gibt, der Knopf „Neue WSL-Session“ der Sidebar, nie `<body>`
+- **THEN** hat die auslösende oder verschobene Zeile den Fokus, und wo es sie nicht mehr gibt, der Knopf „Neue Session“ der Sidebar, nie `<body>`
 
 #### Scenario: Menü schließen
 
@@ -1282,7 +1303,7 @@ Der Screenshot-Modus SHALL das Menü eines Projekts mit „Neue Session hier“ 
 
 ### Requirement: Fokus nach dem Archivieren
 
-Nach erfolgreichem Archivieren (Menü, Tastatur, Ziehen aufs Archiv) SHALL die archivierte Zeile im Archiv den Tastaturfokus haben, nicht der Knopf „Neue WSL-Session“. Ist das Archiv zugeklappt, SHALL es dafür aufklappen. Abbrechen und Esc im Bestätigungsdialog geben den Fokus an die auslösende Zeile zurück; bei einem Fehler des Core bleibt der Dialog offen.
+Nach erfolgreichem Archivieren (Menü, Tastatur, Ziehen aufs Archiv) SHALL die archivierte Zeile im Archiv den Tastaturfokus haben, nicht der Knopf „Neue Session“. Ist das Archiv zugeklappt, SHALL es dafür aufklappen. Abbrechen und Esc im Bestätigungsdialog geben den Fokus an die auslösende Zeile zurück; bei einem Fehler des Core bleibt der Dialog offen.
 
 #### Scenario: Archivieren per Tastatur
 
@@ -1534,7 +1555,7 @@ Der Screenshot-Modus SHALL mit echten Mausereignissen (`webContents.sendInputEve
 
 ### Requirement: Screenshot-Modus wählt Szenengruppen
 
-Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `crash`, `restart`) in fester Reihenfolge, jede mit eigenem Aufbau; ohne Option laufen alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
+Mit `--scenes <gruppe,…>` SHALL der Screenshot-Modus nur die genannten Szenengruppen aufnehmen (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `windows`, `crash`, `restart`), fest geordnet, jede mit eigenem Aufbau; ohne Option alle. Ein unbekannter Name oder eine leere Liste beendet die App vor dem Core-Start mit Code 1. Eine gescheiterte Gruppe SHALL genau einmal wiederholt werden (Log `retry <gruppe>: <fehler>`); scheitert sie erneut, Code 1.
 
 #### Scenario: Eine Gruppe allein
 
@@ -1894,3 +1915,59 @@ Die Gruppe `restore` SHALL die angehängte Session beenden, `19c-restart-bar-in-
 
 - **WHEN** der Screenshot-Modus mit `--scenes restore` läuft
 - **THEN** enthält `<dir>` `19c-restart-bar-in-view.png` und `19d-restarted-in-view.png`, und der Lauf endet mit Code 1, wenn die Session nach dem Klick nicht lebt, die Leiste sichtbar bleibt oder die View des Panes gewechselt hat
+
+### Requirement: Persistenzgrenze der Windows-Shells sichtbar
+
+Eine Windows-Session und ein Windows-Projekt SHALL in der Sidebar das Badge „Win“ tragen, im Tooltip „Läuft nur, solange der TermDock-Core läuft“. Ist eine Windows-Session aktiv, SHALL die Statusleiste diesen Satz neben dem Backend zeigen. Eine `Interrupted`-Windows-Session MUST sagen, dass die Shell mit dem Core beendet wurde. Der Profil-Editor nennt die Grenze bei der Shell. Die Texte stehen in reinen Funktionen.
+
+#### Scenario: Sidebar und Statusleiste
+
+- **GIVEN** eine laufende Windows-Session mit `cmd` und eine WSL-Session
+- **WHEN** die Windows-Session aktiv ist
+- **THEN** trägt nur sie das Badge, und die Statusleiste zeigt „Windows · cmd“ und „Läuft nur, solange der TermDock-Core läuft“
+
+#### Scenario: Nach dem Ende des Core
+
+- **GIVEN** ein Tab mit einer Windows-Session
+- **WHEN** der Core endet und neu startet
+- **THEN** zeigt der Tab „Unterbrochen“ mit dem Satz, dass die Windows-Shell mit dem Core beendet wurde, und „Neu starten“ startet eine neue Shell nach der Trennzeile
+
+#### Scenario: Fehlendes Verzeichnis
+
+- **GIVEN** eine Windows-Session mit der Warnung `cwd_missing` für `D:\gone`
+- **WHEN** ihr Pane angezeigt wird
+- **THEN** lautet der Hinweis „Verzeichnis D:\gone fehlt – die Session läuft im Benutzerordner.“
+
+### Requirement: Rohpuffer als Snapshot im Pane
+
+Ist der Snapshot der Rohpuffer des Core (Windows-Session), SHALL die View ihn unverändert schreiben, auch Zeilenumbrüche am Ende; nur einen tmux-Snapshot kürzt sie um leere Zeilen am Ende.
+
+#### Scenario: Neustart einer Windows-Shell
+
+- **GIVEN** ein Snapshot, der aus der Trennzeile mit Zeilenumbruch besteht, und die erste Ausgabe der neuen Shell, die danach live kommt
+- **WHEN** eine View an die Windows-Session anhängt
+- **THEN** steht die Ausgabe der Shell in der Zeile unter der Trennzeile, nicht dahinter
+
+### Requirement: Schließen-Dialog nennt Windows-Shells
+
+Sind unter den laufenden Sessions Windows-Shells, SHALL der Main ihre Zahl mit der Frage senden (`windowsSessions`), und der Dialog MUST zusätzlich sagen, dass sie nur laufen, solange der TermDock-Core läuft, und ein Neustart von Windows oder des Core sie beendet. Ohne Windows-Shell bleiben Frage und Dialog wie bisher.
+
+#### Scenario: Eine Windows-Shell läuft
+
+- **GIVEN** eine laufende Windows-Session und eine WSL-Session
+- **WHEN** der Benutzer die App beendet
+- **THEN** nennt der Dialog 2 laufende Sessions und „Die Windows-Shell läuft nur, solange der TermDock-Core läuft; ein Neustart von Windows oder des Core beendet sie.“
+
+#### Scenario: Wiederholte Frage
+
+- **WHEN** der Main die Frage erneut sendet, bis das Fenster sie bestätigt
+- **THEN** trägt jede Wiederholung dasselbe `windowsSessions`
+
+### Requirement: Screenshot-Szenen der Windows-Shells
+
+Die Gruppe `windows` SHALL mit Sichtbarkeitsselektor aufnehmen: `34-windows-new-session.png` (Formular mit Shell), `35-windows-session.png` (Badge, Statusleiste), `36-windows-project-dialog.png` (Hinweis im Projektdialog), `37-windows-quit-dialog.png` (Satz im Schließen-Dialog), `38-windows-interrupted.png` (nach Ende des Core) und `39-windows-restarted.png` (neue Shell).
+
+#### Scenario: Gruppe windows
+
+- **WHEN** der Screenshot-Modus mit `--scenes windows` läuft
+- **THEN** entstehen die sechs Bilder, die WSL-Session daneben trägt kein Badge und lebt nach dem Neustart des Core weiter, und der Lauf endet mit Code 0

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaunchSpec, SessionState } from "@termdock/protocol";
 import { FakeBackend } from "../backend/fake.js";
 import { InMemorySessionRepository } from "../storage/session-repository.js";
+import { CoreError } from "./errors.js";
 import { SessionRegistry } from "./registry.js";
 import type { SessionRegistryOptions } from "./registry.js";
 
@@ -74,6 +75,20 @@ describe("SessionRegistry: create and start", () => {
 
     const [session] = registry.list();
     expect(session?.state).toBe("Interrupted");
+  });
+
+  it("passes the reason of a CoreError from the backend on, but no other error text (#65)", async () => {
+    const { registry, backend } = setup();
+    backend.failNextStart = new CoreError("backend_unavailable", "PowerShell 7 (pwsh.exe) is not installed");
+    const failure = registry.create({ name: "pwsh", launch: spec });
+    await expect(failure).rejects.toMatchObject({
+      code: "backend_unavailable",
+      message: expect.stringMatching(/could not be started: PowerShell 7 \(pwsh\.exe\) is not installed$/),
+    });
+    backend.failNextStart = new Error("Command failed: wsl.exe --exec env SECRET_LIKE=value");
+    const other = await registry.create({ name: "x", launch: spec }).catch((error: unknown) => error);
+    expect(other).toMatchObject({ code: "backend_unavailable" });
+    expect((other as Error).message).toMatch(/could not be started$/);
   });
 
   it("rejects with backend_unavailable when no backend handles the launch spec", async () => {

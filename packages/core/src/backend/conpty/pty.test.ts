@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { WslPty, type PtyProcess } from "./pty.js";
+import { ConptyPty, type PtyProcess, type PtyProcessExit } from "./pty.js";
 
 class FakeProcess implements PtyProcess {
   readonly writes: string[] = [];
   readonly resizes: [number, number][] = [];
   killed = false;
   private dataListener: ((data: string) => void) | undefined;
-  private exitListener: ((event: { exitCode: number }) => void) | undefined;
+  private exitListener: ((event: PtyProcessExit) => void) | undefined;
 
   write(data: string | Buffer): void {
     this.writes.push(typeof data === "string" ? data : data.toString("utf8"));
@@ -21,24 +21,24 @@ class FakeProcess implements PtyProcess {
     this.dataListener = listener;
     return { dispose: () => (this.dataListener = undefined) };
   }
-  onExit(listener: (event: { exitCode: number }) => void) {
+  onExit(listener: (event: PtyProcessExit) => void) {
     this.exitListener = listener;
     return { dispose: () => (this.exitListener = undefined) };
   }
   emitData(data: string): void {
     this.dataListener?.(data);
   }
-  emitExit(): void {
-    this.exitListener?.({ exitCode: 0 });
+  emitExit(event: PtyProcessExit = { exitCode: 0 }): void {
+    this.exitListener?.(event);
   }
 }
 
 const decoder = new TextDecoder();
 const DA1_REPLY = "\x1b[?1;2c";
 
-function setup(resolveEnd: () => Promise<{ exitCode?: number }> = async () => ({})) {
+function setup(resolveEnd: (exit: PtyProcessExit) => Promise<{ exitCode?: number }> = async () => ({})) {
   const process = new FakeProcess();
-  const pty = new WslPty(process, resolveEnd);
+  const pty = new ConptyPty(process, resolveEnd);
   const output: string[] = [];
   pty.onData((data) => output.push(decoder.decode(data)));
   const exits: { exitCode?: number }[] = [];
@@ -48,7 +48,7 @@ function setup(resolveEnd: () => Promise<{ exitCode?: number }> = async () => ({
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("WslPty", () => {
+describe("ConptyPty", () => {
   it("answers the first DA1 query itself and removes it from the output", () => {
     const { process, output } = setup();
     process.emitData("\x1b[cprompt$ ");
@@ -96,6 +96,28 @@ describe("WslPty", () => {
     process.emitExit();
     await tick();
     expect(exits).toEqual([{ exitCode: 7 }]);
+  });
+
+  it("passes the exit of the process to the backend, and endReported settles after the listeners ran", async () => {
+    const seen: PtyProcessExit[] = [];
+    const { process, pty, exits } = setup(async (exit) => {
+      seen.push(exit);
+      return exit.lost ? {} : { exitCode: exit.exitCode };
+    });
+    let reported = false;
+    void pty.endReported().then(() => (reported = true));
+    await tick();
+    expect(reported).toBe(false);
+    process.emitExit({ exitCode: 3, lost: true });
+    await pty.endReported();
+    expect(seen).toEqual([{ exitCode: 3, lost: true }]);
+    expect(exits).toEqual([{}]);
+  });
+
+  it("endReported settles on dispose when no end will be reported", async () => {
+    const { pty } = setup();
+    pty.dispose();
+    await expect(pty.endReported()).resolves.toBeUndefined();
   });
 
   it("reports the end without exit code when resolving fails", async () => {

@@ -85,6 +85,11 @@ export interface ControllerOptions {
    * window after a restart of the core, #130). The core hands the writer over atomically.
    */
   claimOnOpen?: () => boolean;
+  /**
+   * The snapshot is the raw output the core kept (Windows sessions, #65; `rawSnapshot` of session-display): its line
+   * breaks at the end move the cursor where the shell left it and stay. A tmux snapshot lists blank rows instead.
+   */
+  rawSnapshot?: boolean;
 }
 
 function delayLayout(run: () => void): () => void {
@@ -115,6 +120,7 @@ export class TerminalController {
   /** Set while a fit after a change of the element is planned. */
   private cancelLayout: (() => void) | undefined;
   private readonly claimOnOpen: (() => boolean) | undefined;
+  private readonly rawSnapshot: boolean;
 
   constructor(
     private readonly api: ViewApi,
@@ -124,6 +130,7 @@ export class TerminalController {
   ) {
     this.scheduleLayout = options.scheduleLayout ?? delayLayout;
     this.claimOnOpen = options.claimOnOpen;
+    this.rawSnapshot = options.rawSnapshot === true;
     const { commands } = options;
     if (commands) this.surface.onKey((event) => handleKey(event, commands));
   }
@@ -187,7 +194,9 @@ export class TerminalController {
     this.surface.reset();
     // The snapshot begins with the terminal modes of the session (mouse, cursor keys, bracketed paste, issue #42),
     // so this view takes input like one that saw all output.
-    this.surface.write(trimTrailingBlankLines(view.snapshot));
+    this.surface.write(
+      this.rawSnapshot ? new TextDecoder().decode(view.snapshot) : trimTrailingBlankLines(view.snapshot),
+    );
     // A reader pane may never get the focus; it still shows where the writer's cursor is.
     this.surface.showCursor();
     this.snapshotSeq = view.outputSeq;

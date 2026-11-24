@@ -1,10 +1,10 @@
 // What the sidebar shows and may do (#63): sections from sessions and workspaces, the rules for which drop target
 // takes which session, and the entries of the context menus. The rules live here once, so the mouse (drag and
 // drop) and the keyboard (context menu) cannot disagree. Pure, no DOM.
-import type { Project, SessionCreateParams, SessionInfo, Workspace } from "@termdock/protocol";
+import type { BackendKind, Project, SessionCreateParams, SessionInfo, Workspace } from "@termdock/protocol";
 import type { DragPayload } from "./drag/drag-model.js";
 import type { PaneZone } from "./pane-tree.js";
-import { canRestart } from "./session-display.js";
+import { canRestart, persistenceLimit } from "./session-display.js";
 
 export interface WorkspaceSection {
   workspace: Workspace;
@@ -208,6 +208,51 @@ export function projectSessionParams(project: Project, name: string = project.na
       ...(project.distro === undefined ? {} : { distro: project.distro }),
       cwd: project.path,
     },
+  };
+}
+
+/** A field of the dialog "Projekt in …"; `NameField` of `Dialogs.tsx` fits. */
+export interface ProjectField {
+  key: "name" | "backend" | "path";
+  label: string;
+  value: string;
+  options?: ReadonlyArray<{ value: BackendKind; label: string }>;
+  note?: (values: readonly string[]) => string | undefined;
+}
+
+/**
+ * Name, backend and path of a new project (#65), in this order. The note under the backend names the persistence
+ * limit while Windows is chosen; the core checks the path against the backend (Linux path for WSL, drive or UNC path
+ * for Windows) and the dialog shows its refusal.
+ */
+export function newProjectFields(): ProjectField[] {
+  return [
+    { key: "name", label: "Name", value: "" },
+    {
+      key: "backend",
+      label: "Backend",
+      value: "wsl",
+      options: [
+        { value: "wsl", label: "WSL" },
+        { value: "windows", label: "Windows-Shell" },
+      ],
+      note: (values) =>
+        values[1] === "windows" ? persistenceLimit({ backend: "windows" })?.note : undefined,
+    },
+    { key: "path", label: "Pfad (WSL: /home/…, Windows: C:\\…)", value: "/home" },
+  ];
+}
+
+/** `project.create` from the values of `newProjectFields`, trimmed as the dialog passes them. */
+export function newProjectInput(values: readonly string[]): {
+  name: string;
+  backend: BackendKind;
+  path: string;
+} {
+  return {
+    name: values[0] ?? "",
+    backend: values[1] === "windows" ? "windows" : "wsl",
+    path: values[2] ?? "",
   };
 }
 

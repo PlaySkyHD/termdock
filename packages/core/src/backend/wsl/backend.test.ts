@@ -3,7 +3,7 @@ import type { LaunchSpec } from "@termdock/protocol";
 import { WslBackend } from "./backend.js";
 import type { RunResult } from "./commands.js";
 import type { KeepaliveProcess } from "./keepalive.js";
-import type { PtyProcess } from "./pty.js";
+import type { PtyProcess } from "../conpty/pty.js";
 
 const spec: LaunchSpec = { backend: "wsl", cwd: "/tmp" };
 const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "" });

@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { LaunchSpec, SessionId } from "@termdock/protocol";
 import { SessionRegistry } from "../../session/registry.js";
 import type { Backend } from "../types.js";
-import { ptysClosed, spawnConpty } from "./processes.js";
-import type { ConptyProcess } from "./processes.js";
-import { WslPty } from "./pty.js";
+import { ConptyPty } from "./pty.js";
+import { ptysClosed, spawnConpty } from "./spawn.js";
+import type { ConptyProcess } from "./spawn.js";
 
 const SESSIONS = 20;
 /** A few rounds only, so the file stays short; `scripts/pty-shutdown-repro.mjs` runs 50 in their own processes. */
@@ -32,7 +32,7 @@ async function waitFor(predicate: () => boolean, what: string, timeoutMs = 20_00
   }
 }
 
-/** `cmd.exe` PTYs through `spawnConpty` and `WslPty`, as the WSL backend runs its tmux clients; no persistence. */
+/** `cmd.exe` PTYs through `spawnConpty` and `ConptyPty`, as the WSL backend runs its tmux clients; no persistence. */
 class CmdBackend implements Backend {
   readonly kind = "wsl" as const;
   readonly processes = new Map<SessionId, ConptyProcess>();
@@ -49,7 +49,7 @@ class CmdBackend implements Backend {
   async start(id: SessionId, _spec: LaunchSpec, size: { cols: number; rows: number }) {
     const pty = await spawnConpty("cmd.exe", [], size, process.cwd());
     this.processes.set(id, pty);
-    return new WslPty(pty, async () => ({}));
+    return new ConptyPty(pty, async () => ({}));
   }
 
   /** As tmux `kill-session`: the program ends by itself. */

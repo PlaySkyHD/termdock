@@ -29,4 +29,22 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
+  {
+    // A hanging network drive must not block the core's main thread (#65, #185).
+    files: ["packages/core/src/**/*.ts"],
+    ignores: ["**/*.test.ts", "packages/core/src/test/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: ["node:fs", "fs"].map((name) => ({
+            name,
+            importNames: ["statSync", "lstatSync", "existsSync", "readFileSync", "readdirSync", "accessSync"],
+            message:
+              "Kein synchrones fs im Core-Hauptthread: node:fs/promises mit Zeitlimit (hängende Netzlaufwerke, #65)",
+          })),
+        },
+      ],
+    },
+  },
 );

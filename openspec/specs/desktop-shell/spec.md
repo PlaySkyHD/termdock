@@ -1350,13 +1350,19 @@ Das Fenster SHALL den Einstellungsdialog mit `Ctrl+,` (Befehl der Keymap) und ü
 
 ### Requirement: Abschnitt Allgemein
 
-Der Abschnitt Allgemein SHALL die Distribution (Auswahl aus `listDistros` plus „WSL-Standard“, ohne Liste ein freies Feld mit dem Grund), die Standardshell (pwsh, powershell, cmd oder keine), das Standardverzeichnis und den Schalter „Beim Schließen fragen“ (`confirmQuitWhileRunning`) zeigen. Speichern SHALL nur geänderte Schlüssel mit `updateSettings` senden; ein geleertes Feld MUST den Schlüssel entfernen (`null`).
+Der Abschnitt Allgemein SHALL die Distribution (Auswahl aus `listDistros` plus „WSL-Standard“, ohne Liste ein freies Feld mit dem Grund), die Standardshell (pwsh, powershell, cmd oder keine), das Standardverzeichnis, den Schalter „Beim Schließen fragen“ (`confirmQuitWhileRunning`) und den Schalter „Nach Updates suchen“ (`checkForUpdates`, fehlend heißt an) zeigen. Speichern SHALL nur geänderte Schlüssel mit `updateSettings` senden; ein geleertes Feld MUST den Schlüssel entfernen (`null`).
 
 #### Scenario: Nachfrage wieder einschalten
 
 - **GIVEN** gespeichert ist `confirmQuitWhileRunning: false` mit `quitAction: "keepSessions"`
 - **WHEN** der Benutzer „Beim Schließen fragen“ einschaltet und speichert
 - **THEN** sendet das Fenster `settings.set { settings: { confirmQuitWhileRunning: true } }`, und das nächste Beenden mit laufenden Sessions fragt wieder
+
+#### Scenario: Update-Suche ausschalten
+
+- **GIVEN** `checkForUpdates` ist nicht gespeichert
+- **WHEN** der Benutzer „Nach Updates suchen“ ausschaltet und speichert
+- **THEN** sendet das Fenster `settings.set { settings: { checkForUpdates: false } }`; schaltet er es wieder ein, sendet es `checkForUpdates: true`
 
 #### Scenario: Distribution aus der Liste
 

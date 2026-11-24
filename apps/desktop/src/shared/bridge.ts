@@ -80,7 +80,19 @@ export type BridgeCall =
   /** The button "Core neu starten" (#130): restarts the core after the limit of automatic restarts. */
   | { method: "restartCore" }
   /** Whether the core is connected right now; a page that loads while it is gone asks this once (#130). */
-  | { method: "coreConnection" };
+  | { method: "coreConnection" }
+  /** The downloaded update the windows offer (#136); a page that loads later asks this once. */
+  | { method: "updateState" }
+  /** "Jetzt neu starten" or "Später" in the update dialog (#136); the answer counts for every window. */
+  | { method: "answerUpdate"; choice: UpdateChoice };
+
+/** The buttons of the update dialog (#136). */
+export type UpdateChoice = "install" | "later";
+
+/** The update a window offers; no `version` means none (#136). */
+export interface UpdateState {
+  version?: string;
+}
 
 /** The connection to the core as a window needs it (#130). */
 export interface CoreConnectionState {
@@ -138,6 +150,8 @@ export interface BridgeResults {
   listDistros: WslDistrosResult;
   restartCore: null;
   coreConnection: CoreConnectionState;
+  updateState: UpdateState;
+  answerUpdate: null;
 }
 
 /** Transport errors of the main process join the core's stable codes. */
@@ -192,7 +206,9 @@ export type BridgeEvent =
    */
   | { kind: "coreClosed"; restarting: boolean }
   /** The main process is connected to a core again: the window lists anew and attaches its views again (#130). */
-  | { kind: "coreRestarted" };
+  | { kind: "coreRestarted" }
+  /** An update is downloaded (`version`) or no longer offered (none: "Später", install started) (#136). */
+  | { kind: "updateChanged"; version?: string };
 
 /**
  * API the preload exposes as `window.termdock`. Rejected promises carry the code in the message as
@@ -238,6 +254,9 @@ export interface TermdockApi {
   /** Restarts the core once the automatic restarts gave up; does nothing while connected or restarting. */
   restartCore(): Promise<void>;
   coreConnection(): Promise<CoreConnectionState>;
+  updateState(): Promise<UpdateState>;
+  /** Rejects with `not_found` when no update is offered (any more). */
+  answerUpdate(choice: UpdateChoice): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

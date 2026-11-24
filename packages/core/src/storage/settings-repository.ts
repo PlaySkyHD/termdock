@@ -23,6 +23,7 @@ const KEYS = [
   "historyEnabledByDefault",
   "confirmQuitWhileRunning",
   "quitAction",
+  "checkForUpdates",
 ] as const satisfies readonly (keyof Settings)[];
 
 /** The merged settings, checked with the protocol guard. Pure: the caller stores nothing before it succeeds. */

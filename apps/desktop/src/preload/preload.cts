@@ -64,6 +64,8 @@ const api: TermdockApi = {
   listDistros: () => call({ method: "listDistros" }),
   restartCore: async () => void (await call({ method: "restartCore" })),
   coreConnection: () => call({ method: "coreConnection" }),
+  updateState: () => call({ method: "updateState" }),
+  answerUpdate: async (choice) => void (await call({ method: "answerUpdate", choice })),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

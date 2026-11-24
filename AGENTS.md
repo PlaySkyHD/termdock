@@ -21,4 +21,4 @@ Windows-Desktop-App zur Verwaltung langlebiger Terminal-Sessions (WSL-first, tmu
 - WSL-Integrationstests: `TERMDOCK_WSL_TESTS=1 npm test -w packages/core`.
 - Desktop-App (ADR 0006): `npm start -w apps/desktop`; Screenshots gegen einen isolierten Core: `npm run screenshot -w apps/desktop -- <dir>`. In Agent-Shells vorher `unset ELECTRON_RUN_AS_NODE`.
 - Installer (ADR 0007): `npm run dist -w apps/desktop` baut nach `apps/desktop/release/`; Prüfmodus der entpackten App (vorher `unset ELECTRON_RUN_AS_NODE`): `TERMDOCK_DATA_DIR=<temp-ordner> apps/desktop/release/win-unpacked/TermDock.exe --smoke-test`.
-- Für eine Szenengruppe `npm run screenshot -w apps/desktop -- <dir> --scenes <gruppe>` (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `windows`, `crash`, `restart`; mehrere mit Komma); vor dem PR einmal den ganzen Lauf.
+- Für eine Szenengruppe `npm run screenshot -w apps/desktop -- <dir> --scenes <gruppe>` (`scenario`, `sidebar`, `tabs`, `snap`, `restore`, `quit`, `search`, `settings`, `cwd`, `windows`, `crash`, `update`, `restart`; mehrere mit Komma); vor dem PR einmal den ganzen Lauf.

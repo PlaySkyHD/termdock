@@ -52,7 +52,8 @@ jobs:
       - name: Test
         run: npm test
 
-  # Windows installer (ADR 0007): unsigned NSIS setup per user, no publishing. The same commands run locally.
+  # Windows installer (ADR 0007): unsigned NSIS setup per user, no publishing (releases: release.yml, #136). The same
+  # commands run locally.
   package:
     name: Installer bauen und prüfen
     runs-on: windows-latest
@@ -79,6 +80,17 @@ jobs:
 
       - name: Build installer
         run: npm run dist -w apps/desktop
+
+      # The auto-update (#136) needs latest.yml and the blockmap next to the installer, and app-update.yml in the app.
+      - name: Check the update files
+        shell: bash
+        working-directory: apps/desktop/release
+        run: |
+          VERSION="$(node -p "require('../package.json').version")"
+          for file in "TermDock-Setup-$VERSION.exe.blockmap" latest.yml win-unpacked/resources/app-update.yml; do
+            test -s "$file" || { echo "::error::$file is missing"; exit 1; }
+          done
+          grep -q "repo: termdock" win-unpacked/resources/app-update.yml
 
       # node-pty must load from app.asar.unpacked with the ABI of the packaged Electron.
       - name: Load native modules of the packaged app

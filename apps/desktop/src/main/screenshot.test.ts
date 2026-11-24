@@ -148,6 +148,8 @@ describe("screenshotScenes", () => {
     expect(screenshotScenes([...base, "--scenes", "restart,cwd"])).toEqual(["cwd", "restart"]);
     // The crashed renderer (#133) leaves the core running and comes before the restart.
     expect(screenshotScenes([...base, "--scenes", "restart,crash"])).toEqual(["crash", "restart"]);
+    // The update dialog (#136) installs nothing and also comes before the restart.
+    expect(screenshotScenes([...base, "--scenes", "restart,update"])).toEqual(["update", "restart"]);
   });
 
   it("reads the option wherever it stands", () => {

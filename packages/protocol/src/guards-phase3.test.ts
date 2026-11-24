@@ -371,6 +371,21 @@ describe("settings messages", () => {
       ),
     ).toContain("result.settings.confirmQuitWhileRunning");
   });
+
+  it("takes the optional update switch in requests and results (protocol 1.7, #136)", () => {
+    accepts("settings.set", { settings: { checkForUpdates: false } });
+    accepts("settings.set", { settings: { checkForUpdates: true } });
+    accepts("settings.set", { settings: { checkForUpdates: null } });
+    rejects("settings.set", { settings: { checkForUpdates: "nein" } }, "params.settings.checkForUpdates");
+    // A core 1.6 sends no such key; a 1.7 client still reads its settings.
+    expect(parseResponse(response({ settings }), "settings.get").ok).toBe(true);
+    expect(
+      parseResponse(response({ settings: { ...settings, checkForUpdates: false } }), "settings.get").ok,
+    ).toBe(true);
+    expect(
+      rejected(parseResponse(response({ settings: { ...settings, checkForUpdates: 0 } }), "settings.get")),
+    ).toContain("result.settings.checkForUpdates");
+  });
 });
 
 const hit = { sessionId: "s1", timestamp: 1763114400000, line: "error: build failed", offset: 0 };

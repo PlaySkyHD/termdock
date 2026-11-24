@@ -117,6 +117,7 @@ function flowSetup(decide: () => Promise<QuitDecision> = async () => ({ stopSess
     retainAll: () => events.push("retainAll"),
     flush: async () => void events.push("flush"),
     shutdownCore: async () => void events.push("shutdownCore"),
+    releaseCore: async () => void events.push("releaseCore"),
     closeClient: async () => void events.push("closeClient"),
     quit: () => events.push("quit"),
     log: (text) => events.push(`log ${text}`),
@@ -267,5 +268,66 @@ describe("QuitFlow", () => {
     flow.windowsClosed();
     await flush();
     expect(events).toEqual(["flush", "closeClient", "quit"]);
+  });
+});
+
+describe("QuitFlow.installUpdate (#136)", () => {
+  it("saves, ends the core keeping its tmux sessions, closes, then installs and quits", async () => {
+    const { flow, events } = flowSetup();
+    expect(flow.installUpdate(() => events.push("install"))).toBe(true);
+    await flush();
+    expect(events).toEqual(["retainAll", "flush", "releaseCore", "closeClient", "install", "quit"]);
+    expect(flow.quitReady).toBe(true);
+    // The installer's own `app.quit()` goes through without a question.
+    let prevented = 0;
+    flow.beforeQuit(() => (prevented += 1));
+    expect(prevented).toBe(0);
+    expect(events.filter((event) => event.startsWith("decide"))).toHaveLength(0);
+  });
+
+  it("does nothing while a quit runs, and installs only once", async () => {
+    const answer = gate<QuitDecision>();
+    const asking = flowSetup(() => answer.promise);
+    asking.flow.beforeQuit(() => {});
+    expect(asking.flow.installUpdate(() => asking.events.push("install"))).toBe(false);
+    answer.resolve({ stopSessions: false });
+    await flush();
+    expect(asking.events).not.toContain("install");
+    expect(asking.events).not.toContain("releaseCore");
+
+    const twice = flowSetup();
+    expect(twice.flow.installUpdate(() => twice.events.push("install"))).toBe(true);
+    expect(twice.flow.installUpdate(() => twice.events.push("install"))).toBe(false);
+    twice.flow.beforeQuit(() => {}); // Ctrl+Q while the update releases the core
+    await flush();
+    expect(twice.events.filter((event) => event === "install")).toHaveLength(1);
+    expect(twice.events.filter((event) => event === "releaseCore")).toHaveLength(1);
+    // Ctrl+Q asked nothing and did not quit before the core was released; the one quit follows the install.
+    expect(twice.events.filter((event) => event.startsWith("decide"))).toHaveLength(0);
+    expect(twice.events.slice(-2)).toEqual(["install", "quit"]);
+  });
+
+  it("quits even when the installer cannot start, so no window is left without a core (review)", async () => {
+    const { flow, events } = flowSetup();
+    flow.installUpdate(() => {
+      throw new Error("installer missing");
+    });
+    await flush();
+    expect(events.slice(-3)).toEqual(["closeClient", "log update install: installer missing", "quit"]);
+  });
+
+  it("still installs when the save or the end of the core fails", async () => {
+    const { flow, events, deps } = flowSetup();
+    deps.flush = async () => {
+      throw new Error("save failed");
+    };
+    deps.releaseCore = async () => {
+      throw new Error("pipe broke");
+    };
+    flow.installUpdate(() => events.push("install"));
+    await flush();
+    expect(events).toContain("log layout.save: save failed");
+    expect(events).toContain("log core.shutdown: pipe broke");
+    expect(events.slice(-3)).toEqual(["closeClient", "install", "quit"]);
   });
 });

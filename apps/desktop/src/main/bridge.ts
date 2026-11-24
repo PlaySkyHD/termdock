@@ -18,6 +18,8 @@ import type {
   BridgeEvent,
   BridgeResult,
   ProfileChange,
+  UpdateChoice,
+  UpdateState,
 } from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
 import type { QuitAnswer } from "../shared/quit-decision.js";
@@ -44,6 +46,12 @@ export interface CoreRestarts {
   disconnected(): boolean;
   /** The button "Core neu starten"; does nothing unless the automatic restarts gave up. */
   restart(): void;
+}
+
+/** The offered update as the bridge needs it (`UpdateService` fits, #136). `answer` throws `IpcError`. */
+export interface UpdateAnswers {
+  state(): UpdateState;
+  answer(choice: UpdateChoice): void;
 }
 
 /** A window as the bridge sees it; `id` is the `webContents` id. */
@@ -80,6 +88,7 @@ export class DesktopBridge {
     private readonly layouts?: WindowLayouts,
     private readonly quit?: QuitAnswers,
     private readonly restarts?: CoreRestarts,
+    private readonly updates?: UpdateAnswers,
   ) {
     this.subscriptions = [
       core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
@@ -175,6 +184,11 @@ export class DesktopBridge {
   sessionOf(windowId: number, viewId: ViewId): SessionId | undefined {
     const view = this.views.get(viewId);
     return view?.windowId === windowId ? view.sessionId : undefined;
+  }
+
+  /** One event to every window (the update dialog, #136). */
+  broadcast(event: BridgeEvent): void {
+    this.toAll(event);
   }
 
   /** One event to one window (the quit dialog); false for a window that is gone or unknown. */
@@ -320,6 +334,13 @@ export class DesktopBridge {
           closed: this.restarts?.disconnected() ?? false,
           restarting: this.restarts?.restarting() ?? false,
         };
+      // The update dialog (#136): the answer of any window counts for all; the core is not involved here.
+      case "updateState":
+        return this.updates?.state() ?? {};
+      case "answerUpdate":
+        if (!this.updates) throw new IpcError("not_found", "There is no update to answer");
+        this.updates.answer(call.choice);
+        return null;
     }
   }
 
@@ -521,6 +542,14 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "restartCore" };
     case "coreConnection":
       return { method: "coreConnection" };
+    case "updateState":
+      return { method: "updateState" };
+    case "answerUpdate": {
+      const choice = raw["choice"];
+      if (choice !== "install" && choice !== "later")
+        throw new BadRequest('choice must be "install" or "later"');
+      return { method: "answerUpdate", choice };
+    }
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }
@@ -535,6 +564,7 @@ const SETTINGS_KEYS = [
   "historyEnabledByDefault",
   "confirmQuitWhileRunning",
   "quitAction",
+  "checkForUpdates",
 ] as const satisfies readonly (keyof SettingsPatch)[];
 const PROFILE_CHANGE_KEYS = [
   "name",

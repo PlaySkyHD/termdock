@@ -501,6 +501,7 @@ const SETTINGS_KEYS = [
   "historyEnabledByDefault",
   "confirmQuitWhileRunning",
   "quitAction",
+  "checkForUpdates",
 ] as const satisfies readonly (keyof Settings)[];
 
 const checkSettings: Check = (value, path) => {
@@ -512,6 +513,7 @@ const checkSettings: Check = (value, path) => {
   required(obj, "historyEnabledByDefault", path, isBoolean);
   required(obj, "confirmQuitWhileRunning", path, isBoolean);
   optional(obj, "quitAction", path, isQuitAction);
+  optional(obj, "checkForUpdates", path, isBoolean);
 };
 
 const checkSettingsPatch: Check = (value, path) => {
@@ -524,6 +526,7 @@ const checkSettingsPatch: Check = (value, path) => {
   optional(obj, "historyEnabledByDefault", path, isBoolean);
   optional(obj, "confirmQuitWhileRunning", path, isBoolean);
   optional(obj, "quitAction", path, nullable(isQuitAction));
+  optional(obj, "checkForUpdates", path, nullable(isBoolean));
 };
 
 const checkHit: Check = (value, path) => {

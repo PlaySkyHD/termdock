@@ -19,6 +19,7 @@ import { cwdScenes } from "./screenshot-cwd.js";
 import { windowsScenes } from "./screenshot-windows.js";
 import { captureWindow } from "./screenshot-page.js";
 import { restartScenes } from "./screenshot-restart.js";
+import { updateScenes } from "./screenshot-update.js";
 import { restoreScenes } from "./screenshot-restore.js";
 import { searchScenes } from "./screenshot-search.js";
 import { settingsScenes } from "./screenshot-settings.js";
@@ -61,6 +62,10 @@ export interface ScenarioControl {
   killCore(): void;
   /** Holds the next restart of the core before it connects; the returned function lets it go on (#130). */
   holdCoreRestart(): () => void;
+  /** As if the updater had downloaded `version` (#136); the windows offer it. */
+  offerUpdate(version: string): void;
+  /** How often "Jetzt neu starten" reached the updater; the screenshot run installs nothing. */
+  updateInstalls(): number;
 }
 
 export interface ScenarioDeps extends ScenarioControl {
@@ -317,6 +322,7 @@ async function playGroups(
   await play("cwd", () => cwdScenes(deps));
   await play("windows", () => windowsScenes(deps));
   await play("crash", () => crashScenes(deps));
+  await play("update", () => updateScenes(deps));
   await play("restart", () => restartScenes(deps));
 }
 

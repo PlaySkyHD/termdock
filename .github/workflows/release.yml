@@ -1,0 +1,86 @@
+name: Release
+
+# A pushed tag v<version> builds the unsigned installer and creates a draft release with the installer, its blockmap
+# and latest.yml (#136, ADR 0007). Nothing is published: the user checks the draft and publishes it; only published
+# releases reach the auto-update of installed apps.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Draft-Release bauen
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      # The updater compares the version of the app with latest.yml: the tag must name the version that is built.
+      - name: Check the tag against the version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $TAG does not match v$VERSION from apps/desktop/package.json"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch the Electron binary
+        shell: bash
+        run: node_modules/.bin/electron --version
+
+      # Same build as the CI job `package`: `--publish never`, electron-builder uploads nothing and sees no token.
+      - name: Build installer
+        run: npm run dist -w apps/desktop
+
+      - name: Smoke test of the unpacked app
+        shell: bash
+        working-directory: apps/desktop/release/win-unpacked
+        env:
+          TERMDOCK_DATA_DIR: ${{ runner.temp }}\termdock-smoke
+        run: ./TermDock.exe --smoke-test
+
+      - name: Check the update files
+        shell: bash
+        working-directory: apps/desktop/release
+        run: |
+          for file in "TermDock-Setup-$VERSION.exe" "TermDock-Setup-$VERSION.exe.blockmap" latest.yml; do
+            test -s "$file" || { echo "::error::$file is missing"; exit 1; }
+          done
+          grep -q "TermDock-Setup-$VERSION.exe" latest.yml
+
+      # The only step with the token. A draft stays invisible to installed apps until the user publishes it.
+      - name: Create the draft release
+        shell: bash
+        working-directory: apps/desktop/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" --draft --verify-tag --title "TermDock $VERSION" --generate-notes
+          "TermDock-Setup-$VERSION.exe" "TermDock-Setup-$VERSION.exe.blockmap" latest.yml

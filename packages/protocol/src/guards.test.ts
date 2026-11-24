@@ -257,8 +257,8 @@ describe("parseResponse", () => {
     expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
   });
 
-  it("speaks protocol 1.6 (issue #156: session.restart)", () => {
-    expect(PROTOCOL_VERSION).toBe("1.6");
+  it("speaks protocol 1.7 (issue #136: settings.checkForUpdates)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.7");
   });
 
   it("allows an empty snapshot and no writer", () => {

@@ -1064,6 +1064,16 @@ input {
   gap: 8px;
 }
 
+/* --- Update dialog (#136): not modal, bottom right above the status bar ------------------------------- */
+
+.update-dialog {
+  position: fixed;
+  right: 16px;
+  bottom: 38px;
+  z-index: 9;
+  width: 380px;
+}
+
 .shortcuts {
   width: 100%;
   border-collapse: collapse;

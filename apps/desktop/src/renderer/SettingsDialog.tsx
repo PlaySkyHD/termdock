@@ -471,6 +471,19 @@ function GeneralSection({
           {settings.quitAction === "stopSessions" ? "Sessions beenden" : "Sessions weiterlaufen lassen"}.
         </p>
       )}
+      <label className="dialog__check settings__check">
+        <input
+          type="checkbox"
+          data-field="checkForUpdates"
+          checked={form.checkForUpdates}
+          onChange={(event) => setForm({ ...form, checkForUpdates: event.target.checked })}
+        />
+        Nach Updates suchen
+      </label>
+      <p className="dialog__note" data-settings="updates">
+        Nur in der installierten App: Sie lädt neue Versionen von GitHub im Hintergrund und fragt vor dem
+        Neustart.
+      </p>
       <SaveRow save={save} />
     </form>
   );

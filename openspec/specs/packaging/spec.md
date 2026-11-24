@@ -5,23 +5,6 @@ Legt fest, wie aus `apps/desktop` ein installierbares TermDock für Windows ents
 
 ## Requirements
 
-### Requirement: Installer pro Benutzer
-
-`npm run dist -w apps/desktop` SHALL `apps/desktop/release/TermDock-Setup-<version>.exe` bauen: NSIS, x64, unsigniert, `appId` `io.github.playskyhd.termdock`, `productName` TermDock, ohne Publish-Ziel. Der Installer MUST nur für den aktuellen Benutzer nach `%LOCALAPPDATA%\Programs\TermDock` installieren, ohne Adminrechte und ohne Auswahl „für alle Benutzer“, und SHALL Startmenü- und Desktop-Verknüpfung anlegen.
-
-#### Scenario: Installation ohne Adminrechte
-
-- **GIVEN** ein Windows-Benutzer ohne Adminrechte
-- **WHEN** er `TermDock-Setup-<version>.exe` ausführt
-- **THEN** fragt der Installer weder nach Elevation noch nach „für alle Benutzer“
-- **AND** TermDock liegt danach in `%LOCALAPPDATA%\Programs\TermDock` und startet über den Startmenü-Eintrag
-
-#### Scenario: Konfiguration ohne Publish-Ziel
-
-- **GIVEN** `apps/desktop/electron-builder.json`
-- **WHEN** der Test die Konfiguration liest
-- **THEN** sind `oneClick`, `perMachine` und `allowElevation` falsch, `publish` ist `null` und das Ziel ist `nsis`
-
 ### Requirement: Datenordner bleibt bei der Deinstallation
 
 Die Deinstallation über „Apps“ SHALL das Programm entfernen und `%APPDATA%\TermDock` (Datenbank, Verlauf, Einstellungen) stehen lassen. Installer und Deinstaller MUST das auf ihrer Willkommensseite sagen, ebenso dass sie ein laufendes TermDock samt Core im Hintergrund beenden und laufende WSL-Sessions dabei weiterlaufen (der WSL-Keepalive überlebt den Core, #140).
@@ -108,7 +91,7 @@ Mit `--smoke-test` SHALL die App ohne Fenster einen eigenen Core (eigene Pipe, t
 
 ### Requirement: CI-Paketierung
 
-Die CI SHALL in einem Job `package` auf `windows-latest` den Installer mit `npm run dist -w apps/desktop` bauen, die nativen Module von node-pty in der entpackten App laden, den Prüfmodus mit `TERMDOCK_DATA_DIR` im Temp-Ordner des Runners ausführen und den Installer als Artefakt mit 7 Tagen Aufbewahrung hochladen. Ein Fehlschlag eines Schritts MUST den Job rot machen.
+Die CI SHALL in einem Job `package` auf `windows-latest` den Installer mit `npm run dist -w apps/desktop` bauen, prüfen, dass `latest.yml` und die `.blockmap` entstanden sind, die nativen Module von node-pty in der entpackten App laden, den Prüfmodus mit `TERMDOCK_DATA_DIR` im Temp-Ordner des Runners ausführen und den Installer als Artefakt mit 7 Tagen Aufbewahrung hochladen. Ein Fehlschlag eines Schritts MUST den Job rot machen.
 
 #### Scenario: Pull Request
 
@@ -141,3 +124,25 @@ Nach `core.status` SHALL der Prüfmodus im eigenen Core `cmd.exe /d /c exit 23` 
 - **GIVEN** die Session endet mit einem anderen Code, wird `Interrupted` oder endet nicht in 15 s
 - **WHEN** die Prüfung läuft
 - **THEN** loggt sie „smoke test failed: Windows shell: <grund>“, beendet den Core und endet mit Code 1
+
+### Requirement: Installer pro Benutzer mit Update-Dateien
+
+`npm run dist -w apps/desktop` SHALL `apps/desktop/release/TermDock-Setup-<version>.exe` bauen: NSIS, x64, unsigniert, `appId` `io.github.playskyhd.termdock`, `productName` TermDock, Publish-Ziel GitHub `PlaySkyHD/termdock` (Draft) ohne Upload (`--publish never`). Der Installer MUST nur für den aktuellen Benutzer nach `%LOCALAPPDATA%\Programs\TermDock` installieren, ohne Adminrechte und ohne Auswahl „für alle Benutzer“, mit Startmenü- und Desktop-Verknüpfung.
+
+#### Scenario: Installation ohne Adminrechte
+
+- **GIVEN** ein Windows-Benutzer ohne Adminrechte
+- **WHEN** er `TermDock-Setup-<version>.exe` ausführt
+- **THEN** fragt der Installer weder nach Elevation noch nach „für alle Benutzer“
+- **AND** TermDock liegt danach in `%LOCALAPPDATA%\Programs\TermDock` und startet über den Startmenü-Eintrag
+
+#### Scenario: Konfiguration mit Publish-Ziel ohne Upload
+
+- **GIVEN** `apps/desktop/electron-builder.json` und das Skript `dist` aus `apps/desktop/package.json`
+- **WHEN** der Test beide liest
+- **THEN** sind `oneClick`, `perMachine` und `allowElevation` falsch, das Ziel ist `nsis`, `publish` ist GitHub `PlaySkyHD/termdock` mit `releaseType` `draft` ohne `publisherName`, und `dist` baut mit `--publish never`
+
+#### Scenario: Update-Dateien
+
+- **WHEN** `npm run dist -w apps/desktop` fertig ist
+- **THEN** liegen in `apps/desktop/release/` `TermDock-Setup-<version>.exe`, `TermDock-Setup-<version>.exe.blockmap` und `latest.yml`, und `win-unpacked/resources/app-update.yml` nennt `PlaySkyHD/termdock`

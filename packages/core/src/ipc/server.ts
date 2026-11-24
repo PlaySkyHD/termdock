@@ -709,7 +709,8 @@ export class CoreServer {
     const targets = this.registry
       .list()
       .filter((s) => s.state === "Starting" || s.state === "Running" || s.state === "Detached");
-    const results = await Promise.allSettled(targets.map((s) => this.registry.kill(s.id)));
+    // PTYs one after the other, the backend sessions at the same time (issue #160).
+    const results = await this.registry.killAll(targets.map((s) => s.id));
     const failed: SessionId[] = [];
     let code: ErrorCode = "internal";
     results.forEach((result, index) => {

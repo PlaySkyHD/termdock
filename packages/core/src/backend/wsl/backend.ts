@@ -31,7 +31,14 @@ import {
 } from "./commands.js";
 import { DistroKeepalive, type KeepaliveSpawner } from "./keepalive.js";
 import { WslPty, type PtyProcess } from "./pty.js";
-import { runWsl, spawnKeepalive, spawnPty } from "./processes.js";
+import {
+  pendingPtyCloses,
+  PTYS_CLOSED_TIMEOUT_MS,
+  ptysClosed,
+  runWsl,
+  spawnKeepalive,
+  spawnPty,
+} from "./processes.js";
 
 /** Runs `wsl.exe <args>` without PTY (with `WSL_UTF8=1`); never rejects. */
 export type WslRunner = (args: readonly string[], options: { timeoutMs: number }) => Promise<RunResult>;
@@ -57,6 +64,15 @@ export interface WslBackendOptions {
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
+  /**
+   * Resolves true once the closes of all PTYs are done, false when its wait gave up (#160); `dispose` waits for it.
+   * Defaults to the ConPTY queue (`ptysClosed` in processes.ts, at most `PTYS_CLOSED_TIMEOUT_MS`).
+   */
+  ptysClosed?: () => Promise<boolean>;
+  /** Closes still open, for the log line when `ptysClosed` gave up. Defaults to the ConPTY queue. */
+  pendingPtyCloses?: () => number;
+  /** One line per event worth a log entry; defaults to stderr. */
+  log?: (line: string) => void;
 }
 
 export const DEFAULT_TMUX_SOCKET = "termdock";
@@ -75,6 +91,9 @@ export class WslBackend implements Backend {
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
+  private readonly ptysClosed: () => Promise<boolean>;
+  private readonly pendingPtyCloses: () => number;
+  private readonly log: (line: string) => void;
   private defaultDistro: Promise<string> | undefined;
   private disposed = false;
 
@@ -87,6 +106,9 @@ export class WslBackend implements Backend {
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
+    this.ptysClosed = options.ptysClosed ?? (() => ptysClosed());
+    this.pendingPtyCloses = options.pendingPtyCloses ?? pendingPtyCloses;
+    this.log = options.log ?? ((line) => void process.stderr.write(`termdock-core: ${line}\n`));
     const socket = this.socket;
     this.keepalive = new DistroKeepalive(
       options.spawnKeepalive ?? ((distro) => spawnKeepalive({ distro, socket })),
@@ -267,11 +289,19 @@ export class WslBackend implements Backend {
    * Hands the keepalives over (issue #140): every distro with known sessions keeps one running after the core ends,
    * until the next core takes it over or the tmux server ends; none is started afterwards, and `start`/`attach` fail
    * before their PTY. Resolves once that is done: usually within about 3 s, at the latest after a running take-over
-   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then.
+   * (`commandTimeoutMs`, 15 s) plus 3 s; the core exits only then. Meanwhile it waits for the PTYs the registry
+   * released to end one after the other (#160, at most `PTYS_CLOSED_TIMEOUT_MS`, 15 s).
    */
-  dispose(): Promise<void> {
+  async dispose(): Promise<void> {
     this.disposed = true;
-    return this.keepalive.dispose();
+    await Promise.all([this.keepalive.dispose(), this.waitForPtys()]);
+  }
+
+  private async waitForPtys(): Promise<void> {
+    if (await this.ptysClosed()) return;
+    this.log(
+      `${this.pendingPtyCloses()} PTY close(s) still open after ${PTYS_CLOSED_TIMEOUT_MS} ms; the core ends without them`,
+    );
   }
 
   private async open(

@@ -190,9 +190,10 @@ export async function spawnConpty(
   shared?.takeLastConnection();
   ignoreInputErrors(terminal);
   const connection = agentOf(terminal)?._conoutSocketWorker;
-  return connection instanceof ConoutConnection
-    ? endOnLoss(terminal, connection)
-    : withQueuedKill(terminal, closerOf(terminal));
+  if (connection instanceof ConoutConnection) return endOnLoss(terminal, connection);
+  // node-pty with its own worker per PTY: the input pipe is closed at the reported end as well (#177).
+  terminal.onExit(() => agentOf(terminal)?._inSocket?.destroy());
+  return withQueuedKill(terminal, closerOf(terminal));
 }
 
 /** Longest wait, after a PTY was closed, for its process to end before the next PTY is closed (#160). */
@@ -325,6 +326,9 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
   const end = () => {
     if (ended) return;
     ended = true;
+    // The input pipe stays open otherwise (#177): with `useConptyDll` node-pty closes it only in its own `kill`, and a
+    // PTY that ended by itself is never killed. Its process has ended, no input can reach it any more.
+    agentOf(terminal)?._inSocket?.destroy();
     const event = { exitCode: agentOf(terminal)?.exitCode ?? -1 };
     for (const listener of [...exitListeners]) listener(event);
   };
@@ -349,10 +353,11 @@ function endOnLoss(terminal: NodePty.IPty, connection: ConoutConnection): Conpty
             // node-pty may have closed it already.
           }
         }
-        // The input pipe stays open otherwise: with `useConptyDll` node-pty cleans up only on its own `kill`.
-        agentOf(terminal)?._inSocket?.destroy();
       } finally {
-        // Once in any case, so the registry does not wait for an end that never comes.
+        // The relay in the worker as well (#177), without relying on `closeWhenDrained`, which waits until the client of
+        // `<pipe>-worker` (node-pty or a foreign one) has gone. After a lost worker nothing is left to close.
+        connection.close();
+        // Once in any case, so the registry does not wait for an end that never comes. It closes the input pipe.
         end();
       }
     });

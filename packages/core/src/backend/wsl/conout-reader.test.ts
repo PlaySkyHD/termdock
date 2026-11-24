@@ -6,12 +6,12 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ConoutConnection,
   ConoutReader,
   installConoutReader,
   nodePtyVersion,
   SUPPORTED_NODE_PTY_VERSION,
 } from "./conout-reader.js";
-import type { ConoutConnection } from "./conout-reader.js";
 import { conoutReader, spawnConpty } from "./processes.js";
 import type { ConptyProcess } from "./processes.js";
 
@@ -261,6 +261,10 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     };
     let broken: Opened;
     let healthy: Opened;
+    const reader = (await conoutReader())!;
+    await reader.ready();
+    // Pipes of earlier tests end up to 1 s after their kill (drain time).
+    await waitFor(() => reader.activeConnections === 0, "no pipe of an earlier test in the worker", 5_000);
     try {
       broken = await openCmd();
       healthy = await openCmd();
@@ -269,17 +273,31 @@ describe.skipIf(process.platform !== "win32")("PTYs on the shared reader (cmd.ex
     }
     await waitFor(() => broken.output().includes(">") && healthy.output().includes(">"), "prompts");
     const outSocket = (
-      terminals[0] as { _agent: { _outSocket: { emit(event: string, error: Error): void } } }
+      terminals[0] as {
+        _agent: { _outSocket: { emit(event: string, error: Error): void; allowHalfOpen: boolean } };
+      }
     )._agent._outSocket;
 
+    // A client of the relay that keeps its side open after the end of the output, as a foreign client that took
+    // `<pipe>-worker` first might (#177); the pipe must not stay in the worker.
+    outSocket.allowHalfOpen = true;
+    // The close of the relay is not visible otherwise: the worker also drops the pipe by itself here.
+    const closeSpy = vi.spyOn(ConoutConnection.prototype, "close");
     // What node-pty's connect to `<pipe>-worker` reports when another client took the pipe first.
-    outSocket.emit("error", Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
-
-    await broken.exited;
+    try {
+      outSocket.emit("error", Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
+      await broken.exited;
+      // Closed once, by the close after the failed relay (#177); the healthy PTY's connection is not touched.
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      closeSpy.mockRestore();
+    }
     expect(broken.exitSeen[0]!.processAlive).toBe(false);
     expect(broken.exitSeen[0]!.exitCode).toBeTypeOf("number");
     await sleep(500);
     expect(broken.exits()).toBe(1);
+    // The relay of the broken PTY is closed in the worker as well, although its client holds its side open (#177).
+    await waitFor(() => reader.activeConnections === 1, "only the healthy pipe in the worker", 5_000);
     healthy.pty.write("echo still-%NUMBER_OF_PROCESSORS%-here\r");
     await waitFor(() => /still-\d+-here/.test(healthy.output()), "output of the other PTY");
     expect(healthy.exits()).toBe(0);

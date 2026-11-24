@@ -76,7 +76,7 @@ Erkenntnisse aus dem Aufbau von TermDock. Übernommen sind die allgemeinen Regel
   - `git push` im Haupt-Checkout `P:/GitHub/termdock` (cwd oder `-C`); gepusht wird nur aus dem eigenen Worktree (#128);
   - schreibende Shell-Befehle auf Dateien im Repo-Checkout oder einem Worktree (`P:/GitHub/termdock…` und relative Pfade): `sed -i`, `perl -i`, `node -e`/`-p` mit `writeFileSync` und Co., Umleitungen `>`/`>>`, `tee`, Heredocs in Dateien, `Set-Content`/`Out-File`/`Add-Content`;
   - `cp`, `mv`, `install` (und `Copy-Item`/`Move-Item`), wenn das Ziel (letztes Nicht-Options-Argument, `-t <dir>`, `--target-directory`, `-Destination`) im Repo-Checkout oder einem Worktree liegt. Kopien aus dem Repo nach `P:/Temp/` bleiben erlaubt.
-  - Erlaubt bleiben Umleitungen nach `/dev/null`, `$null` und `P:/Temp/`, `git commit -F <datei>`, Formatter, Generatoren und `gh … --body-file`. Dateien ändern Agents mit Read, Edit und Write.
+  - Erlaubt bleiben Umleitungen nach `/dev/null`, `$null` und `P:/Temp/`, `git commit -F <datei>`, `git mv <alt> <neu>` für reine Verschiebungen im eigenen Worktree (erhält die Historie; Inhaltsänderungen danach mit Edit), Formatter, Generatoren und `gh … --body-file`. Dateien ändern Agents mit Read, Edit und Write.
   - Der Hook prüft nur das Kommandowort jedes Teilbefehls und übersieht lieber etwas, als fälschlich zu blockieren. Bekannte Lücken stehen im Kopf des Skripts, u. a. Skriptdateien (`node x.mjs`, `bash x.sh`): Ihr Inhalt ist unbekannt, auch sie zählen als Schreiben per Shell und sind verboten. Er wirkt erst, wenn er im Haupt-Checkout liegt; Tests: `npm run test:hooks`.
 
 ## 6. Arbeitsweise

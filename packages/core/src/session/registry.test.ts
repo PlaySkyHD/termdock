@@ -949,6 +949,108 @@ describe("SessionRegistry: kill", () => {
   });
 });
 
+describe("SessionRegistry: killAll (issue #160)", () => {
+  it("closes each PTY and waits for its process before it ends the backend session", async () => {
+    const { registry, backend } = setup();
+    const ids: string[] = [];
+    for (const name of ["a", "b"]) ids.push((await registry.create({ name, launch: spec })).id);
+    const release = new Map<string, () => void>();
+    for (const id of ids) {
+      const gate = new Promise<void>((resolve) => release.set(id, resolve));
+      Object.assign(backend.pty(id), { closed: () => gate });
+    }
+    const disposedAtKill: boolean[] = [];
+    const kill = backend.kill.bind(backend);
+    backend.kill = async (id, launch) => {
+      disposedAtKill.push(backend.pty(id).disposed);
+      return kill(id, launch);
+    };
+
+    const done = registry.killAll(ids);
+    await settle();
+    expect(ids.map((id) => backend.pty(id).disposed)).toEqual([true, true]);
+    expect(backend.kills).toEqual([]);
+    release.get(ids[1]!)!();
+    await settle();
+    expect(backend.kills).toEqual([ids[1]]);
+    release.get(ids[0]!)!();
+    const results = await done;
+
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(backend.kills).toEqual([ids[1], ids[0]]);
+    expect(disposedAtKill).toEqual([true, true]);
+    expect(ids.map((id) => registry.get(id).state)).toEqual(["Exited", "Exited"]);
+  });
+
+  it("ends the backend sessions without waiting any longer once the wait for the PTYs is over", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "hangs", launch: spec });
+    Object.assign(backend.pty(id), { closed: () => new Promise<void>(() => {}) });
+
+    const [result] = await registry.killAll([id], 30);
+
+    expect(result!.status).toBe("fulfilled");
+    expect(backend.kills).toEqual([id]);
+    expect(registry.get(id).state).toBe("Exited");
+  });
+
+  it("leaves a session whose backend could not be ended in its state, so the next core reconciles it as Detached", async () => {
+    const repository = new InMemorySessionRepository();
+    const backend = new FakeBackend();
+    const { registry } = setup({ repository }, backend);
+    const failing = (await registry.create({ name: "a", launch: spec })).id;
+    const other = (await registry.create({ name: "b", launch: spec })).id;
+    await registry.attachView(failing, "view-a");
+    const kill = backend.kill.bind(backend);
+    // `kill-session` fails, the tmux session lives on.
+    backend.kill = async (id, launch) => {
+      if (id === failing) throw new Error("wsl.exe failed");
+      return kill(id, launch);
+    };
+
+    const results = await registry.killAll([failing, other]);
+
+    expect(results[0]).toMatchObject({ status: "rejected", reason: { code: "backend_unavailable" } });
+    expect(results[1]!.status).toBe("fulfilled");
+    expect(registry.get(failing).state).toBe("Running");
+    expect(registry.get(other).state).toBe("Exited");
+    expect(repository.list().find((session) => session.id === failing)?.state).toBe("Running");
+
+    // The core ends; the next one reconciles the stored session.
+    registry.dispose();
+    const next = new SessionRegistry({ backends: [backend], repository });
+    await next.restore();
+    expect(next.get(failing).state).toBe("Detached");
+    expect(next.get(other).state).toBe("Exited");
+    next.dispose();
+  });
+
+  it("logs how many PTYs the wait gave up on", async () => {
+    const warnings: string[] = [];
+    const { registry, backend } = setup({ onWarning: (text) => warnings.push(text) });
+    const ids: string[] = [];
+    for (const name of ["a", "b"]) ids.push((await registry.create({ name, launch: spec })).id);
+    for (const id of ids) Object.assign(backend.pty(id), { closed: () => new Promise<void>(() => {}) });
+
+    await registry.killAll(ids, 30);
+
+    expect(warnings).toEqual([
+      "2 PTY(s) still closing after 30 ms; their sessions were ended without waiting",
+    ]);
+  });
+
+  it("rejects a session without process with invalid_state, as kill", async () => {
+    const { registry, backend } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.pty(id).emitExit(0);
+
+    const [result] = await registry.killAll([id]);
+
+    expect(result).toMatchObject({ status: "rejected", reason: { code: "invalid_state" } });
+    expect(backend.kills).toEqual([]);
+  });
+});
+
 describe("SessionRegistry: restart", () => {
   it("restarts an Exited session under the same id and keeps its views and writer", async () => {
     const { registry, backend, states } = setup();

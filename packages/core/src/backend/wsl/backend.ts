@@ -31,7 +31,14 @@ import {
 } from "./commands.js";
 import { DistroKeepalive, type KeepaliveSpawner } from "./keepalive.js";
 import { WslPty, type PtyProcess } from "./pty.js";
-import { ptysClosed, runWsl, spawnKeepalive, spawnPty } from "./processes.js";
+import {
+  pendingPtyCloses,
+  PTYS_CLOSED_TIMEOUT_MS,
+  ptysClosed,
+  runWsl,
+  spawnKeepalive,
+  spawnPty,
+} from "./processes.js";
 
 /** Runs `wsl.exe <args>` without PTY (with `WSL_UTF8=1`); never rejects. */
 export type WslRunner = (args: readonly string[], options: { timeoutMs: number }) => Promise<RunResult>;
@@ -57,8 +64,15 @@ export interface WslBackendOptions {
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
-  /** Resolves once the closes of all PTYs are done (#160); `dispose` waits for it. Defaults to the ConPTY queue. */
-  ptysClosed?: () => Promise<unknown>;
+  /**
+   * Resolves true once the closes of all PTYs are done, false when its wait gave up (#160); `dispose` waits for it.
+   * Defaults to the ConPTY queue (`ptysClosed` in processes.ts, at most `PTYS_CLOSED_TIMEOUT_MS`).
+   */
+  ptysClosed?: () => Promise<boolean>;
+  /** Closes still open, for the log line when `ptysClosed` gave up. Defaults to the ConPTY queue. */
+  pendingPtyCloses?: () => number;
+  /** One line per event worth a log entry; defaults to stderr. */
+  log?: (line: string) => void;
 }
 
 export const DEFAULT_TMUX_SOCKET = "termdock";
@@ -77,7 +91,9 @@ export class WslBackend implements Backend {
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
-  private readonly ptysClosed: () => Promise<unknown>;
+  private readonly ptysClosed: () => Promise<boolean>;
+  private readonly pendingPtyCloses: () => number;
+  private readonly log: (line: string) => void;
   private defaultDistro: Promise<string> | undefined;
   private disposed = false;
 
@@ -91,6 +107,8 @@ export class WslBackend implements Backend {
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
     this.ptysClosed = options.ptysClosed ?? (() => ptysClosed());
+    this.pendingPtyCloses = options.pendingPtyCloses ?? pendingPtyCloses;
+    this.log = options.log ?? ((line) => void process.stderr.write(`termdock-core: ${line}\n`));
     const socket = this.socket;
     this.keepalive = new DistroKeepalive(
       options.spawnKeepalive ?? ((distro) => spawnKeepalive({ distro, socket })),
@@ -276,7 +294,14 @@ export class WslBackend implements Backend {
    */
   async dispose(): Promise<void> {
     this.disposed = true;
-    await Promise.all([this.keepalive.dispose(), this.ptysClosed()]);
+    await Promise.all([this.keepalive.dispose(), this.waitForPtys()]);
+  }
+
+  private async waitForPtys(): Promise<void> {
+    if (await this.ptysClosed()) return;
+    this.log(
+      `${this.pendingPtyCloses()} PTY close(s) still open after ${PTYS_CLOSED_TIMEOUT_MS} ms; the core ends without them`,
+    );
   }
 
   private async open(

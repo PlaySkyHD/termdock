@@ -51,6 +51,8 @@ export interface SessionRegistryOptions {
   onRedrawError?: (error: unknown, session: SessionInfo) => void;
   /** Called when an event listener throws; the other listeners still run. Defaults to `console.error`. */
   onListenerError?: (error: unknown) => void;
+  /** One line about a step that went on without what it waited for (e.g. `killAll`). Defaults to `console.error`. */
+  onWarning?: (text: string) => void;
   /**
    * Waits before each attempt to re-attach after a PTY ended without exit code; the length is the number of
    * attempts. Defaults to `DEFAULT_REATTACH_DELAYS_MS`.
@@ -92,6 +94,12 @@ const REATTACH_STABLE_MS = 30_000;
  * stays below the 15 s the desktop waits for the answer.
  */
 export const DEFAULT_KILL_ALL_PTY_WAIT_MS = 8_000;
+
+/** One `killAll`: when the wait for the PTYs ends, and how many it gave up on. */
+interface KillAllRun {
+  deadline: number;
+  late: number;
+}
 
 export interface CreateSessionInput {
   name: string;
@@ -287,6 +295,7 @@ export class SessionRegistry {
   private readonly repository: SessionRepository | undefined;
   private readonly onPersistError: (error: unknown, session: SessionInfo) => void;
   private readonly onRedrawError: (error: unknown, session: SessionInfo) => void;
+  private readonly onWarning: (text: string) => void;
   private readonly reattachDelaysMs: readonly number[];
   private readonly redrawOutputMaxMs: number;
   private readonly removeHistory: (sessionId: SessionId) => Promise<void>;
@@ -329,6 +338,7 @@ export class SessionRegistry {
     this.onRedrawError =
       options.onRedrawError ??
       ((error, session) => console.error(`TermDock: could not redraw session ${session.id}`, error));
+    this.onWarning = options.onWarning ?? ((text) => console.error(`TermDock: ${text}`));
   }
 
   onStateChange(listener: Listener<StateChangeEvent>): Disposable {
@@ -525,19 +535,30 @@ export class SessionRegistry {
    * while the next PTY closes. Ended by the backend first, all tmux clients would end at the same moment, which
    * crashes node-pty 1.1.0 now and then. The waits for the PTYs end together after `ptyWaitMs` (default 8 s); the
    * remaining backend sessions are ended then without waiting, so a few hanging PTYs do not let the request time out.
-   * If ending a backend session fails, its PTY is gone already and the session becomes `Interrupted`. Resolves per
-   * session like `Promise.allSettled`.
+   * If ending a backend session fails, its PTY is gone already and the session keeps its state for the next core to
+   * reconcile (see `killSession`). Logs through `onWarning` how many PTYs the wait gave up on. Resolves per session
+   * like `Promise.allSettled`.
    */
-  killAll(
+  async killAll(
     sessionIds: readonly SessionId[],
     ptyWaitMs = DEFAULT_KILL_ALL_PTY_WAIT_MS,
   ): Promise<PromiseSettledResult<SessionInfo>[]> {
-    const deadline = Date.now() + ptyWaitMs;
-    return Promise.allSettled(sessionIds.map((sessionId) => this.killSession(sessionId, deadline)));
+    const run: KillAllRun = { deadline: Date.now() + ptyWaitMs, late: 0 };
+    const results = await Promise.allSettled(sessionIds.map((sessionId) => this.killSession(sessionId, run)));
+    if (run.late > 0) {
+      this.onWarning(
+        `${run.late} PTY(s) still closing after ${ptyWaitMs} ms; their sessions were ended without waiting`,
+      );
+    }
+    return results;
   }
 
-  /** `ptyDeadline` (see `killAll`): the PTY is closed first and awaited until then (`Date.now()` time). */
-  private async killSession(sessionId: SessionId, ptyDeadline?: number): Promise<SessionInfo> {
+  /**
+   * With `run` (see `killAll`) the PTY is closed first and awaited until `run.deadline`. If the backend session
+   * cannot be ended then, the state stays as it was (also as stored): the PTY was closed on purpose, the backend
+   * session may still run, and the next core reconciles it (`Running` → `Detached`, or `Interrupted` when gone).
+   */
+  private async killSession(sessionId: SessionId, run?: KillAllRun): Promise<SessionInfo> {
     const entry = this.entry(sessionId);
     const reattaching = entry.busy === "reattach";
     if (!reattaching) this.assertIdle(entry);
@@ -547,7 +568,7 @@ export class SessionRegistry {
         `Session ${sessionId} in state ${entry.info.state} has no process to kill`,
       );
     }
-    await this.endProcess(entry, "kill", () => this.terminate(entry, ptyDeadline));
+    await this.endProcess(entry, "kill", () => this.terminate(entry, run), run !== undefined);
     this.setState(entry, "Exited");
     return snapshotInfo(entry.info);
   }
@@ -1011,6 +1032,7 @@ export class SessionRegistry {
     entry: SessionEntry,
     operation: "kill" | "archive",
     work: () => Promise<void>,
+    keepStateOnFailure = false,
   ): Promise<void> {
     entry.busy = operation;
     entry.endedDuringOp = undefined;
@@ -1022,7 +1044,7 @@ export class SessionRegistry {
       entry.busy = undefined;
       entry.endedDuringOp = undefined;
       const { state } = entry.info;
-      if (!entry.pty && (state === "Running" || state === "Detached")) {
+      if (!keepStateOnFailure && !entry.pty && (state === "Running" || state === "Detached")) {
         this.setState(entry, ended?.exitCode === undefined ? "Interrupted" : "Exited");
       }
       throw error;
@@ -1047,18 +1069,18 @@ export class SessionRegistry {
    * meanwhile only records its code. With `ptyDeadline` (see `killAll`) the PTY is released first and its process
    * awaited until that time.
    */
-  private async terminate(entry: SessionEntry, ptyDeadline?: number): Promise<void> {
+  private async terminate(entry: SessionEntry, run?: KillAllRun): Promise<void> {
     await this.cancelReattach(entry);
-    if (ptyDeadline !== undefined) {
+    if (run !== undefined) {
       const pty = entry.pty;
       this.releasePty(entry);
       const closed = pty?.closed?.();
       if (closed) {
         let timer: NodeJS.Timeout | undefined;
-        const late = new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, Math.max(0, ptyDeadline - Date.now()));
+        const late = new Promise<"late">((resolve) => {
+          timer = setTimeout(() => resolve("late"), Math.max(0, run.deadline - Date.now()));
         });
-        await Promise.race([closed, late]);
+        if ((await Promise.race([closed, late])) === "late") run.late += 1;
         clearTimeout(timer);
       }
     }

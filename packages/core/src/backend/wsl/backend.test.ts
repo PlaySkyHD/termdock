@@ -390,22 +390,43 @@ describe("WslBackend", () => {
   });
 
   it("dispose resolves only once the closes of the PTYs are done (issue #160)", async () => {
-    let closed: () => void = () => {};
+    let closed: (done: boolean) => void = () => {};
+    const lines: string[] = [];
     const backend = new WslBackend({
       socket: "termdock-test",
       distro: "Ubuntu",
       run: async () => ok(),
       spawnPty: () => new FakePtyProcess(),
       spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
-      ptysClosed: () => new Promise<void>((resolve) => (closed = resolve)),
+      ptysClosed: () => new Promise<boolean>((resolve) => (closed = resolve)),
+      log: (line) => lines.push(line),
     });
     let done = false;
     const disposed = backend.dispose().then(() => (done = true));
     for (let i = 0; i < 5; i++) await flush();
     expect(done).toBe(false);
-    closed();
+    closed(true);
     await disposed;
     expect(done).toBe(true);
+    expect(lines).toEqual([]);
+  });
+
+  it("dispose logs how many PTY closes are still open when the wait for them gave up (issue #160)", async () => {
+    const lines: string[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async () => ok(),
+      spawnPty: () => new FakePtyProcess(),
+      spawnKeepalive: () => ({ kill: () => {}, onExit: () => {} }),
+      ptysClosed: async () => false,
+      pendingPtyCloses: () => 3,
+      log: (line) => lines.push(line),
+    });
+
+    await backend.dispose();
+
+    expect(lines).toEqual(["3 PTY close(s) still open after 15000 ms; the core ends without them"]);
   });
 
   it("starts the keepalive only after the PTY of tmux, so the tmux server exists (review PR #148)", async () => {

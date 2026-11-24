@@ -226,7 +226,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
   const createWslBackend = options.createWslBackend ?? ((wslOptions) => new WslBackend(wslOptions));
   const ownBackends: WslBackend[] = options.backends
     ? []
-    : [createWslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET })];
+    : [createWslBackend({ socket: options.tmuxSocket ?? DEFAULT_TMUX_SOCKET, log: warn })];
   const wslBackend = (options.backends ?? ownBackends).find(
     (backend): backend is WslBackend => backend instanceof WslBackend,
   );
@@ -247,6 +247,7 @@ export async function runCore(options: RunCoreOptions = {}): Promise<RunCoreResu
     onPersistError: (error, session) => log(`could not save session ${session.id}: ${messageOf(error)}`),
     onRedrawError: (error, session) => log(`could not redraw session ${session.id}: ${messageOf(error)}`),
     onListenerError: (error) => log(`registry listener failed: ${detailOf(error)}`),
+    onWarning: warn,
     // Forgets the session in the store and deletes `history/<id>/` (path check in `historyDir`, ADR 0004).
     removeHistory: async (sessionId) => {
       if (!history) throw new Error("The history store is not open yet");

@@ -67,6 +67,8 @@ class CmdBackend implements Backend {
 }
 
 const registries: SessionRegistry[] = [];
+/** PTYs a test opened without a registry; `afterEach` closes them, also when a check failed first. */
+const single: ConptyProcess[] = [];
 
 async function setup(
   count: number,
@@ -85,6 +87,8 @@ async function setup(
 
 afterEach(async () => {
   for (const registry of registries.splice(0)) registry.dispose();
+  // `kill` runs at most once per PTY; one already closed by its test is not closed again.
+  for (const pty of single.splice(0)) pty.kill();
   await ptysClosed();
 });
 
@@ -118,6 +122,7 @@ describe.runIf(process.platform === "win32")("ending many PTYs through the core 
 
   it("ends a PTY closed before its first output; node-pty defers its own kill until then", async () => {
     const pty = await spawnConpty("cmd.exe", [], { cols: 80, rows: 24 }, process.cwd());
+    single.push(pty);
     const started = Date.now();
 
     pty.kill();

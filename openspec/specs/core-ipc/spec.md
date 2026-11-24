@@ -462,7 +462,7 @@ Der Core SHALL `history.search` mit der Suche im gespeicherten Verlauf beantwort
 
 ### Requirement: PTYs vor den Sessions beim Shutdown mit Stop
 
-Bei `core.shutdown { stopSessions: true }` SHALL der Core je Session zuerst ihre PTY schließen und auf deren Prozessende warten, die PTYs nacheinander, zusammen höchstens 8 s. Erst danach SHALL er die Backend-Session beenden; die Backend-Sessions dürfen dabei gleichzeitig enden. Scheitert das Beenden einer Backend-Session, MUST diese Session `Interrupted` werden; die Antwort nennt sie als nicht beendet.
+Bei `core.shutdown { stopSessions: true }` SHALL der Core je Session zuerst ihre PTY schließen und auf deren Prozessende warten, die PTYs nacheinander, zusammen höchstens 8 s. Erst danach SHALL er die Backend-Session beenden; die Backend-Sessions dürfen dabei gleichzeitig enden. Scheitert das Beenden einer Backend-Session, MUST die Session ihren Zustand behalten, auch gespeichert, damit der nächste Core sie abgleicht; die Antwort nennt sie als nicht beendet.
 
 #### Scenario: Reihenfolge
 
@@ -478,12 +478,12 @@ Bei `core.shutdown { stopSessions: true }` SHALL der Core je Session zuerst ihre
 
 #### Scenario: Backend scheitert
 
-- **GIVEN** zwei laufende Sessions, bei einer scheitert das Beenden der Backend-Session
-- **WHEN** der Core beide mit Stop beendet
-- **THEN** ist diese Session `Interrupted` und die andere `Exited`
+- **GIVEN** zwei laufende Sessions, bei einer scheitert das Beenden der Backend-Session, die weiterläuft
+- **WHEN** der Core beide mit Stop beendet und danach ein neuer Core startet
+- **THEN** ist diese Session bis zum Ende des Core `Running` und danach `Detached`, die andere ist `Exited`
 
 #### Scenario: Hängende PTY
 
 - **GIVEN** eine laufende Session, deren PTY nach dem Schließen nicht endet
 - **WHEN** der Core sie mit Stop beendet und die Wartezeit für die PTYs abgelaufen ist
-- **THEN** beendet das Backend die Session trotzdem, und sie ist `Exited`
+- **THEN** beendet das Backend die Session trotzdem, sie ist `Exited`, und eine Logzeile nennt die Zahl offener PTYs

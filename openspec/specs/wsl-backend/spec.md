@@ -500,7 +500,7 @@ Endet der Worker unerwartet oder scheitert die Verbindung einer PTY zur Weiterle
 
 ### Requirement: PTYs enden nacheinander
 
-Der Core SHALL die PTYs eines Prozesses nacheinander schließen. Die nächste schließt er erst, wenn der Prozess der vorigen geendet hat, spätestens nach 2 s. Dann, oder vor der ersten Ausgabe sofort, beendet er den Prozess selbst und wartet noch höchstens 0,5 s. Das gilt für jeden Abbau, auch nach einem Absturz des Lesers. Vor seinem Ende MUST der Core auf alle begonnenen Schließvorgänge warten, höchstens 15 s.
+Der Core SHALL die PTYs eines Prozesses nacheinander schließen. Die nächste schließt er erst, wenn der Prozess der vorigen geendet hat, spätestens nach 2 s. Dann, oder vor der ersten Ausgabe sofort, beendet er den Prozess selbst und wartet noch höchstens 0,5 s. Das gilt für jeden Abbau, auch nach einem Absturz des Lesers. Vor seinem Ende MUST der Core auf alle begonnenen Schließvorgänge warten, höchstens 15 s, danach mit einer Logzeile.
 
 #### Scenario: Abbau mit vielen PTYs
 
@@ -525,3 +525,9 @@ Der Core SHALL die PTYs eines Prozesses nacheinander schließen. Die nächste sc
 - **GIVEN** ein WSL-Backend, dessen PTYs noch schließen
 - **WHEN** es abgebaut wird
 - **THEN** endet der Abbau erst, wenn die Schlange leer ist
+
+#### Scenario: Wartezeit beim Ende abgelaufen
+
+- **GIVEN** ein WSL-Backend, dessen PTYs nach 15 s noch nicht alle geschlossen sind
+- **WHEN** es abgebaut wird
+- **THEN** endet der Abbau trotzdem, und eine Logzeile nennt die Zahl der offenen Schließvorgänge

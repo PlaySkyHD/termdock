@@ -230,6 +230,11 @@ export function ptysClosed(timeoutMs = PTYS_CLOSED_TIMEOUT_MS): Promise<boolean>
   return closes.idle(timeoutMs);
 }
 
+/** Closes of PTYs queued or running right now. */
+export function pendingPtyCloses(): number {
+  return closes.size;
+}
+
 function endProcess(pid: number): void {
   try {
     process.kill(pid);

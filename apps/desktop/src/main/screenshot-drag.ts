@@ -17,7 +17,7 @@ const PANES = `.pane[data-tab-active="true"]`;
 const loaded = `document.querySelector('.app') && !document.querySelector('.app--loading')`;
 
 export async function dragScenes(deps: ScenarioDeps): Promise<void> {
-  const { dir, createWindow, allWindows, bridge, core, restartUi, log } = deps;
+  const { dir, createWindow, allWindows, closeAllWindows, bridge, core, restartUi, log } = deps;
   mkdirSync(dir, { recursive: true });
   const open = (): BrowserWindow => {
     const win = createWindow(820, 560);
@@ -26,6 +26,9 @@ export async function dragScenes(deps: ScenarioDeps): Promise<void> {
     win.show();
     return win;
   };
+  // Windows of earlier groups stay open in a full run: a drop beside these two would land in one of them instead of
+  // opening a window, and the restart of the UI below would bring them back. They leave the layout first.
+  await closeAllWindows(true);
   const source = open();
   const target = open();
   // Side by side, relative to the first window (the run picks the monitor, screenshot-restore.ts).

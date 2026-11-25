@@ -105,7 +105,10 @@ export class WindowTransfers {
       return;
     }
     const under = this.host.windowAt(screen);
-    if (under === source) return;
+    if (under === source) {
+      this.host.log(`move from window ${source}: released over its own frame`);
+      return;
+    }
     if (under === undefined && whole) {
       this.host.moveWindowTo(source, screen);
       return;
@@ -126,6 +129,7 @@ export class WindowTransfers {
       stopTimer: this.host.schedule(() => this.cancel(transfer, "no answer in time"), TRANSFER_TIMEOUT_MS),
     };
     this.transfers.set(id, transfer);
+    this.host.log(`move ${id}: window ${source} → ${transfer.created ? "new " : ""}window ${target}`);
     if (!transfer.waiting) this.deliver(transfer, this.host.toClient(target, screen));
   }
 

@@ -18,6 +18,12 @@ const config = JSON.parse(readFileSync(path.join(desktop, "electron-builder.json
   nsis: Record<string, unknown>;
 };
 
+const packageJson = JSON.parse(readFileSync(path.join(desktop, "package.json"), "utf8")) as {
+  scripts: Record<string, string>;
+  dependencies: Record<string, string>;
+};
+const workflows = path.join(desktop, "..", "..", ".github", "workflows");
+
 /** Minimal glob match for the `asarUnpack` patterns (`**` and `*`). */
 function matches(pattern: string, file: string): boolean {
   const source = pattern
@@ -33,12 +39,22 @@ function matches(pattern: string, file: string): boolean {
 }
 
 describe("electron-builder.json", () => {
-  it("builds the per-user NSIS installer of TermDock without publishing anything", () => {
+  it("builds the per-user NSIS installer of TermDock with update files, but uploads nothing (#136)", () => {
     expect(config.appId).toBe("io.github.playskyhd.termdock");
     expect(config.productName).toBe("TermDock");
     expect(config.artifactName).toBe("TermDock-Setup-${version}.${ext}");
     expect(config.win.target.map((t) => t.target)).toEqual(["nsis"]);
-    expect(config.publish).toBeNull();
+    // The target gives `latest.yml`, the blockmap and `app-update.yml`; drafts stay invisible to the updater.
+    expect(config.publish).toEqual({
+      provider: "github",
+      owner: "PlaySkyHD",
+      repo: "termdock",
+      releaseType: "draft",
+    });
+    // Unsigned (ADR 0007): without a publisher name electron-updater checks no signature, only the SHA-512.
+    expect(JSON.stringify(config)).not.toContain("publisherName");
+    expect(packageJson.scripts.dist).toContain("--publish never");
+    expect(packageJson.dependencies["electron-updater"]).toBe("6.8.11");
     expect(config.nsis).toMatchObject({
       oneClick: false,
       perMachine: false,
@@ -95,6 +111,80 @@ describe("installer.nsh", () => {
       expect(text).toContain("Laufende WSL-Sessions laufen weiter");
       expect(text).not.toContain("enden dabei in der Regel");
     }
+  });
+});
+
+describe("release.yml (#136)", () => {
+  const workflow = readFileSync(path.join(workflows, "release.yml"), "utf8");
+  const ci = readFileSync(path.join(workflows, "ci.yml"), "utf8");
+
+  it("runs only for a pushed tag v* and creates a draft, never a published release", () => {
+    expect(workflow).toMatch(/on:\s+push:\s+tags:\s+- "v\*"/);
+    expect(workflow).not.toMatch(/branches:|pull_request|workflow_dispatch/);
+    expect(workflow).toContain("gh release create");
+    expect(workflow).toContain("--draft");
+    expect(workflow).not.toMatch(/--publish (always|onTag|onTagOrDraft)|gh release edit|--draft=false/);
+  });
+
+  it("uses no secret but GITHUB_TOKEN with the least permissions, and pins every action to a commit", () => {
+    expect([...workflow.matchAll(/secrets\.(\w+)/g)].map((match) => match[1])).toEqual([]);
+    expect(workflow).toMatch(/^permissions:\s+contents: read$/m);
+    expect([...workflow.matchAll(/^\s+contents: (\w+)$/gm)].map((match) => match[1])).toEqual([
+      "read",
+      "read",
+      "write",
+    ]);
+    expect(workflow).not.toMatch(/(packages|actions|id-token|pull-requests): write/);
+    const uses = [...workflow.matchAll(/uses: (\S+)/g)].map((match) => match[1]!);
+    expect(uses.length).toBeGreaterThan(0);
+    for (const action of uses) expect(action).toMatch(/@[0-9a-f]{40}$/);
+    // The token only in the step that creates the release.
+    expect(workflow.match(/github\.token/g)).toHaveLength(1);
+  });
+
+  it("checks the tag against the version, uploads installer, blockmap and latest.yml, and runs the smoke test", () => {
+    expect(workflow).toContain("apps/desktop/package.json");
+    expect(workflow).toContain("TAG: ${{ github.ref_name }}");
+    // Tag and version reach the shell as variables, not as expressions in the script text.
+    expect(workflow).not.toMatch(/run:[^\n]*\$\{\{/);
+    expect(workflow).toContain("npm run dist -w apps/desktop");
+    expect(workflow).toContain("--smoke-test");
+    for (const file of ["TermDock-Setup-$VERSION.exe", "TermDock-Setup-$VERSION.exe.blockmap", "latest.yml"])
+      expect(workflow).toContain(file);
+  });
+
+  it("builds with a read-only token kept out of git, and writes only in a job that runs no project code (review)", () => {
+    const buildStart = workflow.indexOf("\n  build:\n");
+    const draftStart = workflow.indexOf("\n  draft:\n");
+    expect(buildStart).toBeGreaterThan(0);
+    expect(draftStart).toBeGreaterThan(buildStart);
+    const build = workflow.slice(buildStart, draftStart);
+    const draft = workflow.slice(draftStart);
+
+    // npm ci, electron-builder and the smoke test never see a writing token, nor one in the git config.
+    expect(build).toMatch(/permissions:\s+contents: read/);
+    expect(build).toMatch(
+      /actions\/checkout@\S+[^\n]*\n\s+with:\n(\s+\S+:[^\n]*\n)*?\s+persist-credentials: false/,
+    );
+    expect(build).not.toContain("github.token");
+    expect(build).not.toContain("gh release");
+    // No npm cache on the release path (cache poisoning), and the tagged commit must be on main.
+    expect(build).not.toMatch(/cache: npm/);
+    expect(build).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
+    expect(build).toContain("npm ci");
+
+    // The writing job checks nothing out and runs no npm; it only uploads what the build left.
+    expect(draft).toMatch(/needs: build/);
+    expect(draft).toMatch(/permissions:\s+contents: write/);
+    expect(draft).not.toMatch(/actions\/checkout|setup-node|npm /);
+    expect(draft).toContain("actions/download-artifact@");
+    expect(draft).toContain("gh release create");
+    expect(draft).toContain("GH_REPO: ${{ github.repository }}");
+  });
+
+  it("lets the CI job package check the update files", () => {
+    expect(ci).toContain("latest.yml");
+    expect(ci).toContain(".blockmap");
   });
 });
 

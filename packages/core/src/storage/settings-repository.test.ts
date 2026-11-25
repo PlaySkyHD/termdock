@@ -96,6 +96,21 @@ describe("SqliteSettingsRepository", () => {
     });
   });
 
+  it("keeps the update switch across a reopen and removes it with null (#136)", () => {
+    const dir = tempDir();
+    const first = open(dir);
+    expect(first.settings.set({ checkForUpdates: false })).toEqual({
+      ...DEFAULT_SETTINGS,
+      checkForUpdates: false,
+    });
+    first.dispose();
+    const second = open(dir);
+    expect(second.settings.get()).toEqual({ ...DEFAULT_SETTINGS, checkForUpdates: false });
+    second.settings.set({ checkForUpdates: null });
+    second.dispose();
+    expect(open(dir).settings.get()).toEqual(DEFAULT_SETTINGS);
+  });
+
   it("stores one JSON row per set key", () => {
     const dir = tempDir();
     const storage = open(dir);

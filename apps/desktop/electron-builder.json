@@ -27,7 +27,12 @@
   "asarUnpack": ["node_modules/@termdock/**", "node_modules/node-pty/**"],
   "npmRebuild": false,
   "nodeGypRebuild": false,
-  "publish": null,
+  "publish": {
+    "provider": "github",
+    "owner": "PlaySkyHD",
+    "repo": "termdock",
+    "releaseType": "draft"
+  },
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
     "icon": "resources/icon.ico"

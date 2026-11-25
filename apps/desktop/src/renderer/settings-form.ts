@@ -272,6 +272,8 @@ export interface GeneralForm {
   cwd: string;
   /** `confirmQuitWhileRunning`. */
   confirmQuit: boolean;
+  /** `checkForUpdates` (#136); a missing key means on. */
+  checkForUpdates: boolean;
 }
 
 export type GeneralErrors = Partial<Record<"distro" | "cwd", string>>;
@@ -282,6 +284,7 @@ export function generalForm(settings: Settings): GeneralForm {
     shell: settings.defaultShell ?? "",
     cwd: settings.defaultCwd ?? "",
     confirmQuit: settings.confirmQuitWhileRunning,
+    checkForUpdates: settings.checkForUpdates !== false,
   };
 }
 
@@ -305,6 +308,8 @@ export function generalPatch(
     patch.defaultShell = form.shell === "" ? null : form.shell;
   if (cwd !== (settings.defaultCwd ?? "")) patch.defaultCwd = cwd === "" ? null : cwd;
   if (form.confirmQuit !== settings.confirmQuitWhileRunning) patch.confirmQuitWhileRunning = form.confirmQuit;
+  if (form.checkForUpdates !== (settings.checkForUpdates !== false))
+    patch.checkForUpdates = form.checkForUpdates;
   return { ok: true, patch };
 }
 

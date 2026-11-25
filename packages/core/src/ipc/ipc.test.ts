@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.6" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.7" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.6" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.7" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -1032,16 +1032,16 @@ describe("phase 3 (issue #55)", () => {
     expect(seen.get(stranger)).toEqual([]);
   });
 
-  it("accepts clients with protocol 1.2 to 1.4 and answers 1.5 (issues #64, #113)", async () => {
+  it("accepts clients with protocol 1.2 to 1.6 and answers 1.7 (issues #64, #113, #156, #136)", async () => {
     const { pipePath } = await startCore();
-    for (const version of ["1.2", "1.3", "1.4"]) {
+    for (const version of ["1.2", "1.3", "1.4", "1.5", "1.6"]) {
       const raw = await rawConnect(pipePath);
       raw.send({ ...hello, params: helloParams(version) });
       await waitFor(() => raw.frames.length === 1, "hello response");
       expect(raw.frames[0]?.header).toEqual({
         kind: "response",
         id: "h",
-        result: { protocolVersion: "1.6" },
+        result: { protocolVersion: "1.7" },
       });
     }
   });

@@ -556,7 +556,7 @@ describe("DesktopBridge moves between windows (#68)", () => {
       coreClosed: () => void calls.push(["coreClosed"]),
     };
     const layouts = { windowOf: () => ({ id: "w", tabs: [] }), report: () => {} };
-    const bridge = new DesktopBridge(core, layouts, undefined, undefined, moves);
+    const bridge = new DesktopBridge(core, layouts, undefined, undefined, undefined, moves);
     const a = new FakeWindow(1);
     const b = new FakeWindow(2);
     bridge.addWindow(a);
@@ -1087,6 +1087,10 @@ describe("DesktopBridge settings and profiles (#64)", () => {
       ok: true,
       value: settings,
     });
+    // The update switch (#136) passes as a key of the settings.
+    expect(
+      (await bridge.call(a.id, { method: "updateSettings", settings: { checkForUpdates: false } })).ok,
+    ).toBe(true);
     expect(await bridge.call(a.id, { method: "listProfiles" })).toEqual({ ok: true, value: [profile] });
     const create = { name: "Claude", launch: profile.launch, autostart: true };
     expect(await bridge.call(a.id, { method: "createProfile", profile: create })).toEqual({
@@ -1105,6 +1109,7 @@ describe("DesktopBridge settings and profiles (#64)", () => {
     expect(core.requests.map((request) => [request.method, request.params])).toEqual([
       ["settings.get", {}],
       ["settings.set", { settings: { defaultDistro: null } }],
+      ["settings.set", { settings: { checkForUpdates: false } }],
       ["profile.list", {}],
       ["profile.create", create],
       ["profile.update", { profileId: "p1", autostart: true }],
@@ -1161,5 +1166,66 @@ describe("DesktopBridge settings and profiles (#64)", () => {
         { kind: "profilesChanged", profiles: [profile] },
       ]);
     }
+  });
+});
+
+describe("DesktopBridge updates (#136)", () => {
+  function withUpdates() {
+    const core = new FakeCore();
+    const answers: string[] = [];
+    let version: string | undefined = "0.2.0";
+    const updates = {
+      state: () => (version === undefined ? {} : { version }),
+      answer: (choice: "install" | "later") => {
+        if (version === undefined) throw new IpcError("not_found", "There is no update to answer");
+        answers.push(choice);
+        version = undefined;
+      },
+    };
+    const bridge = new DesktopBridge(core, undefined, undefined, undefined, updates);
+    return { core, bridge, answers };
+  }
+
+  it("gives the offered update and passes the answer, without the core", async () => {
+    const { core, bridge, answers } = withUpdates();
+    expect(await bridge.call(1, { method: "updateState" })).toEqual({
+      ok: true,
+      value: { version: "0.2.0" },
+    });
+    expect(await bridge.call(1, { method: "answerUpdate", choice: "later" })).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(answers).toEqual(["later"]);
+    expect(await bridge.call(1, { method: "updateState" })).toEqual({ ok: true, value: {} });
+    const late = await bridge.call(1, { method: "answerUpdate", choice: "install" });
+    expect(!late.ok && late.error.code).toBe("not_found");
+    expect(core.requests).toEqual([]);
+  });
+
+  it("refuses an unknown choice with bad_request", async () => {
+    const { bridge, answers } = withUpdates();
+    for (const call of [
+      { method: "answerUpdate" },
+      { method: "answerUpdate", choice: "now" },
+      { method: "answerUpdate", choice: 1 },
+    ]) {
+      const result = await bridge.call(1, call);
+      expect(!result.ok && result.error.code, JSON.stringify(call)).toBe("bad_request");
+    }
+    expect(answers).toEqual([]);
+  });
+
+  it("offers nothing without an update service (repo app)", async () => {
+    const { bridge } = setup();
+    expect(await bridge.call(1, { method: "updateState" })).toEqual({ ok: true, value: {} });
+    const answer = await bridge.call(1, { method: "answerUpdate", choice: "install" });
+    expect(!answer.ok && answer.error.code).toBe("not_found");
+  });
+
+  it("sends updateChanged to every window", () => {
+    const { bridge, a, b } = setup();
+    bridge.broadcast({ kind: "updateChanged", version: "0.2.0" });
+    for (const win of [a, b]) expect(win.events).toEqual([{ kind: "updateChanged", version: "0.2.0" }]);
   });
 });

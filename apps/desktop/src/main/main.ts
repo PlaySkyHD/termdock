@@ -57,6 +57,10 @@ import {
 import type { IsolatedCore, SceneGroup } from "./screenshot.js";
 import { runScenario } from "./screenshot-scenario.js";
 import { runSmokeTest, smokeTestDataDir, smokeTestRequested, windowsShellCheck } from "./smoke-test.js";
+import { createElectronUpdater } from "./electron-updater-port.js";
+import { lazyUpdater, ManualUpdater, UpdateService } from "./update-service.js";
+import type { UpdaterPort } from "./update-service.js";
+import { updateChecksAllowed } from "../shared/update-decision.js";
 import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
 import { boundsAtPointer, fitBounds, screenshotOrigin, windowAtPoint } from "./window-geometry.js";
@@ -291,7 +295,36 @@ async function main(): Promise<void> {
     ready: (windowId) => transfers.ready(windowId),
     coreClosed: () => transfers.coreClosed(),
   };
-  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, moves);
+  // Auto-update (#136): electron-updater only in the installed app, loaded at the first check; the screenshot run
+  // offers updates by hand and installs nothing; from the repo there is no update.
+  const manualUpdater = new ManualUpdater();
+  const updater: UpdaterPort | undefined = updateChecksAllowed({
+    packaged: app.isPackaged,
+    mode: shotDir === undefined ? "app" : "screenshot",
+  })
+    ? lazyUpdater(() => createElectronUpdater(logger.withSource("updater")))
+    : shotDir === undefined
+      ? undefined
+      : manualUpdater;
+  const updates =
+    updater &&
+    new UpdateService({
+      updater,
+      readSettings: () =>
+        port.request("settings.get", {}).then(
+          (reply) => reply.result.settings,
+          () => undefined,
+        ),
+      broadcast: (event) => bridge.broadcast(event),
+      // The screenshot run only counts the install; the app saves, releases the core and runs the installer.
+      releaseAndInstall: (install) => {
+        if (shotDir === undefined) return quitFlow.installUpdate(install);
+        return install();
+      },
+      timers: { setTimeout, clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) },
+      log,
+    });
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, updates, moves);
   restartNotes = { ...restartNotes, bridge };
   /** Windows by `webContents` id, and their ids in the order of the last focus (the window under a drag, #68). */
   const windowsById = new Map<number, BrowserWindow>();
@@ -410,6 +443,15 @@ async function main(): Promise<void> {
       supervisor.stop({ stopSessions: true });
       await port.request("core.shutdown", { stopSessions: true });
     },
+    // Before an update (#136): the core ends, its tmux sessions and the WSL keepalive stay (ADR 0001).
+    // `retainAll` stopped the supervisor already; stopping again keeps it so if the order ever changes.
+    releaseCore: async () => {
+      supervisor.stop();
+      await port.request("core.shutdown", { stopSessions: false });
+    },
+    // No update while the core restarts or the restarts gave up (#130): the shutdown would reach nobody.
+    coreConnected: () => !supervisor.disconnected(),
+    relaunch: () => app.relaunch(),
     closeClient: () => supervisor.close(),
     quit: () => app.quit(),
     log,
@@ -618,6 +660,9 @@ async function main(): Promise<void> {
           release();
         };
       },
+      // The update scenes (#136): a downloaded update, and how often "Jetzt neu starten" reached the updater.
+      offerUpdate: (version) => manualUpdater.offer(version),
+      updateInstalls: () => manualUpdater.installs,
     });
     return;
   }
@@ -644,6 +689,7 @@ async function main(): Promise<void> {
   windows.open = () => void createWindow();
   await openStartWindows();
   for (; windows.queued > 0; windows.queued -= 1) createWindow();
+  updates?.start();
 }
 
 /** `--smoke-test` (ADR 0007): start the isolated core, `hello` and `core.status`, shut it down, exit 0 or 1. */

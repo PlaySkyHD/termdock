@@ -69,6 +69,8 @@ const api: TermdockApi = {
   transferDrop: async (item, at, whole) => void (await call({ method: "transferDrop", item, at, whole })),
   transferAttached: async (transferId, views) =>
     void (await call({ method: "transferAttached", transferId, ...(views === undefined ? {} : { views }) })),
+  updateState: () => call({ method: "updateState" }),
+  answerUpdate: async (choice) => void (await call({ method: "answerUpdate", choice })),
   onEvent: (listener) => {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);

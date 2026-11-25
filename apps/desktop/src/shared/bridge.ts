@@ -83,6 +83,10 @@ export type BridgeCall =
   | { method: "restartCore" }
   /** Whether the core is connected right now; a page that loads while it is gone asks this once (#130). */
   | { method: "coreConnection" }
+  /** The downloaded update the windows offer (#136); a page that loads later asks this once. */
+  | { method: "updateState" }
+  /** "Jetzt neu starten" or "Später" in the update dialog (#136); the answer counts for every window. */
+  | { method: "answerUpdate"; choice: UpdateChoice }
   // Moves between windows (#68): the source reports its drag outside, the target answers once it is attached.
   /** The pointer of a drag of a tab or pane is outside this window, at `at` in its client coordinates. */
   | { method: "transferHover"; item: TransferItem; at: ClientPoint }
@@ -123,6 +127,14 @@ export type TransferSource = { kind: "tab"; tabId: string } | { kind: "pane"; pa
 export interface ClientPoint {
   x: number;
   y: number;
+}
+
+/** The buttons of the update dialog (#136). */
+export type UpdateChoice = "install" | "later";
+
+/** The update a window offers; no `version` means none (#136). */
+export interface UpdateState {
+  version?: string;
 }
 
 /** The connection to the core as a window needs it (#130). */
@@ -181,6 +193,8 @@ export interface BridgeResults {
   listDistros: WslDistrosResult;
   restartCore: null;
   coreConnection: CoreConnectionState;
+  updateState: UpdateState;
+  answerUpdate: null;
   transferHover: null;
   transferHoverEnd: null;
   transferDrop: null;
@@ -240,6 +254,8 @@ export type BridgeEvent =
   | { kind: "coreClosed"; restarting: boolean }
   /** The main process is connected to a core again: the window lists anew and attaches its views again (#130). */
   | { kind: "coreRestarted" }
+  /** An update is downloaded (`version`) or no longer offered (none: "Später", install started) (#136). */
+  | { kind: "updateChanged"; version?: string }
   /**
    * Another window drags a tab or pane over this one, at `x`, `y` in this window's client coordinates (#68); without
    * `hover` the drag has left this window.
@@ -299,6 +315,9 @@ export interface TermdockApi {
   /** Restarts the core once the automatic restarts gave up; does nothing while connected or restarting. */
   restartCore(): Promise<void>;
   coreConnection(): Promise<CoreConnectionState>;
+  updateState(): Promise<UpdateState>;
+  /** Rejects with `not_found` when no update is offered (any more). */
+  answerUpdate(choice: UpdateChoice): Promise<void>;
   transferHover(item: TransferItem, at: ClientPoint): Promise<void>;
   transferHoverEnd(): Promise<void>;
   transferDrop(item: TransferItem, at: ClientPoint, whole: boolean): Promise<void>;

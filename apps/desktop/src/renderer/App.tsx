@@ -32,6 +32,7 @@ import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
 import { connectStore } from "./session-sync.js";
 import { QuitDialog } from "./QuitDialog.js";
+import { UpdateDialog } from "./UpdateDialog.js";
 import { SearchDialog } from "./SearchDialog.js";
 import { SettingsDialog } from "./SettingsDialog.js";
 import { modalOpen } from "./dialog-state.js";
@@ -545,6 +546,8 @@ export function App({ api }: { api: TermdockApi }) {
           />
         )}
         {settingsOpen && <SettingsDialog api={api} onClose={closeSettings} />}
+        {/* A downloaded update (#136); not modal, it leaves the keys in the terminal. */}
+        <UpdateDialog api={api} sessions={state.sessions} onAnswered={refocus} />
         {shortcutsOpen && (
           <ShortcutsDialog
             onClose={() => {

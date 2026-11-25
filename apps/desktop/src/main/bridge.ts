@@ -28,6 +28,8 @@ import type {
   TransferItem,
   TransferPane,
   TransferView,
+  UpdateChoice,
+  UpdateState,
 } from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
 import type { QuitAnswer } from "../shared/quit-decision.js";
@@ -54,6 +56,12 @@ export interface CoreRestarts {
   disconnected(): boolean;
   /** The button "Core neu starten"; does nothing unless the automatic restarts gave up. */
   restart(): void;
+}
+
+/** The offered update as the bridge needs it (`UpdateService` fits, #136). `answer` throws `IpcError`. */
+export interface UpdateAnswers {
+  state(): UpdateState;
+  answer(choice: UpdateChoice): void;
 }
 
 /** Moves of tabs and panes between windows, as the bridge needs them (`WindowTransfers` fits, #68). */
@@ -106,6 +114,7 @@ export class DesktopBridge {
     private readonly layouts?: WindowLayouts,
     private readonly quit?: QuitAnswers,
     private readonly restarts?: CoreRestarts,
+    private readonly updates?: UpdateAnswers,
     private readonly moves?: WindowMoves,
   ) {
     this.subscriptions = [
@@ -223,6 +232,11 @@ export class DesktopBridge {
   async claimWriterFor(windowId: number, viewId: ViewId): Promise<void> {
     this.ownView(windowId, viewId);
     await this.core.request("session.claimWriter", { viewId });
+  }
+
+  /** One event to every window (the update dialog, #136). */
+  broadcast(event: BridgeEvent): void {
+    this.toAll(event);
   }
 
   /** One event to one window (the quit dialog); false for a window that is gone or unknown. */
@@ -370,6 +384,13 @@ export class DesktopBridge {
           closed: this.restarts?.disconnected() ?? false,
           restarting: this.restarts?.restarting() ?? false,
         };
+      // The update dialog (#136): the answer of any window counts for all; the core is not involved here.
+      case "updateState":
+        return this.updates?.state() ?? {};
+      case "answerUpdate":
+        if (!this.updates) throw new IpcError("not_found", "There is no update to answer");
+        this.updates.answer(call.choice);
+        return null;
       // Moves between windows (#68): only views of the calling window travel, the item is checked like a layout.
       case "transferHover":
         this.moves?.hover(windowId, this.ownItem(windowId, call.item), call.at);
@@ -619,6 +640,14 @@ function parseCall(raw: unknown): BridgeCall {
       if (raw["views"] === undefined) return { method: "transferAttached", transferId };
       return { method: "transferAttached", transferId, views: transferPanes(raw["views"]) };
     }
+    case "updateState":
+      return { method: "updateState" };
+    case "answerUpdate": {
+      const choice = raw["choice"];
+      if (choice !== "install" && choice !== "later")
+        throw new BadRequest('choice must be "install" or "later"');
+      return { method: "answerUpdate", choice };
+    }
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
   }
@@ -633,6 +662,7 @@ const SETTINGS_KEYS = [
   "historyEnabledByDefault",
   "confirmQuitWhileRunning",
   "quitAction",
+  "checkForUpdates",
 ] as const satisfies readonly (keyof SettingsPatch)[];
 const PROFILE_CHANGE_KEYS = [
   "name",

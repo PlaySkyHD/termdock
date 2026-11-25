@@ -206,7 +206,13 @@ describe("section Allgemein", () => {
 
   it("sends only the changed keys, and turning the question back on sends only that", () => {
     const shown = generalForm(stored);
-    expect(shown).toEqual({ distro: "Ubuntu", shell: "", cwd: "", confirmQuit: false });
+    expect(shown).toEqual({
+      distro: "Ubuntu",
+      shell: "",
+      cwd: "",
+      confirmQuit: false,
+      checkForUpdates: true,
+    });
     expect(generalPatch(stored, shown)).toEqual({ ok: true, patch: {} });
     expect(generalPatch(stored, { ...shown, confirmQuit: true })).toEqual({
       ok: true,
@@ -220,8 +226,28 @@ describe("section Allgemein", () => {
       patch: { defaultDistro: null },
     });
     expect(
-      generalPatch(DEFAULT_SETTINGS, { distro: "Debian", shell: "pwsh", cwd: "/srv", confirmQuit: true }),
+      generalPatch(DEFAULT_SETTINGS, {
+        distro: "Debian",
+        shell: "pwsh",
+        cwd: "/srv",
+        confirmQuit: true,
+        checkForUpdates: true,
+      }),
     ).toEqual({ ok: true, patch: { defaultDistro: "Debian", defaultShell: "pwsh", defaultCwd: "/srv" } });
+  });
+
+  it("shows the update switch on without a stored key and sends only its change (#136)", () => {
+    expect(generalForm(DEFAULT_SETTINGS).checkForUpdates).toBe(true);
+    const off = { ...DEFAULT_SETTINGS, checkForUpdates: false };
+    expect(generalForm(off).checkForUpdates).toBe(false);
+    expect(
+      generalPatch(DEFAULT_SETTINGS, { ...generalForm(DEFAULT_SETTINGS), checkForUpdates: false }),
+    ).toEqual({ ok: true, patch: { checkForUpdates: false } });
+    expect(generalPatch(off, { ...generalForm(off), checkForUpdates: true })).toEqual({
+      ok: true,
+      patch: { checkForUpdates: true },
+    });
+    expect(generalPatch(off, generalForm(off))).toEqual({ ok: true, patch: {} });
   });
 
   it("wants a Linux or Windows path as default directory", () => {
@@ -289,6 +315,7 @@ describe("rebasing an open form on new settings", () => {
       shell: "cmd",
       cwd: "/srv",
       confirmQuit: true,
+      checkForUpdates: true,
     });
     const own = { ...generalForm(old), distro: "Arch" };
     expect(rebaseGeneral(own, old, fresh).distro).toBe("Arch");

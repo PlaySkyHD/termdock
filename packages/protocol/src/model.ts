@@ -234,6 +234,8 @@ export interface Settings {
   confirmQuitWhileRunning: boolean;
   /** Undefined means "keepSessions". */
   quitAction?: QuitAction;
+  /** The installed app looks for updates (protocol 1.7, #136); undefined means true. */
+  checkForUpdates?: boolean;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
@@ -251,6 +253,7 @@ export interface SettingsPatch {
   historyEnabledByDefault?: boolean;
   confirmQuitWhileRunning?: boolean;
   quitAction?: QuitAction | null;
+  checkForUpdates?: boolean | null;
 }
 
 /** One match of `history.search`. */
@@ -284,5 +287,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 1.4: method `wsl.distros` (settings dialog, #64).
  * 1.5: optional `warnings` in `SessionInfo` and `session.stateChanged` (missing working directory, #113).
  * 1.6: method `session.restart` (restart an ended or interrupted session from the app, #156).
+ * 1.7: optional settings key `checkForUpdates` (auto-update of the installed app, #136).
  */
-export const PROTOCOL_VERSION = "1.6" as const;
+export const PROTOCOL_VERSION = "1.7" as const;

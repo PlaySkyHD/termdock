@@ -339,13 +339,19 @@ Setzt `project.update` das Backend auf `windows`, MUST die Anfrage `distro: null
 
 ### Requirement: Einstellungen im Vertrag
 
-`Settings` SHALL die festen Schlüssel `defaultDistro?`, `defaultShell?`, `defaultCwd?`, `historyLimitBytes`, `historyEnabledByDefault`, `confirmQuitWhileRunning` und `quitAction?` (`keepSessions` oder `stopSessions`) haben. Standard SHALL 10 MiB Verlauf, Verlauf an und Nachfrage beim Schließen an sein. `historyLimitBytes` MUST eine ganze Zahl von 64 KiB bis 1 GiB sein; unbekannte Schlüssel MUST `bad_request` ergeben.
+`Settings` SHALL die festen Schlüssel `defaultDistro?`, `defaultShell?`, `defaultCwd?`, `historyLimitBytes`, `historyEnabledByDefault`, `confirmQuitWhileRunning`, `quitAction?` (`keepSessions` oder `stopSessions`) und seit 1.7 `checkForUpdates?` (Boolean, fehlend heißt an) haben. Standard SHALL 10 MiB Verlauf, Verlauf an und Nachfrage beim Schließen an sein. `historyLimitBytes` MUST eine ganze Zahl von 64 KiB bis 1 GiB sein; unbekannte Schlüssel MUST `bad_request` ergeben.
 
 #### Scenario: Teiländerung der Einstellungen
 
 - **GIVEN** eine Anfrage `settings.set { settings: { historyLimitBytes: 65536, defaultDistro: null } }`
 - **WHEN** sie geparst wird
 - **THEN** ist sie gültig; mit `historyLimitBytes: 65535`, `1073741825` oder einem Schlüssel `farbe` ist das Ergebnis `bad_request`
+
+#### Scenario: Update-Suche in den Einstellungen
+
+- **GIVEN** eine Anfrage `settings.set { settings: { checkForUpdates: false } }` oder `{ checkForUpdates: null }` und eine Antwort `settings.get` mit oder ohne `checkForUpdates`
+- **WHEN** sie geparst werden
+- **THEN** sind alle gültig; `checkForUpdates: "nein"` ergibt `bad_request`
 
 ### Requirement: Verlaufssuche im Vertrag
 
@@ -456,4 +462,4 @@ Protokoll 1.6 SHALL die Methode `session.restart { sessionId }` enthalten; unbek
 #### Scenario: Version
 
 - **WHEN** ein Client die Protokollversion liest
-- **THEN** ist sie `1.6`, und Clients mit `1.2` bis `1.5` werden weiter angenommen
+- **THEN** ist sie `1.7`, und Clients mit `1.2` bis `1.6` werden weiter angenommen

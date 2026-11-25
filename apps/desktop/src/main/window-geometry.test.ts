@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { fitBounds, screenshotOrigin } from "./window-geometry.js";
+import {
+  boundsAtPointer,
+  fitBounds,
+  POINTER_OFFSET,
+  screenshotOrigin,
+  windowAtPoint,
+} from "./window-geometry.js";
 
 const primary = { x: 0, y: 0, width: 1920, height: 1040 };
 const left = { x: -1280, y: 0, width: 1280, height: 984 };
@@ -81,5 +87,52 @@ describe("screenshotOrigin", () => {
 
   it("uses the primary display when it is the only one", () => {
     expect(screenshotOrigin([{ workArea: primary, primary: true }], undefined)).toEqual({ x: 40, y: 40 });
+  });
+});
+
+describe("windowAtPoint and boundsAtPointer (#68)", () => {
+  const windows = [
+    { id: 1, bounds: { x: 0, y: 0, width: 500, height: 400 } },
+    { id: 2, bounds: { x: 300, y: 100, width: 500, height: 400 } },
+  ];
+
+  it("finds the window under the point, the one focused last where two overlap", () => {
+    expect(windowAtPoint({ x: 100, y: 100 }, windows, [2, 1])).toBe(1);
+    expect(windowAtPoint({ x: 400, y: 200 }, windows, [2, 1])).toBe(2);
+    expect(windowAtPoint({ x: 400, y: 200 }, windows, [1, 2])).toBe(1);
+    expect(windowAtPoint({ x: 400, y: 200 }, windows, [])).toBe(1);
+  });
+
+  it("finds none beside every window; the right and bottom edges are outside", () => {
+    expect(windowAtPoint({ x: 900, y: 50 }, windows, [1, 2])).toBeUndefined();
+    expect(windowAtPoint({ x: 800, y: 200 }, windows, [1, 2])).toBeUndefined();
+  });
+
+  it("puts the tab bar of a new window under the pointer, below the title bar", () => {
+    expect(boundsAtPointer({ x: 500.4, y: 300 }, { width: 1000, height: 640 }, primary, 31)).toEqual({
+      x: 500 - POINTER_OFFSET.x,
+      y: 300 - 31 - POINTER_OFFSET.y,
+      width: 1000,
+      height: 640,
+    });
+  });
+
+  it("keeps the window inside the work area of the screen under the pointer (review PR #190)", () => {
+    // Near the bottom right corner of the primary screen: moved in, the title bar stays reachable.
+    expect(boundsAtPointer({ x: 1900, y: 1030 }, { width: 1000, height: 640 }, primary, 31)).toEqual({
+      x: 920,
+      y: 400,
+      width: 1000,
+      height: 640,
+    });
+    // Above the top of the left screen: no title bar above the work area.
+    expect(boundsAtPointer({ x: -1200, y: 5 }, { width: 1000, height: 640 }, left, 31)).toEqual({
+      x: -1280,
+      y: 0,
+      width: 1000,
+      height: 640,
+    });
+    // Larger than the screen: as large as its work area.
+    expect(boundsAtPointer({ x: 100, y: 100 }, { width: 3000, height: 2000 }, primary, 31)).toEqual(primary);
   });
 });

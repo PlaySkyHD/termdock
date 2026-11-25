@@ -133,6 +133,76 @@ describe("drag model", () => {
     expect(dropHighlight(IDLE, "a")).toBe("none");
   });
 
+  describe("outside the window (#68)", () => {
+    const tab: DragPayload = { kind: "tab", id: "t1", label: "Build" };
+    const leaving: DragEnvironment = { ...env, leaves: (p) => p.kind === "tab" };
+    const runWith = (events: DragEvent[], environment: DragEnvironment) => {
+      let state: DragState = IDLE;
+      const effects: unknown[] = [];
+      for (const event of events) {
+        const result = step(state, event, environment);
+        state = result.state;
+        if (result.effect) effects.push(result.effect);
+      }
+      return { state, effects };
+    };
+    const pressTab: DragEvent = { type: "press", payload: tab, x: 10, y: 10 };
+
+    it("marks the drag while the pointer is outside and clears the mark when it comes back", () => {
+      const out = runWith(
+        [pressTab, { type: "move", x: -40, y: 10, over: undefined, outside: true }],
+        leaving,
+      );
+      expect(out.state).toMatchObject({ phase: "dragging", outside: true, over: undefined });
+
+      const back = step(out.state, { type: "move", x: 30, y: 10, over: "a" }, leaving).state;
+      expect(back).toMatchObject({ phase: "dragging", over: "a" });
+      expect(back).not.toHaveProperty("outside");
+    });
+
+    it("hands a release outside to the main process when the payload may leave the window", () => {
+      const { state, effects } = runWith(
+        [
+          pressTab,
+          { type: "move", x: -40, y: 10, over: undefined, outside: true },
+          { type: "release", x: -60, y: 12, over: undefined, outside: true },
+        ],
+        leaving,
+      );
+      expect(state).toEqual(IDLE);
+      expect(effects).toEqual([{ kind: "outside", payload: tab, x: -60, y: 12 }]);
+    });
+
+    it("cancels a release outside for a payload that stays in its window", () => {
+      const { effects } = runWith(
+        [press, far(), { type: "release", x: -60, y: 12, over: undefined, outside: true }],
+        leaving,
+      );
+      expect(effects).toEqual([{ kind: "cancel" }]);
+    });
+
+    it("cancels a release outside without a rule for leaving", () => {
+      const { effects } = runWith(
+        [pressTab, far(), { type: "release", x: -60, y: 12, over: undefined, outside: true }],
+        env,
+      );
+      expect(effects).toEqual([{ kind: "cancel" }]);
+    });
+
+    it("aborts with Esc outside, and the release afterwards hands nothing over", () => {
+      const { effects } = runWith(
+        [
+          pressTab,
+          { type: "move", x: -40, y: 10, over: undefined, outside: true },
+          { type: "escape" },
+          { type: "release", x: -60, y: 12, over: undefined, outside: true },
+        ],
+        leaving,
+      );
+      expect(effects).toEqual([{ kind: "cancel" }]);
+    });
+  });
+
   it("counts a drag and an abort as a gesture that must not click", () => {
     expect(isDragGesture(run([press, far()]).state)).toBe(true);
     expect(isDragGesture({ phase: "aborted" })).toBe(true);

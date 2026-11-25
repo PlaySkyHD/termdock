@@ -543,6 +543,148 @@ describe("DesktopBridge core restart (#130)", () => {
   });
 });
 
+describe("DesktopBridge moves between windows (#68)", () => {
+  function withMoves() {
+    const core = new FakeCore();
+    const calls: unknown[][] = [];
+    const moves = {
+      hover: (...args: unknown[]) => void calls.push(["hover", ...args]),
+      hoverEnd: (...args: unknown[]) => void calls.push(["hoverEnd", ...args]),
+      drop: (...args: unknown[]) => void calls.push(["drop", ...args]),
+      attached: async (...args: unknown[]) => void calls.push(["attached", ...args]),
+      ready: (...args: unknown[]) => void calls.push(["ready", ...args]),
+      coreClosed: () => void calls.push(["coreClosed"]),
+    };
+    const layouts = { windowOf: () => ({ id: "w", tabs: [] }), report: () => {} };
+    const bridge = new DesktopBridge(core, layouts, undefined, undefined, undefined, moves);
+    const a = new FakeWindow(1);
+    const b = new FakeWindow(2);
+    bridge.addWindow(a);
+    bridge.addWindow(b);
+    return { core, bridge, a, b, calls };
+  }
+  const item = (viewId: string) => ({
+    kind: "pane",
+    pane: { kind: "pane", id: "p1", sessionId: "s1" },
+    views: [{ paneId: "p1", viewId }],
+  });
+
+  it("passes hover, drop and answer of the calling window on", async () => {
+    const { core, bridge, a, b, calls } = withMoves();
+    await attach(core, bridge, a, "s1", "v1");
+
+    expect(
+      await bridge.call(a.id, { method: "transferHover", item: item("v1"), at: { x: -20, y: 5 } }),
+    ).toEqual({
+      ok: true,
+      value: null,
+    });
+    await bridge.call(a.id, { method: "transferHoverEnd" });
+    await bridge.call(a.id, { method: "transferDrop", item: item("v1"), at: { x: -20, y: 5 }, whole: false });
+    await bridge.call(b.id, {
+      method: "transferAttached",
+      transferId: "t1",
+      views: [{ paneId: "p1", viewId: "w1" }],
+    });
+    await bridge.call(b.id, { method: "transferAttached", transferId: "t2" });
+
+    expect(calls).toEqual([
+      ["hover", a.id, item("v1"), { x: -20, y: 5 }],
+      ["hoverEnd", a.id],
+      ["drop", a.id, item("v1"), { x: -20, y: 5 }, false],
+      ["attached", b.id, "t1", [{ paneId: "p1", viewId: "w1" }]],
+      ["attached", b.id, "t2", undefined],
+    ]);
+  });
+
+  it("refuses an item with a view of another window, a pane it does not have, or a broken tree", async () => {
+    const { core, bridge, a, b, calls } = withMoves();
+    await attach(core, bridge, b, "s1", "v-b");
+    await attach(core, bridge, a, "s1", "v1");
+    const drop = (raw: unknown) =>
+      bridge.call(a.id, { method: "transferDrop", item: raw, at: { x: 0, y: 0 }, whole: false });
+
+    expect(await drop(item("v-b"))).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(await drop({ ...item("v1"), views: [{ paneId: "p9", viewId: "v1" }] })).toMatchObject({
+      ok: false,
+      error: { code: "bad_request" },
+    });
+    expect(
+      await drop({
+        kind: "tab",
+        tab: { id: "t", root: { kind: "pane", id: "p1", sessionId: "s1" }, activePaneId: "nope" },
+        views: [],
+      }),
+    ).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(
+      await bridge.call(a.id, {
+        method: "transferDrop",
+        item: item("v1"),
+        at: { x: Infinity, y: 0 },
+        whole: false,
+      }),
+    ).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(calls).toEqual([]);
+  });
+
+  it("passes a placeholder pane without a view on, and stops the moves when the core connection ends (review PR #190)", async () => {
+    const { core, bridge, b, calls } = withMoves();
+    await bridge.call(b.id, { method: "transferAttached", transferId: "t1", views: [{ paneId: "p1" }] });
+    await core.close();
+
+    expect(calls).toEqual([["attached", b.id, "t1", [{ paneId: "p1" }]], ["coreClosed"]]);
+  });
+
+  it("tells the moves when a window's page has loaded its layout", async () => {
+    const { bridge, b, calls } = withMoves();
+    await bridge.call(b.id, { method: "windowLayout" });
+    expect(calls).toEqual([["ready", b.id]]);
+  });
+
+  it("knows the writer of a session from the attach answer and from writerChanged", async () => {
+    const { core, bridge, a, b } = withMoves();
+    await attach(core, bridge, a, "s1", "v1");
+    core.answers.set("session.attach", {
+      result: { viewId: "w1", size: { cols: 80, rows: 24 }, writerViewId: "v1" },
+      payload: bytes("snap"),
+    });
+    await bridge.call(b.id, { method: "attach", sessionId: "s1", size: { cols: 80, rows: 24 } });
+
+    expect([bridge.isWriter(a.id, "v1"), bridge.isWriter(b.id, "w1"), bridge.isWriter(b.id, "v1")]).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    core.emit("view.writerChanged", { sessionId: "s1", writerViewId: "w1" });
+    expect([bridge.isWriter(a.id, "v1"), bridge.isWriter(b.id, "w1")]).toEqual([false, true]);
+  });
+
+  it("lets a writerChanged right behind the attach answer beat the answer's older writer (review #68)", async () => {
+    const { core, bridge, a, b } = withMoves();
+    await attach(core, bridge, a, "s1", "v1");
+    core.answers.set("session.attach", {
+      result: { viewId: "w1", size: { cols: 80, rows: 24 }, writerViewId: "v1" },
+      payload: bytes("snap"),
+    });
+    // Another window claims in the same read as the answer: the event is routed before the answer is handled.
+    core.afterAnswer = () => core.emit("view.writerChanged", { sessionId: "s1", writerViewId: "w1" });
+
+    await bridge.call(b.id, { method: "attach", sessionId: "s1", size: { cols: 80, rows: 24 } });
+
+    expect([bridge.isWriter(a.id, "v1"), bridge.isWriter(b.id, "w1")]).toEqual([false, true]);
+  });
+
+  it("claims the writer for a view of the window only", async () => {
+    const { core, bridge, a, b } = withMoves();
+    await attach(core, bridge, a, "s1", "v1");
+
+    await expect(bridge.claimWriterFor(b.id, "v1")).rejects.toMatchObject({ code: "not_found" });
+    await bridge.claimWriterFor(a.id, "v1");
+
+    expect(core.sent("session.claimWriter").map((each) => each.params)).toEqual([{ viewId: "v1" }]);
+  });
+});
+
 describe("DesktopBridge layout calls (#29)", () => {
   const part = {
     sidebarVisible: false,

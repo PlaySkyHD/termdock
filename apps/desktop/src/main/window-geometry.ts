@@ -57,6 +57,59 @@ export function screenshotOrigin(
   return { x: (area?.workArea.x ?? 0) + SHOT_INSET, y: (area?.workArea.y ?? 0) + SHOT_INSET };
 }
 
+/**
+ * Where the pointer lies in a window that opens or moves under it (#68), measured from the top left corner of its
+ * client area: over its tab bar (35 px high), a bit right of the edge.
+ */
+export const POINTER_OFFSET = { x: 80, y: 16 } as const;
+
+/**
+ * Bounds of a window of `size` whose tab bar lies under the screen point (#68): the frame starts `titleBar` pixels
+ * above the client area. The window stays inside `workArea`, the work area of the screen under the pointer (shrunk to
+ * it when larger), so its title bar is never off the screen; near an edge the pointer then lies elsewhere on it.
+ */
+export function boundsAtPointer(
+  point: { x: number; y: number },
+  size: { width: number; height: number },
+  workArea: WindowBounds,
+  titleBar: number,
+): WindowBounds {
+  const width = Math.min(size.width, workArea.width);
+  const height = Math.min(size.height, workArea.height);
+  const clamp = (value: number, start: number, room: number): number =>
+    Math.min(Math.max(Math.round(value), start), start + room);
+  return {
+    x: clamp(point.x - POINTER_OFFSET.x, workArea.x, workArea.width - width),
+    y: clamp(point.y - titleBar - POINTER_OFFSET.y, workArea.y, workArea.height - height),
+    width,
+    height,
+  };
+}
+
+/**
+ * The window under the screen point (#68): of the windows whose frame contains it, the one focused last (Electron
+ * gives no z-order). `recent` lists window ids, the last focused first; a window it does not name comes after them.
+ */
+export function windowAtPoint(
+  point: { x: number; y: number },
+  windows: ReadonlyArray<{ id: number; bounds: WindowBounds }>,
+  recent: readonly number[],
+): number | undefined {
+  const rank = (id: number): number => {
+    const index = recent.indexOf(id);
+    return index < 0 ? recent.length : index;
+  };
+  return windows
+    .filter(
+      ({ bounds }) =>
+        point.x >= bounds.x &&
+        point.x < bounds.x + bounds.width &&
+        point.y >= bounds.y &&
+        point.y < bounds.y + bounds.height,
+    )
+    .sort((a, b) => rank(a.id) - rank(b.id))[0]?.id;
+}
+
 /** Length of the overlap of two intervals (0 when they do not meet). */
 function overlap(start: number, length: number, otherStart: number, otherLength: number): number {
   return Math.max(0, Math.min(start + length, otherStart + otherLength) - Math.max(start, otherStart));

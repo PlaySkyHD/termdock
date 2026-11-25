@@ -2,8 +2,14 @@
 // and routes core events to the windows that show the session. Free of Electron so it runs in tests.
 import { IpcError } from "@termdock/core";
 import type { Disposable } from "@termdock/core";
-import { MAX_HISTORY_HITS, MAX_HISTORY_QUERY_LENGTH } from "@termdock/protocol";
+import {
+  MAX_HISTORY_HITS,
+  MAX_HISTORY_QUERY_LENGTH,
+  MAX_PANES_PER_TAB,
+  validateLayoutDocument,
+} from "@termdock/protocol";
 import type {
+  LayoutTab,
   LayoutWindow,
   ProfileCreateParams,
   SessionCreateParams,
@@ -17,7 +23,11 @@ import type {
   BridgeErrorBody,
   BridgeEvent,
   BridgeResult,
+  ClientPoint,
   ProfileChange,
+  TransferItem,
+  TransferPane,
+  TransferView,
   UpdateChoice,
   UpdateState,
 } from "../shared/bridge.js";
@@ -54,6 +64,18 @@ export interface UpdateAnswers {
   answer(choice: UpdateChoice): void;
 }
 
+/** Moves of tabs and panes between windows, as the bridge needs them (`WindowTransfers` fits, #68). */
+export interface WindowMoves {
+  hover(windowId: number, item: TransferItem, at: ClientPoint): void;
+  hoverEnd(windowId: number): void;
+  drop(windowId: number, item: TransferItem, at: ClientPoint, whole: boolean): void;
+  attached(windowId: number, transferId: string, views: readonly TransferPane[] | undefined): Promise<void>;
+  /** The core connection ended (#130): every move stops, the views it named are gone. */
+  coreClosed(): void;
+  /** The window's page has loaded its layout; a new window may take its item now. */
+  ready(windowId: number): void;
+}
+
 /** A window as the bridge sees it; `id` is the `webContents` id. */
 export interface BridgeWindow {
   readonly id: number;
@@ -80,6 +102,10 @@ export class DesktopBridge {
   private readonly outputSeq = new Map<SessionId, number>();
   /** Raised when a window's renderer reloads or crashes; attaches of an older renderer are given back. */
   private readonly epochs = new Map<number, number>();
+  /** The writing view of each session, from `view.writerChanged` and the attach answers (#68). */
+  private readonly writers = new Map<SessionId, ViewId>();
+  /** Counts the `view.writerChanged` events per session: one that arrived during an attach beats its answer. */
+  private readonly writerEvents = new Map<SessionId, number>();
   private readonly subscriptions: Disposable[];
   private readonly encoder = new TextEncoder();
 
@@ -89,6 +115,7 @@ export class DesktopBridge {
     private readonly quit?: QuitAnswers,
     private readonly restarts?: CoreRestarts,
     private readonly updates?: UpdateAnswers,
+    private readonly moves?: WindowMoves,
   ) {
     this.subscriptions = [
       core.on("session.output", ({ sessionId, seq: coreSeq }, payload) => {
@@ -100,13 +127,16 @@ export class DesktopBridge {
       core.on("session.resized", ({ sessionId, size }) =>
         this.toSession(sessionId, { kind: "resized", sessionId, size }),
       ),
-      core.on("view.writerChanged", ({ sessionId, writerViewId }) =>
+      core.on("view.writerChanged", ({ sessionId, writerViewId }) => {
+        this.writerEvents.set(sessionId, (this.writerEvents.get(sessionId) ?? 0) + 1);
+        if (writerViewId === undefined) this.writers.delete(sessionId);
+        else this.writers.set(sessionId, writerViewId);
         this.toSession(sessionId, {
           kind: "writerChanged",
           sessionId,
           ...(writerViewId === undefined ? {} : { writerViewId }),
-        }),
-      ),
+        });
+      }),
       core.on("session.stateChanged", ({ sessionId, state, lastExitCode, warnings }) => {
         // Archiving makes the core forget all views of the session; the records here must go with them.
         if (state === "Archived") this.forgetViews(sessionId);
@@ -124,6 +154,8 @@ export class DesktopBridge {
         // The session is gone for good; neither its output counter nor a view record may outlive it (the core has
         // dropped the views already, and the window's detach of a dead view then ends with `not_found` here).
         this.outputSeq.delete(sessionId);
+        this.writers.delete(sessionId);
+        this.writerEvents.delete(sessionId);
         this.forgetViews(sessionId);
         this.toAll({ kind: "sessionRemoved", sessionId });
       }),
@@ -136,6 +168,10 @@ export class DesktopBridge {
         this.views.clear();
         this.attaching.clear();
         this.outputSeq.clear();
+        this.writers.clear();
+        this.writerEvents.clear();
+        // A move between windows cannot hand over views of a core that is gone (review PR #190).
+        this.moves?.coreClosed();
         this.toAll({ kind: "coreClosed", restarting: this.restarts?.restarting() ?? false });
       }),
     ];
@@ -184,6 +220,18 @@ export class DesktopBridge {
   sessionOf(windowId: number, viewId: ViewId): SessionId | undefined {
     const view = this.views.get(viewId);
     return view?.windowId === windowId ? view.sessionId : undefined;
+  }
+
+  /** Whether the view belongs to the window and writes its session right now (#68). */
+  isWriter(windowId: number, viewId: ViewId): boolean {
+    const sessionId = this.sessionOf(windowId, viewId);
+    return sessionId !== undefined && this.writers.get(sessionId) === viewId;
+  }
+
+  /** `session.claimWriter` for a view of the window on behalf of a move (#68); rejects for a foreign view. */
+  async claimWriterFor(windowId: number, viewId: ViewId): Promise<void> {
+    this.ownView(windowId, viewId);
+    await this.core.request("session.claimWriter", { viewId });
   }
 
   /** One event to every window (the update dialog, #136). */
@@ -287,6 +335,8 @@ export class DesktopBridge {
       case "windowLayout": {
         const window = this.layouts?.windowOf(windowId);
         if (!window) throw new IpcError("not_found", "This window has no layout");
+        // The page listens for events before it asks (App.tsx): a new window can take its item now (#68).
+        this.moves?.ready(windowId);
         return window;
       }
       case "reportLayout":
@@ -341,7 +391,31 @@ export class DesktopBridge {
         if (!this.updates) throw new IpcError("not_found", "There is no update to answer");
         this.updates.answer(call.choice);
         return null;
+      // Moves between windows (#68): only views of the calling window travel, the item is checked like a layout.
+      case "transferHover":
+        this.moves?.hover(windowId, this.ownItem(windowId, call.item), call.at);
+        return null;
+      case "transferHoverEnd":
+        this.moves?.hoverEnd(windowId);
+        return null;
+      case "transferDrop":
+        this.moves?.drop(windowId, this.ownItem(windowId, call.item), call.at, call.whole);
+        return null;
+      case "transferAttached":
+        await this.moves?.attached(windowId, call.transferId, call.views);
+        return null;
     }
+  }
+
+  /** The item when every view it names belongs to the window and shows a pane of the item. */
+  private ownItem(windowId: number, item: TransferItem): TransferItem {
+    const panes = new Set(panesOf(item.kind === "tab" ? item.tab.root : item.pane).map((pane) => pane.id));
+    for (const view of item.views) {
+      this.ownView(windowId, view.viewId);
+      if (!panes.has(view.paneId))
+        throw new BadRequest(`item.views names pane ${view.paneId} it does not have`);
+    }
+    return item;
   }
 
   private async attach(windowId: number, sessionId: SessionId, size: TerminalSize): Promise<unknown> {
@@ -349,12 +423,19 @@ export class DesktopBridge {
     this.attaching.set(sessionId, counts);
     counts.set(windowId, (counts.get(windowId) ?? 0) + 1);
     const epoch = this.epochs.get(windowId) ?? 0;
+    const writerEvents = this.writerEvents.get(sessionId) ?? 0;
     try {
       const { result, payload } = await this.core.request("session.attach", { sessionId, size });
       // The core's mark is exact, also for held events that arrive in a later read (issue #34). A 1.0 core sends
       // none; then everything this main numbered up to here counts as part of the snapshot (ADR 0006).
       const outputSeq = result.outputSeq ?? this.outputSeq.get(sessionId) ?? 0;
       this.views.set(result.viewId, { windowId, sessionId });
+      // An event that arrived meanwhile is at least as new as the answer: events right behind the response are
+      // routed before this runs (as in TerminalController).
+      if ((this.writerEvents.get(sessionId) ?? 0) === writerEvents) {
+        if (result.writerViewId === undefined) this.writers.delete(sessionId);
+        else this.writers.set(sessionId, result.writerViewId);
+      }
       if (!this.windows.has(windowId) || (this.epochs.get(windowId) ?? 0) !== epoch) {
         // The window closed or its renderer reloaded while the core attached; nobody can use this view.
         await this.detachView(result.viewId);
@@ -542,6 +623,23 @@ function parseCall(raw: unknown): BridgeCall {
       return { method: "restartCore" };
     case "coreConnection":
       return { method: "coreConnection" };
+    case "transferHover":
+      return { method: "transferHover", item: transferItem(raw["item"]), at: clientPoint(raw["at"]) };
+    case "transferHoverEnd":
+      return { method: "transferHoverEnd" };
+    case "transferDrop":
+      if (typeof raw["whole"] !== "boolean") throw new BadRequest("whole must be a boolean");
+      return {
+        method: "transferDrop",
+        item: transferItem(raw["item"]),
+        at: clientPoint(raw["at"]),
+        whole: raw["whole"],
+      };
+    case "transferAttached": {
+      const transferId = text(raw["transferId"], "transferId");
+      if (raw["views"] === undefined) return { method: "transferAttached", transferId };
+      return { method: "transferAttached", transferId, views: transferPanes(raw["views"]) };
+    }
     case "updateState":
       return { method: "updateState" };
     case "answerUpdate": {
@@ -600,6 +698,67 @@ function layoutPart(raw: unknown): LayoutWindowPart {
   const unknown = Object.keys(raw).find((key) => !PART_KEYS.includes(key));
   if (unknown !== undefined) throw new BadRequest(`window.${unknown} is not reported by a renderer`);
   return raw as unknown as LayoutWindowPart;
+}
+
+/** Farther than any screen: a point beyond it is a broken renderer. */
+const MAX_POINT = 100_000;
+
+function clientPoint(raw: unknown): ClientPoint {
+  if (!isRecord(raw)) throw new BadRequest("at must be an object");
+  const { x, y } = raw;
+  const ok = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= MAX_POINT;
+  if (!ok(x) || !ok(y)) throw new BadRequest("at needs finite x and y");
+  return { x, y };
+}
+
+function transferViews(raw: unknown): TransferView[] {
+  if (!Array.isArray(raw) || raw.length > MAX_PANES_PER_TAB)
+    throw new BadRequest(`views must be a list of at most ${MAX_PANES_PER_TAB}`);
+  return raw.map((view) => {
+    if (!isRecord(view)) throw new BadRequest("a view must be an object");
+    return { paneId: text(view["paneId"], "paneId"), viewId: text(view["viewId"], "viewId") };
+  });
+}
+
+/** The answer of a target (#68): each source pane with its new view, or without one for a placeholder. */
+function transferPanes(raw: unknown): TransferPane[] {
+  if (!Array.isArray(raw) || raw.length > MAX_PANES_PER_TAB)
+    throw new BadRequest(`views must be a list of at most ${MAX_PANES_PER_TAB}`);
+  return raw.map((pane) => {
+    if (!isRecord(pane)) throw new BadRequest("a view must be an object");
+    const paneId = text(pane["paneId"], "paneId");
+    return pane["viewId"] === undefined ? { paneId } : { paneId, viewId: text(pane["viewId"], "viewId") };
+  });
+}
+
+/**
+ * A tab or pane that moves to another window (#68): checked like a window of the layout document (ids, limits,
+ * tree), so the target can take it as it is; its views shape only (the bridge checks they are the caller's).
+ */
+function transferItem(raw: unknown): TransferItem {
+  if (!isRecord(raw)) throw new BadRequest("item must be an object");
+  const views = transferViews(raw["views"]);
+  let tab: LayoutTab;
+  if (raw["kind"] === "tab") tab = raw["tab"] as LayoutTab;
+  else if (raw["kind"] === "pane") {
+    const pane = raw["pane"];
+    if (!isRecord(pane) || pane["kind"] !== "pane") throw new BadRequest("item.pane must be a pane");
+    tab = { id: "transfer", root: pane as unknown as LayoutTab["root"], activePaneId: String(pane["id"]) };
+  } else throw new BadRequest("item.kind must be tab or pane");
+  const checked = validateLayoutDocument({
+    version: 1,
+    windows: [{ id: "transfer-window", tabs: [tab], activeTabId: isRecord(tab) ? tab.id : "" }],
+  });
+  if (!checked.ok) throw new BadRequest(`item is no valid tab: ${checked.error.message}`);
+  const valid = checked.value.windows[0]!.tabs[0]!;
+  return raw["kind"] === "tab"
+    ? { kind: "tab", tab: valid, views }
+    : { kind: "pane", pane: valid.root as Extract<LayoutTab["root"], { kind: "pane" }>, views };
+}
+
+function panesOf(node: LayoutTab["root"]): Array<{ id: string }> {
+  return node.kind === "pane" ? [node] : node.children.flatMap(panesOf);
 }
 
 /** Shape only; the core checks the launch spec itself with its guards. */

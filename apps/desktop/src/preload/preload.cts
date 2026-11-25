@@ -64,6 +64,11 @@ const api: TermdockApi = {
   listDistros: () => call({ method: "listDistros" }),
   restartCore: async () => void (await call({ method: "restartCore" })),
   coreConnection: () => call({ method: "coreConnection" }),
+  transferHover: async (item, at) => void (await call({ method: "transferHover", item, at })),
+  transferHoverEnd: async () => void (await call({ method: "transferHoverEnd" })),
+  transferDrop: async (item, at, whole) => void (await call({ method: "transferDrop", item, at, whole })),
+  transferAttached: async (transferId, views) =>
+    void (await call({ method: "transferAttached", transferId, ...(views === undefined ? {} : { views }) })),
   updateState: () => call({ method: "updateState" }),
   answerUpdate: async (choice) => void (await call({ method: "answerUpdate", choice })),
   onEvent: (listener) => {

@@ -13,7 +13,9 @@ import type {
   SessionWarning,
   Workspace,
 } from "@termdock/protocol";
+import type { TransferItem, TransferSource } from "../shared/bridge.js";
 import { applyMove, canMove } from "./layout-moves.js";
+import { applyIncoming, takeOut, withoutIncoming, withoutTab } from "./window-transfer.js";
 import type { MoveSource, MoveTarget } from "./layout-moves.js";
 import {
   findNode,
@@ -246,13 +248,40 @@ export class UiStore {
   /** Closes the tab. When it was active, its right neighbour becomes active, or the left one for the last tab. */
   closeTab(tabId: string): void {
     const { window } = this.state;
-    const index = window.tabs.findIndex((tab) => tab.id === tabId);
-    if (index < 0) return;
-    const tabs = window.tabs.filter((tab) => tab.id !== tabId);
-    const { activeTabId: _active, ...rest } = window;
-    const activeTabId =
-      window.activeTabId === tabId ? (tabs[index] ?? tabs[index - 1])?.id : window.activeTabId;
-    this.setWindow({ ...rest, tabs, ...(activeTabId === undefined ? {} : { activeTabId }) });
+    const next = withoutTab(window, tabId);
+    if (next !== window) this.setWindow(next);
+  }
+
+  // --- Moves between windows (#68) -----------------------------------------------------------
+
+  /**
+   * Puts a tab or pane of another window in at `target` with new ids (`applyIncoming`). Returns the new panes, each
+   * with its pane in the source, or undefined when the move is not allowed (nothing changes then).
+   */
+  receive(item: TransferItem, target: MoveTarget): Record<string, string> | undefined {
+    const result = applyIncoming(this.state.window, item, target, this.newId);
+    if (!result) return undefined;
+    this.setWindow(result.window);
+    return result.panes;
+  }
+
+  /** Whether `receive` would put the item in; changes nothing. */
+  canReceive(item: TransferItem, target: MoveTarget): boolean {
+    return applyIncoming(this.state.window, item, target, () => "probe") !== undefined;
+  }
+
+  /** Takes out the panes of a move into this window that was cancelled; their views detach. */
+  dropIncoming(paneIds: readonly string[]): void {
+    const { window } = this.state;
+    const next = withoutIncoming(window, paneIds);
+    if (next !== window) this.setWindow(next);
+  }
+
+  /** The other window holds the tab or pane now: it leaves this one, and its views detach. */
+  takeOut(source: TransferSource): void {
+    const { window } = this.state;
+    const next = takeOut(window, source);
+    if (next !== window) this.setWindow(next);
   }
 
   // --- Panes ----------------------------------------------------------------------------------

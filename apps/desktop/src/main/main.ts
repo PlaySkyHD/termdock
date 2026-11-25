@@ -13,7 +13,8 @@ import type { LayoutWindow } from "@termdock/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
 import { DesktopBridge } from "./bridge.js";
-import type { WindowLayouts } from "./bridge.js";
+import type { WindowLayouts, WindowMoves } from "./bridge.js";
+import { WindowTransfers } from "./window-transfer.js";
 import {
   connectOrStartCore,
   READY_TIMEOUT_MS,
@@ -62,13 +63,15 @@ import type { UpdaterPort } from "./update-service.js";
 import { updateChecksAllowed } from "../shared/update-decision.js";
 import { APP_USER_MODEL_ID, appUserDataDir } from "./app-identity.js";
 import type { ScenarioControl } from "./screenshot-scenario.js";
-import { fitBounds, screenshotOrigin } from "./window-geometry.js";
+import { boundsAtPointer, fitBounds, screenshotOrigin, windowAtPoint } from "./window-geometry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
 const RENDERER = path.join(here, "..", "renderer", "index.html");
 /** Upper bound of a whole screenshot run, including the start of the core and WSL. */
 const SCREENSHOT_TIMEOUT_MS = 480_000;
+/** Title bar of a Windows frame at 100 %, when no window is open to measure it (#68). */
+const DEFAULT_TITLE_BAR = 31;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
 /** Longest wait for the log file before the app exits. */
@@ -283,6 +286,15 @@ async function main(): Promise<void> {
   };
   // The quit dialog (#60) is a view of a window: the prompt sends the question there and takes the answer back.
   const quitPrompt: QuitPrompt = new QuitPrompt((windowId, event): boolean => bridge.sendTo(windowId, event));
+  // Moves of tabs and panes between windows (#68); the coordinator needs the bridge, so the bridge reaches it late.
+  const moves: WindowMoves = {
+    hover: (windowId, item, at) => transfers.hover(windowId, item, at),
+    hoverEnd: (windowId) => transfers.hoverEnd(windowId),
+    drop: (windowId, item, at, whole) => transfers.drop(windowId, item, at, whole),
+    attached: (windowId, transferId, views) => transfers.attached(windowId, transferId, views),
+    ready: (windowId) => transfers.ready(windowId),
+    coreClosed: () => transfers.coreClosed(),
+  };
   // Auto-update (#136): electron-updater only in the installed app, loaded at the first check; the screenshot run
   // offers updates by hand and installs nothing; from the repo there is no update.
   const manualUpdater = new ManualUpdater();
@@ -312,8 +324,73 @@ async function main(): Promise<void> {
       timers: { setTimeout, clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) },
       log,
     });
-  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, updates);
+  const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, updates, moves);
   restartNotes = { ...restartNotes, bridge };
+  /** Windows by `webContents` id, and their ids in the order of the last focus (the window under a drag, #68). */
+  const windowsById = new Map<number, BrowserWindow>();
+  const focusOrder: number[] = [];
+  const liveWindow = (windowId: number): BrowserWindow | undefined => {
+    const win = windowsById.get(windowId);
+    return win && !win.isDestroyed() ? win : undefined;
+  };
+  /** Height of the frame above the client area (title bar); all windows of the app share their frame. */
+  const titleBarOf = (win: BrowserWindow | undefined): number => {
+    if (!win) return DEFAULT_TITLE_BAR;
+    return Math.max(0, win.getContentBounds().y - win.getBounds().y);
+  };
+  /** Bounds with the tab bar under the screen point, inside the work area of the screen under it (#68). */
+  const atPointer = (
+    point: { x: number; y: number },
+    size: { width: number; height: number },
+    frame?: BrowserWindow,
+  ) =>
+    boundsAtPointer(
+      point,
+      size,
+      screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) }).workArea,
+      titleBarOf(frame ?? [...windowsById.values()].find((each) => !each.isDestroyed())),
+    );
+  const transfers: WindowTransfers = new WindowTransfers({
+    toScreen: (windowId, point) => {
+      const bounds = liveWindow(windowId)?.getContentBounds();
+      return bounds && { x: bounds.x + point.x, y: bounds.y + point.y };
+    },
+    toClient: (windowId, point) => {
+      const bounds = liveWindow(windowId)?.getContentBounds();
+      return bounds && { x: point.x - bounds.x, y: point.y - bounds.y };
+    },
+    windowAt: (point) =>
+      windowAtPoint(
+        point,
+        [...windowsById]
+          .filter(([, win]) => !win.isDestroyed() && win.isVisible() && !win.isMinimized())
+          .map(([id, win]) => ({ id, bounds: win.getBounds() })),
+        focusOrder,
+      ),
+    openWindowAt: (point) => createWindow(undefined, undefined, undefined, point)?.webContents.id,
+    moveWindowTo: (windowId, point) => {
+      const win = liveWindow(windowId);
+      if (!win) return;
+      if (win.isMaximized()) win.unmaximize();
+      const { x, y, width, height } = atPointer(point, win.getBounds(), win);
+      win.setBounds({ x, y, width, height });
+      win.focus();
+    },
+    closeWindow: (windowId) => liveWindow(windowId)?.close(),
+    layoutOf: (windowId) => coordinator.windowOf(windowId),
+    send: (windowId, event) => bridge.sendTo(windowId, event),
+    sessionOf: (windowId, viewId) => bridge.sessionOf(windowId, viewId),
+    sessionState: async (sessionId) =>
+      (await port.request("session.list", {})).result.sessions.find((each) => each.id === sessionId)?.state,
+    isWriter: (windowId, viewId) => bridge.isWriter(windowId, viewId),
+    claimWriter: (windowId, viewId) => bridge.claimWriterFor(windowId, viewId),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms);
+      return () => clearTimeout(timer);
+    },
+    newId: () => randomUUID(),
+    log,
+  });
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
@@ -382,7 +459,13 @@ async function main(): Promise<void> {
     log,
   });
 
-  const createWindow = (width = 1000, height = 640, restored?: LayoutWindow): BrowserWindow | undefined => {
+  /** `at`: a window for a tab or pane dropped beside every window opens with its tab bar under the pointer (#68). */
+  const createWindow = (
+    width = 1000,
+    height = 640,
+    restored?: LayoutWindow,
+    at?: { x: number; y: number },
+  ): BrowserWindow | undefined => {
     // The layout document holds at most this many windows, windows that stay in it included; a further one could
     // never be saved.
     if (coordinator.size() >= MAX_LAYOUT_WINDOWS) {
@@ -390,10 +473,11 @@ async function main(): Promise<void> {
       return undefined;
     }
     // A saved position that no screen shows any more would open a window nobody can reach.
+    const wanted = restored?.bounds ?? (at && atPointer(at, { width, height }));
     const fitted =
-      restored?.bounds &&
+      wanted &&
       fitBounds(
-        restored.bounds,
+        wanted,
         screen.getAllDisplays().map((display) => display.workArea),
         screen.getPrimaryDisplay().workArea,
       );
@@ -420,6 +504,13 @@ async function main(): Promise<void> {
     });
     const contents = win.webContents;
     const id = contents.id;
+    windowsById.set(id, win);
+    focusOrder.unshift(id);
+    win.on("focus", () => {
+      const index = focusOrder.indexOf(id);
+      if (index >= 0) focusOrder.splice(index, 1);
+      focusOrder.unshift(id);
+    });
     bridge.addWindow({
       id,
       send: (event) => void (!contents.isDestroyed() && contents.send(EVENT_CHANNEL, event)),
@@ -434,16 +525,22 @@ async function main(): Promise<void> {
       if (details.isMainFrame && !details.isSameDocument) {
         void bridge.resetWindow(id);
         quitPrompt.windowGone(id); // a reloaded page has lost the open quit dialog
+        transfers.windowGone(id, true); // and its moves between windows (#68)
       }
     });
     contents.on("render-process-gone", (_event, details) => {
       log(`render-process-gone: window ${id}, reason ${details.reason}, exit code ${details.exitCode}`);
       void bridge.resetWindow(id);
       quitPrompt.windowGone(id);
+      transfers.windowGone(id, true);
     });
     contents.on("destroyed", () => void bridge.removeWindow(id));
     win.on("closed", () => {
       quitPrompt.windowGone(id);
+      transfers.windowGone(id);
+      windowsById.delete(id);
+      const index = focusOrder.indexOf(id);
+      if (index >= 0) focusOrder.splice(index, 1);
       void bridge.removeWindow(id);
     });
 
@@ -541,6 +638,7 @@ async function main(): Promise<void> {
         if (!win) throw new Error("Too many windows");
         return win;
       },
+      allWindows: () => BrowserWindow.getAllWindows(),
       closeAllWindows,
       // Like a restart of the UI: save, drop all state of this process's layout, read it back from the core.
       restartUi: async () => {

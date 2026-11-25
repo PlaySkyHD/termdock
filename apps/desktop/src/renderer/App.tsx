@@ -2,7 +2,10 @@
 // (ADR 0006). All tabs of the window stay mounted and attached; the inactive ones are only hidden.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { LaunchSpec, SessionId } from "@termdock/protocol";
-import type { TermdockApi } from "../shared/bridge.js";
+import type { TermdockApi, TransferItem } from "../shared/bridge.js";
+import { IncomingMoves, isTransferEvent, TransferInbox } from "./incoming-moves.js";
+import { OutgoingMoves } from "./outgoing-moves.js";
+import { INCOMING_KIND, incomingPayload, incomingTarget } from "./window-transfer.js";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   canRun,
@@ -13,7 +16,7 @@ import {
   startProjectSession,
 } from "./commands.js";
 import { ContextMenu } from "./ContextMenu.js";
-import { DragProvider, useDropHandler } from "./drag/DragProvider.js";
+import { DragProvider, useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import { dropSource, dropTarget } from "./layout-drop.js";
 import { paneMenu, sessionPlaceEntries, tabMenu } from "./layout-menus.js";
@@ -57,6 +60,39 @@ export function App({ api }: { api: TermdockApi }) {
   const [loadError, setLoadError] = useState<string>();
   // The window of the main process (restored layout, #29) is in the store; until then the page shows nothing.
   const [restored, setRestored] = useState(false);
+
+  // Moves between windows (#68). The events wait in the inbox until the drop targets are shown: a new window gets
+  // its item right after it asked for its layout. This effect runs before the layout sync asks.
+  const inbox = useMemo(() => new TransferInbox(), []);
+  useEffect(
+    () =>
+      api.onEvent((event) => {
+        if (isTransferEvent(event)) inbox.push(event);
+      }),
+    [api, inbox],
+  );
+  const incoming = useMemo(
+    () =>
+      new IncomingMoves({
+        store,
+        answer: (transferId, views) =>
+          void api.transferAttached(transferId, views).catch((error: unknown) => console.error(error)),
+      }),
+    [store, api],
+  );
+  useEffect(() => () => incoming.dispose(), [incoming]);
+  // A tab or pane of this window dragged beyond its edge: the main process shows it elsewhere and takes it over.
+  const outside = useMemo(
+    () =>
+      new OutgoingMoves({
+        window: () => store.getState().window,
+        viewOf: (paneId) => controllers.current.get(paneId)?.attachedView(),
+        api,
+      }),
+    [api, store],
+  );
+  /** The item of another window over this one or dropped on it; the drop rules read it (#68). */
+  const incomingItem = useRef<TransferItem>(undefined);
 
   useEffect(() => {
     const connection = connectStore(store, api, setLoadError);
@@ -366,8 +402,9 @@ export function App({ api }: { api: TermdockApi }) {
   if (!restored) return <div className="app app--loading" data-view="restoring" />;
 
   return (
-    <DragProvider>
-      <LayoutDropRules store={store} onMove={arrange} />
+    <DragProvider outside={outside}>
+      <LayoutDropRules store={store} onMove={arrange} incomingItem={() => incomingItem.current} />
+      <TransferRules inbox={inbox} store={store} incoming={incoming} incomingItem={incomingItem} />
       <div className={`app${sidebarVisible ? "" : " app--sidebar-hidden"}`}>
         {sidebarVisible && (
           <Sidebar
@@ -457,6 +494,7 @@ export function App({ api }: { api: TermdockApi }) {
               }}
               coreGeneration={state.coreGeneration}
               onRestartCore={restartCore}
+              onPaneSettled={(paneId, outcome) => incoming.settle(paneId, outcome)}
             />
             {coreRestartedShown && (
               <div className="core-toast" role="status" data-hint="core-restarted">
@@ -542,9 +580,12 @@ export function App({ api }: { api: TermdockApi }) {
 function LayoutDropRules({
   store,
   onMove,
+  incomingItem,
 }: {
   store: UiStore;
   onMove: (source: MoveSource, target: MoveTarget) => void;
+  /** The item of another window over this one (#68); its drop comes from the main process, not the pointer. */
+  incomingItem: () => TransferItem | undefined;
 }) {
   const resolve = (payload: DragPayload, targetId: string) => {
     const source = dropSource(payload);
@@ -553,6 +594,11 @@ function LayoutDropRules({
   };
   useDropHandler({
     accepts: (payload, targetId) => {
+      if (payload.kind === INCOMING_KIND) {
+        const item = incomingItem();
+        const target = dropTarget(store.getState().window, targetId);
+        return item !== undefined && target !== undefined && store.canReceive(item, target);
+      }
       const move = resolve(payload, targetId);
       return move !== undefined && store.canMove(move.source, move.target);
     },
@@ -561,6 +607,60 @@ function LayoutDropRules({
       if (move) onMove(move.source, move.target);
     },
   });
+  return null;
+}
+
+/**
+ * The events of moves between windows (#68), inside the window's `DragProvider`: another window's drag over this
+ * one shows like a drag of its own, its drop puts the item in (`IncomingMoves`), and an item that went elsewhere
+ * leaves this window.
+ */
+function TransferRules({
+  inbox,
+  store,
+  incoming,
+  incomingItem,
+}: {
+  inbox: TransferInbox;
+  store: UiStore;
+  incoming: IncomingMoves;
+  incomingItem: { current: TransferItem | undefined };
+}) {
+  const { external } = useDrag();
+  useEffect(
+    () =>
+      inbox.listen((event) => {
+        const { sessions, window } = store.getState();
+        switch (event.kind) {
+          case "transferHover":
+            incomingItem.current = event.hover?.item;
+            if (event.hover)
+              external.hover(incomingPayload(event.hover.item, sessions), event.hover.x, event.hover.y);
+            else external.leave();
+            return;
+          case "transferIn": {
+            external.leave();
+            incomingItem.current = event.item;
+            const payload = incomingPayload(event.item, sessions);
+            const targetId = event.at && external.targetAt(payload, event.at.x, event.at.y);
+            incomingItem.current = undefined;
+            incoming.receive(
+              event.transferId,
+              event.item,
+              incomingTarget(window, event.at !== undefined, targetId),
+            );
+            return;
+          }
+          case "transferCancel":
+            incoming.cancel(event.transferId);
+            return;
+          case "transferOut":
+            store.takeOut(event.source);
+            return;
+        }
+      }),
+    [inbox, store, incoming, incomingItem, external],
+  );
   return null;
 }
 

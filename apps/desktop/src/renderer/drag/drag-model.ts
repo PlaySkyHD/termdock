@@ -28,6 +28,8 @@ export type DragState =
       valid: readonly string[];
       /** The valid target under the pointer, highlighted additionally. */
       over: string | undefined;
+      /** The pointer is outside the window (#68): the main process shows the drag in the window under it. */
+      outside?: true;
     }
   /** Aborted with Esc: nothing is highlighted, the release that ends the gesture does nothing. */
   | { phase: "aborted" };
@@ -37,8 +39,8 @@ export const IDLE: DragState = { phase: "idle" };
 /** What the DOM tells the machine. `over` is the id of the drop target under the pointer, valid or not. */
 export type DragEvent =
   | { type: "press"; payload: DragPayload; x: number; y: number }
-  | { type: "move"; x: number; y: number; over: string | undefined }
-  | { type: "release"; x: number; y: number; over: string | undefined }
+  | { type: "move"; x: number; y: number; over: string | undefined; outside?: boolean }
+  | { type: "release"; x: number; y: number; over: string | undefined; outside?: boolean }
   /** Esc: aborts a drag, drops a press. */
   | { type: "escape" }
   /** The pointer is gone (`pointercancel`, `blur`): ends everything at once. */
@@ -49,11 +51,15 @@ export interface DragEnvironment {
   /** Ids of all drop targets that exist now. */
   targets(): readonly string[];
   accepts(payload: DragPayload, targetId: string): boolean;
+  /** Whether the payload may leave the window (a tab or a pane, #68); without it nothing leaves. */
+  leaves?(payload: DragPayload): boolean;
 }
 
 export type DragEffect =
   /** Released over a valid target: do it. */
   | { kind: "drop"; payload: DragPayload; targetId: string }
+  /** Released outside the window with a payload that may leave it: the main process takes over (#68). */
+  | { kind: "outside"; payload: DragPayload; x: number; y: number }
   /** A drag ended without a drop (Esc, released elsewhere or over an invalid target, pointer lost). */
   | { kind: "cancel" };
 
@@ -74,14 +80,19 @@ export function step(state: DragState, event: DragEvent, env: DragEnvironment): 
         if (Math.hypot(event.x - state.startX, event.y - state.startY) < DRAG_THRESHOLD_PX)
           return stay(state);
         const valid = env.targets().filter((id) => env.accepts(state.payload, id));
-        return stay(dragging(state.payload, event.x, event.y, event.over, valid));
+        return stay(dragging(state.payload, event.x, event.y, event.over, valid, event.outside));
       }
       if (state.phase === "dragging")
-        return stay(dragging(state.payload, event.x, event.y, event.over, state.valid));
+        return stay(dragging(state.payload, event.x, event.y, event.over, state.valid, event.outside));
       return stay(state);
     }
     case "release": {
       if (state.phase === "dragging") {
+        if (event.outside === true && env.leaves?.(state.payload) === true)
+          return {
+            state: IDLE,
+            effect: { kind: "outside", payload: state.payload, x: event.x, y: event.y },
+          };
         const over = event.over;
         // The target is judged again at the release: the sidebar may have changed while the pointer moved.
         if (over !== undefined && env.accepts(state.payload, over))
@@ -105,6 +116,7 @@ function dragging(
   y: number,
   over: string | undefined,
   valid: readonly string[],
+  outside = false,
 ): DragState {
   return {
     phase: "dragging",
@@ -112,7 +124,8 @@ function dragging(
     x,
     y,
     valid,
-    over: over !== undefined && valid.includes(over) ? over : undefined,
+    over: !outside && over !== undefined && valid.includes(over) ? over : undefined,
+    ...(outside ? { outside: true as const } : {}),
   };
 }
 

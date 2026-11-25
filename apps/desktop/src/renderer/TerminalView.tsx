@@ -114,6 +114,8 @@ export interface TerminalViewProps {
   onRestartCore?: () => void;
   /** The snapshot is the core's raw output (Windows session, #65); read when the view attaches. */
   rawSnapshot?: boolean;
+  /** The attach ended, with the view or failed (a move from another window waits for it, #68). */
+  onAttached?: (outcome: { viewId?: string; failed?: boolean }) => void;
 }
 
 export function TerminalView({
@@ -128,6 +130,7 @@ export function TerminalView({
   claimOnOpen = false,
   onRestartCore,
   rawSnapshot = false,
+  onAttached,
 }: TerminalViewProps) {
   const rawNow = useRef(rawSnapshot);
   rawNow.current = rawSnapshot;
@@ -136,8 +139,8 @@ export function TerminalView({
   const terminal = useRef<Terminal>(undefined);
   const controller = useRef<TerminalController>(undefined);
   // The callbacks of the parent change on every render; the view must not attach again for that.
-  const callbacks = useRef({ onStatus, onController, commands });
-  callbacks.current = { onStatus, onController, commands };
+  const callbacks = useRef({ onStatus, onController, commands, onAttached });
+  callbacks.current = { onStatus, onController, commands, onAttached };
   const activeNow = useRef(active);
   activeNow.current = active;
   const claimNow = useRef(claimOnOpen);
@@ -174,6 +177,7 @@ export function TerminalView({
         // Only one window has the focus, and in it only one pane is active: one writer per session (#130).
         claimOnOpen: () => claim && activeNow.current && document.hasFocus(),
         rawSnapshot: rawNow.current,
+        onAttached: (outcome) => callbacks.current.onAttached?.(outcome),
       },
     );
     controller.current = current;

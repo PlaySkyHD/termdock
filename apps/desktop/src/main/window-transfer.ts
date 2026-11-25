@@ -11,7 +11,7 @@ import type {
   TransferSource,
   TransferPane,
 } from "../shared/bridge.js";
-import type { LayoutWindow } from "@termdock/protocol";
+import type { LayoutWindow, SessionState } from "@termdock/protocol";
 
 /** A point on the screen in DIP, as Electron gives window bounds. */
 export interface ScreenPoint {
@@ -39,6 +39,8 @@ export interface TransferHost {
   send(windowId: number, event: BridgeEvent): boolean;
   /** The session of a view of the window; undefined for a view the window does not have (any more). */
   sessionOf(windowId: number, viewId: string): string | undefined;
+  /** The state of a session as the core has it now (`session.list`); undefined when the core has no such session. */
+  sessionState(sessionId: string): Promise<SessionState | undefined>;
   /** Whether the view belongs to the window and is the writer of its session right now. */
   isWriter(windowId: number, viewId: string): boolean;
   /** `session.claimWriter` for a view of the window; rejects for a view of another window. */
@@ -168,8 +170,19 @@ export class WindowTransfers {
         const session = this.host.sessionOf(transfer.source, viewId);
         if (session === undefined) throw new Error(`the source's view ${viewId} is gone`);
         if (!successor) throw new Error(`no answer for pane ${paneId}`);
-        // A placeholder: the session ended and runs nothing that could write; the old view just goes.
-        if (successor.viewId === undefined) continue;
+        // A placeholder: the target counts only a session that ended (`Exited`, `Archived`) or is gone as one. The
+        // answer is not taken on trust for a writer: `Starting` and `Interrupted` can run again and keep views and
+        // writer (#164), so the core's state decides; anything else cancels (review PR #190).
+        if (successor.viewId === undefined) {
+          if (this.host.isWriter(transfer.source, viewId)) {
+            const state = await this.host.sessionState(session);
+            if (state !== undefined && state !== "Exited" && state !== "Archived")
+              throw new Error(
+                `pane ${paneId} shows no view, but its session is ${state} and keeps its writer`,
+              );
+          }
+          continue;
+        }
         if (this.host.sessionOf(transfer.target, successor.viewId) !== session)
           throw new Error(
             `view ${successor.viewId} of the target does not show the session of pane ${paneId}`,

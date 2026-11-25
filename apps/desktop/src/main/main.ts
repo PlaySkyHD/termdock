@@ -380,6 +380,8 @@ async function main(): Promise<void> {
     layoutOf: (windowId) => coordinator.windowOf(windowId),
     send: (windowId, event) => bridge.sendTo(windowId, event),
     sessionOf: (windowId, viewId) => bridge.sessionOf(windowId, viewId),
+    sessionState: async (sessionId) =>
+      (await port.request("session.list", {})).result.sessions.find((each) => each.id === sessionId)?.state,
     isWriter: (windowId, viewId) => bridge.isWriter(windowId, viewId),
     claimWriter: (windowId, viewId) => bridge.claimWriterFor(windowId, viewId),
     schedule: (run, ms) => {

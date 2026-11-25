@@ -26,6 +26,7 @@ import { isAttachable, rawSnapshot, warningTexts } from "./session-display.js";
 import type { WarningText } from "./session-display.js";
 import type { TerminalController, ViewRole, ViewStatus } from "./terminal-controller.js";
 import { TerminalView } from "./TerminalView.js";
+import { settlesWithoutView } from "./window-transfer.js";
 import type { PaneOutcome } from "./window-transfer.js";
 import { MIN_SHARE } from "./ui-store.js";
 
@@ -424,11 +425,12 @@ function PaneView({
   }, [attachable]);
   const settled = useRef(onSettled);
   settled.current = onSettled;
-  // A placeholder has no view to wait for: a move into this window counts the pane as done (#68).
-  const placeholder = !attachable && !attached && paneContent(session, sessionsLoaded).kind === "placeholder";
+  // A move into this window (#68) counts a pane without a view as done only for a session that ended for good or is
+  // gone (`settlesWithoutView`); `Starting` and `Interrupted` wait for the attach.
+  const doneWithoutView = !attachable && !attached && settlesWithoutView(session, sessionsLoaded);
   useEffect(() => {
-    if (placeholder) settled.current({});
-  }, [placeholder]);
+    if (doneWithoutView) settled.current({});
+  }, [doneWithoutView]);
   // A refusal stays until the next click or until the session lives again (#164): a failed restart changes the state
   // itself (Starting, Interrupted), and a restart that worked replaces the placeholder with the view (review PR #156).
   const [restartStatus, setRestartStatus] = useState<RestartStatus>(RESTART_IDLE);

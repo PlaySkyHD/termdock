@@ -2064,6 +2064,12 @@ Beim Ziehen zwischen Fenstern SHALL die View das Fenster wechseln und ihre Rolle
 - **WHEN** der Benutzer den Tab neben alle Fenster zieht
 - **THEN** zeigt das neue Fenster den Platzhalter von `s1`, der Main sendet kein `session.claimWriter`, und A gibt den Tab ab
 
+#### Scenario: Session startet gerade
+
+- **GIVEN** in A schreibt die View `v1` von `s1`, `s1` ist nach „Neu starten“ im Zustand `Starting`
+- **WHEN** der Benutzer den Tab in B ablegt
+- **THEN** wartet B, bis seine View angehängt ist, bevor es antwortet; meldet es trotzdem einen Platzhalter, prüft der Main den Zustand beim Core, bricht ab, und `v1` bleibt Schreiber
+
 #### Scenario: Core-Neustart während der Übergabe
 
 - **GIVEN** eine Übergabe an B läuft

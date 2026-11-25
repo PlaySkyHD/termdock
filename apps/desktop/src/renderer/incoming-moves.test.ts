@@ -79,6 +79,19 @@ describe("IncomingMoves (#68)", () => {
     expect(answers).toEqual([["t1", [{ paneId: "a" }, { paneId: "b" }]]]);
   });
 
+  it("keeps waiting for a pane whose session starts or was interrupted, until the main process cancels (review PR #190)", () => {
+    const { moves, answers, newPanes, sessions } = setup();
+    moves.receive("t1", item, { kind: "tabBar" });
+    const panes = newPanes();
+    // Drag A attached; Drag B is `Starting`: its pane shows a placeholder but does not settle (settlesWithoutView).
+    moves.settle(panes["a"]!, { viewId: "w1" });
+
+    expect(answers).toEqual([]);
+    moves.cancel("t1");
+    expect(sessions()).toEqual(["s0"]);
+    expect(answers).toEqual([]);
+  });
+
   it("refuses at once without a valid target, and changes nothing", () => {
     const { moves, answers, sessions } = setup();
     moves.receive("t1", item, undefined);

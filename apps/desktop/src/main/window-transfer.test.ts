@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LayoutWindow } from "@termdock/protocol";
+import type { LayoutWindow, SessionState } from "@termdock/protocol";
 import type { BridgeEvent, ClientPoint, TransferItem } from "../shared/bridge.js";
 import { holdsOnly, TRANSFER_TIMEOUT_MS, WindowTransfers } from "./window-transfer.js";
 import type { ScreenPoint, TransferHost } from "./window-transfer.js";
@@ -41,6 +41,9 @@ class FakeHost {
   limit = false;
   /** The layouts the windows reported last. */
   layouts = new Map<number, LayoutWindow>();
+  /** Session states as the core has them; a session without one is unknown to the core. */
+  states = new Map<string, SessionState>();
+  stateQueries: string[] = [];
 
   toScreen(windowId: number, point: ClientPoint): ScreenPoint | undefined {
     const win = this.windows.find((each) => each.id === windowId);
@@ -124,6 +127,10 @@ function bind(host: FakeHost): TransferHost {
     layoutOf: (id) => host.layouts.get(id),
     send: (id, event) => host.send(id, event),
     sessionOf: (id, viewId) => (host.owners.get(viewId) === id ? host.sessionOf.get(viewId) : undefined),
+    sessionState: async (sessionId) => {
+      host.stateQueries.push(sessionId);
+      return host.states.get(sessionId);
+    },
     isWriter: (id, viewId) => host.isWriter(id, viewId),
     claimWriter: (id, viewId) => host.claimWriter(id, viewId),
     schedule: (run, ms) => host.schedule(run, ms),
@@ -285,12 +292,41 @@ describe("WindowTransfers: handover to another window", () => {
 
   it("moves the pane of an ended session, which the target shows as a placeholder, without a claim (review PR #190)", async () => {
     const { host, transfers } = setup();
+    host.states.set("s1", "Exited");
     transfers.drop(1, paneItem, outside, false);
     transfers.ready(10);
     await transfers.attached(10, "t1", [{ paneId: "a" }]);
 
     // The new window stays and the source lets its view go: no process is left that could write.
     expect(host.log).toEqual(["open 10 at 1500,300", "transferIn → 10", "transferOut → 1"]);
+    expect(host.stateQueries).toEqual(["s1"]);
+  });
+
+  it.each(["Starting", "Interrupted", "Running"] as const)(
+    "does not take a placeholder on trust for a writer whose session is %s: cancels, the writer stays (review PR #190)",
+    async (state) => {
+      const { host, transfers } = setup();
+      host.states.set("s1", state);
+      transfers.drop(1, paneItem, overTwo, false);
+      await transfers.attached(2, "t1", [{ paneId: "a" }]);
+
+      expect(host.log).toEqual(["transferIn → 2", "transferCancel → 2"]);
+      expect(host.writers.get("s1")).toBe("v1");
+    },
+  );
+
+  it("moves a reading view shown as a placeholder without asking the core", async () => {
+    const { host, transfers } = setup();
+    const readerItem: TransferItem = {
+      kind: "pane",
+      pane: { kind: "pane", id: "b", sessionId: "s2" },
+      views: [{ paneId: "b", viewId: "v2" }],
+    };
+    transfers.drop(1, readerItem, overTwo, false);
+    await transfers.attached(2, "t1", [{ paneId: "b" }]);
+
+    expect(host.log).toEqual(["transferIn → 2", "transferOut → 1"]);
+    expect(host.stateQueries).toEqual([]);
   });
 
   it("cancels when the bridge no longer knows a view of the source, e.g. after a restart of the core (review PR #190)", async () => {

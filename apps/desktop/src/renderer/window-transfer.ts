@@ -181,6 +181,20 @@ export function applyIncoming(
   return { window: moved, panes };
 }
 
+/**
+ * Whether a pane that shows no view counts as done for a move into this window: only when its session can never
+ * write again without a new start by the user (`Exited`, `Archived`) or is gone. `Starting` and `Interrupted` (a
+ * living tmux session is bound again, #164) wait for the attach, or for the time limit of the main process; counting
+ * them early would let the source drop a writer that has a process again (review PR #190).
+ */
+export function settlesWithoutView(
+  session: Pick<SessionInfo, "state"> | undefined,
+  sessionsLoaded: boolean,
+): boolean {
+  if (session === undefined) return sessionsLoaded;
+  return session.state === "Exited" || session.state === "Archived";
+}
+
 /** How an incoming pane ended: attached with its view, a placeholder without one, or failed to attach. */
 export interface PaneOutcome {
   viewId?: ViewId;

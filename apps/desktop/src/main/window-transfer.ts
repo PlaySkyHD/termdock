@@ -60,8 +60,15 @@ interface Transfer {
   created: boolean;
   /** The target has not loaded its layout yet; `transferIn` waits for it. */
   waiting: boolean;
+  /** The target has answered; the writers are being handed over. */
+  handing?: boolean;
+  /** Why the handover has to stop (a window or the core went away during it). */
+  gone?: string;
   stopTimer: () => void;
 }
+
+/** End states a session leaves only by a new start of the user (ADR 0005). */
+const ENDED: readonly SessionState[] = ["Exited", "Interrupted", "Archived"];
 
 export class WindowTransfers {
   private readonly transfers = new Map<string, Transfer>();
@@ -155,28 +162,37 @@ export class WindowTransfers {
     views: readonly TransferPane[] | undefined,
   ): Promise<void> {
     const transfer = this.transfers.get(transferId);
-    if (!transfer || transfer.target !== windowId || transfer.waiting) return;
-    this.forget(transfer);
+    if (!transfer || transfer.target !== windowId || transfer.waiting || transfer.handing) return;
     if (views === undefined) {
+      this.forget(transfer);
       if (transfer.created) this.host.closeWindow(transfer.target);
       return;
     }
+    // The move stays known while the writers move: a window that closes or reloads, or the end of the core
+    // connection, during one of the awaits below marks it (`gone`), and it stops at the next step (review PR #190).
+    transfer.stopTimer();
+    transfer.handing = true;
+    const stillThere = (): void => {
+      if (transfer.gone !== undefined) throw new Error(transfer.gone);
+    };
     const claimed: string[] = [];
     for (const { paneId, viewId } of transfer.item.views) {
       const successor = views.find((view) => view.paneId === paneId);
       try {
+        stillThere();
         // The bridge forgot the view (a restart of the core, the session archived): its role is unknown, so
         // nothing may be handed over or detached on the strength of it (review PR #190).
         const session = this.host.sessionOf(transfer.source, viewId);
         if (session === undefined) throw new Error(`the source's view ${viewId} is gone`);
         if (!successor) throw new Error(`no answer for pane ${paneId}`);
-        // A placeholder: the target counts only a session that ended (`Exited`, `Archived`) or is gone as one. The
-        // answer is not taken on trust for a writer: `Starting` and `Interrupted` can run again and keep views and
-        // writer (#164), so the core's state decides; anything else cancels (review PR #190).
+        // A placeholder: the target counts only a session in an end state (`Exited`, `Interrupted`, `Archived`,
+        // ADR 0005) or one that is gone as one. For a writer the answer is not taken on trust: `Starting` runs a
+        // process at once and keeps views and writer, so the core's state decides; anything else cancels.
         if (successor.viewId === undefined) {
           if (this.host.isWriter(transfer.source, viewId)) {
             const state = await this.host.sessionState(session);
-            if (state !== undefined && state !== "Exited" && state !== "Archived")
+            stillThere();
+            if (state !== undefined && !ENDED.includes(state))
               throw new Error(
                 `pane ${paneId} shows no view, but its session is ${state} and keeps its writer`,
               );
@@ -190,6 +206,7 @@ export class WindowTransfers {
         if (!this.host.isWriter(transfer.source, viewId)) continue;
         await this.host.claimWriter(transfer.target, successor.viewId);
         claimed.push(viewId);
+        stillThere();
       } catch (error) {
         // Back to the source's views, so it keeps every role it had.
         for (const back of claimed)
@@ -200,6 +217,7 @@ export class WindowTransfers {
         return;
       }
     }
+    this.forget(transfer);
     // Judged now, not at the drop: the window may have got more tabs while the target attached.
     const source = sourceOf(transfer.item);
     if (holdsOnly(this.host.layoutOf(transfer.source), source)) this.host.closeWindow(transfer.source);
@@ -211,7 +229,7 @@ export class WindowTransfers {
    * attach new ones. Every move stops; the target takes out what it put in.
    */
   coreClosed(): void {
-    for (const transfer of [...this.transfers.values()]) this.cancel(transfer, "the core connection ended");
+    for (const transfer of [...this.transfers.values()]) this.stop(transfer, "the core connection ended");
   }
 
   /**
@@ -223,9 +241,18 @@ export class WindowTransfers {
     for (const [source, target] of this.hovers) if (target === windowId) this.hovers.delete(source);
     for (const transfer of [...this.transfers.values()]) {
       if (transfer.target === windowId && reloaded && transfer.waiting) continue;
-      if (transfer.target === windowId) this.forget(transfer);
+      if (transfer.handing) {
+        if (transfer.target === windowId || transfer.source === windowId)
+          transfer.gone ??= `window ${windowId} closed or reloaded during the handover`;
+      } else if (transfer.target === windowId) this.forget(transfer);
       else if (transfer.source === windowId) this.cancel(transfer, "the source window closed");
     }
+  }
+
+  /** Cancels a move, or marks it for its handover to stop at its next step. */
+  private stop(transfer: Transfer, reason: string): void {
+    if (transfer.handing) transfer.gone ??= reason;
+    else this.cancel(transfer, reason);
   }
 
   private inFlight(source: number, item: TransferItem): boolean {

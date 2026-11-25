@@ -234,15 +234,17 @@ describe("applyIncoming", () => {
 });
 
 describe("settlesWithoutView (review PR #190)", () => {
-  it("counts a pane without a view as done only for an ended, archived or missing session", () => {
+  it("counts a pane without a view as done for an exited, interrupted, archived or missing session", () => {
     expect(settlesWithoutView({ state: "Exited" }, true)).toBe(true);
+    // An end state (ADR 0005): a Windows shell after a restart of the core never attaches again by itself.
+    expect(settlesWithoutView({ state: "Interrupted" }, true)).toBe(true);
     expect(settlesWithoutView({ state: "Archived" }, true)).toBe(true);
     expect(settlesWithoutView(undefined, true)).toBe(true);
   });
 
-  it("waits for the attach of a session that starts or may be bound again, and while the sessions load", () => {
+  it("waits for the attach of a session that starts, of a living one, and while the sessions load", () => {
     expect(settlesWithoutView({ state: "Starting" }, true)).toBe(false);
-    expect(settlesWithoutView({ state: "Interrupted" }, true)).toBe(false);
+    expect(settlesWithoutView({ state: "Running" }, true)).toBe(false);
     expect(settlesWithoutView(undefined, false)).toBe(false);
   });
 });

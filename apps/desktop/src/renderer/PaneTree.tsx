@@ -426,7 +426,7 @@ function PaneView({
   const settled = useRef(onSettled);
   settled.current = onSettled;
   // A move into this window (#68) counts a pane without a view as done only for a session that ended for good or is
-  // gone (`settlesWithoutView`); `Starting` and `Interrupted` wait for the attach.
+  // gone (`settlesWithoutView`: `Exited`, `Interrupted`, `Archived`, missing); `Starting` waits for the attach.
   const doneWithoutView = !attachable && !attached && settlesWithoutView(session, sessionsLoaded);
   useEffect(() => {
     if (doneWithoutView) settled.current({});

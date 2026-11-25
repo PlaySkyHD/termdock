@@ -3,7 +3,14 @@
 // new ids by the rules of `applyMove` (`applyIncoming`), waits until every pane it put in has attached
 // (`settleIncoming`) and takes them out again when the move is cancelled (`withoutIncoming`). The handover of the
 // writer is the main process's (`main/window-transfer.ts`). Free of DOM and React.
-import type { LayoutTab, LayoutWindow, PaneNode, SessionInfo, ViewId } from "@termdock/protocol";
+import type {
+  LayoutTab,
+  LayoutWindow,
+  PaneNode,
+  SessionInfo,
+  SessionState,
+  ViewId,
+} from "@termdock/protocol";
 import type { TransferItem, TransferPane, TransferSource, TransferView } from "../shared/bridge.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import { dropTarget, PANE_KIND, TAB_KIND } from "./layout-drop.js";
@@ -181,18 +188,22 @@ export function applyIncoming(
   return { window: moved, panes };
 }
 
+/** States a session leaves only by a new start of the user (ADR 0005). */
+const ENDED: readonly SessionState[] = ["Exited", "Interrupted", "Archived"];
+
 /**
- * Whether a pane that shows no view counts as done for a move into this window: only when its session can never
- * write again without a new start by the user (`Exited`, `Archived`) or is gone. `Starting` and `Interrupted` (a
- * living tmux session is bound again, #164) wait for the attach, or for the time limit of the main process; counting
- * them early would let the source drop a writer that has a process again (review PR #190).
+ * Whether a pane that shows no view counts as done for a move into this window: when its session can never write
+ * again without a new start by the user or is gone. `Exited`, `Interrupted` (an end state: the core binds a living
+ * tmux session again without leaving its state and sets `Interrupted` only when that failed for good; only "Neu
+ * starten" leaves it, ADR 0005) and `Archived`. Only `Starting` waits for the attach or the time limit of the main
+ * process: a process runs at once, and counting it early would let the source drop a writer (review PR #190).
  */
 export function settlesWithoutView(
   session: Pick<SessionInfo, "state"> | undefined,
   sessionsLoaded: boolean,
 ): boolean {
   if (session === undefined) return sessionsLoaded;
-  return session.state === "Exited" || session.state === "Archived";
+  return ENDED.includes(session.state);
 }
 
 /** How an incoming pane ended: attached with its view, a placeholder without one, or failed to attach. */

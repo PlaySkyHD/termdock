@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BrowserWindow } from "electron";
 import { describeError } from "./screenshot.js";
+import { READ_VISIBLE_ROWS, waitNoPromptLeak } from "./screenshot-prompt.js";
 import { assertVisible } from "./screenshot-visible.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -59,7 +60,8 @@ export async function paintedFrame(win: PaintableWindow): Promise<void> {
 
 /**
  * Writes a PNG of the window; with `visible` the run fails first when that element is not fully visible (#116). Waits
- * for painted frames first, so the PNG is not an old frame of a covered window (#162).
+ * for painted frames first, so the PNG is not an old frame of a covered window (#162). Fails when a terminal in the
+ * window shows user or host name in its prompt (#191).
  */
 export async function captureWindow(
   win: BrowserWindow,
@@ -75,6 +77,10 @@ export async function captureWindow(
       name,
       options.visible,
     );
+  await waitNoPromptLeak(
+    name,
+    () => win.webContents.executeJavaScript(READ_VISIBLE_ROWS, true) as Promise<string[]>,
+  );
   const file = path.join(dir, name);
   writeFileSync(file, (await capturePageWithRetry(win)).toPNG());
   console.log(file);

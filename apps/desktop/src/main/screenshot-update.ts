@@ -10,6 +10,7 @@ import { countActiveWindows } from "../shared/quit-decision.js";
 import { updateSessionsNote } from "../shared/update-decision.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import { pageDriver } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 
 const DIALOG = '[data-dialog="update"]';
 const NOTE = `${DIALOG} [data-update="sessions"]`;
@@ -57,7 +58,7 @@ export async function updateScenes(deps: ScenarioDeps): Promise<void> {
   // A short prompt without user and host name.
   const [viewId] = bridge.viewsOf(windowId);
   if (viewId === undefined) throw new Error("Linux has no view");
-  const input = await bridge.call(windowId, { method: "input", viewId, data: "PS1='$ '; clear\r" });
+  const input = await bridge.call(windowId, { method: "input", viewId, data: NEUTRAL_PROMPT });
   if (!input.ok) throw new Error(`input: ${input.error.message}`);
   await waitFor(
     `[...document.querySelectorAll('${WRITER} .xterm-rows > div')].some((row) => row.textContent.trim() === "$")`,

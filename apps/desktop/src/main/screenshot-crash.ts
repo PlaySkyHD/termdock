@@ -9,6 +9,7 @@ import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import { pageDriver } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 
 const PANE = '.pane[data-tab-active="true"]';
 const WRITER = `${PANE} .terminal-pane[data-role="writer"]`;
@@ -67,7 +68,7 @@ export async function crashScenes(deps: ScenarioDeps): Promise<void> {
   const crashedView = await attachedIn(firstId, "the first window");
   await a.waitFor(`document.querySelector(${JSON.stringify(WRITER)})`, "the writer in the first window");
   await sleep(1_000); // snapshot and first fit
-  await bridge.call(firstId, { method: "input", viewId: crashedView, data: "PS1='$ '; clear\r" });
+  await bridge.call(firstId, { method: "input", viewId: crashedView, data: NEUTRAL_PROMPT });
   await sleep(600);
   await bridge.call(firstId, { method: "input", viewId: crashedView, data: "echo before-crash-$((6*7))\r" });
   await watch.quiet(800, 15_000);

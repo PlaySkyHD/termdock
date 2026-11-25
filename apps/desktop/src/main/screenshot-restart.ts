@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import { pageDriver } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 
 const PANE = '.pane[data-tab-active="true"]';
 const RESTARTING = `${PANE} [data-core="restarting"]`;
@@ -51,7 +52,7 @@ export async function restartScenes(deps: ScenarioDeps): Promise<void> {
   await click(`[data-session-name="Phoenix"]`);
   const before = await attached();
   await sleep(1_000); // snapshot and first fit
-  await type(before, "PS1='$ '; clear\r");
+  await type(before, NEUTRAL_PROMPT);
   await sleep(600);
   await type(before, "echo before-restart-$((6*7))\r");
   await watch.quiet(800, 15_000);

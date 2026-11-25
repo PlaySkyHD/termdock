@@ -6,6 +6,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
 import { captureWindow } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -72,7 +73,7 @@ export async function searchScenes(deps: ScenarioDeps): Promise<void> {
       const result = await bridge.call(windowId, { method: "input", viewId: viewId!, data });
       if (!result.ok) throw new Error(`input: ${result.error.message}`);
     };
-    await type("PS1='$ '; clear\r");
+    await type(NEUTRAL_PROMPT);
     await sleep(600);
     await type(`${command}\r`);
     await watch.quiet(800, 15_000);

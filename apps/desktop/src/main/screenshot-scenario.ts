@@ -12,7 +12,13 @@ import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import type { DesktopBridge } from "./bridge.js";
 import type { CorePort } from "./core-connection.js";
-import { describeError, runGroupsWithRetry, SCENE_GROUPS, SceneGroupError } from "./screenshot.js";
+import {
+  describeError,
+  groupStart,
+  runGroupsWithRetry,
+  SCENE_GROUPS,
+  SceneGroupError,
+} from "./screenshot.js";
 import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { crashScenes } from "./screenshot-crash.js";
 import { cwdScenes } from "./screenshot-cwd.js";
@@ -92,7 +98,8 @@ const NEEDS_SESSIONS: readonly SceneGroup[] = ["scenario", "sidebar", "restore",
 
 /**
  * Plays the scene `groups` (all by default) and repeats a failed group once (#127): the windows, sessions,
- * workspaces and profiles are cleared first, because every group builds its own state. Returns the repeated groups.
+ * workspaces and profiles are cleared first, because every group builds its own state; every group also starts
+ * without windows (`groupStart`), sessions of earlier groups stay. Returns the repeated groups.
  */
 export async function runScenario(
   deps: ScenarioDeps,
@@ -309,10 +316,13 @@ async function playGroups(
       await keymapScenes(deps, capture);
     }
   }
+  // Every group starts without windows (#192); the shared setup above has opened some already.
+  const beforeGroup = groupStart(() => deps.closeAllWindows(true), firstShared !== undefined);
   /** Marks the group, then plays it when it was asked for. */
   const play = async (group: SceneGroup, scenes: () => Promise<void>): Promise<void> => {
     if (!want(group)) return;
     mark(group);
+    await beforeGroup();
     await scenes();
   };
   await play("sidebar", () => sidebarScenes(deps));

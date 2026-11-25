@@ -56,6 +56,19 @@ export function screenshotScenes(argv: readonly string[]): readonly SceneGroup[]
 }
 
 /**
+ * Gate before each scene group (#192): every group after the first closes all windows (they also leave the
+ * layout), so it starts without the windows of its predecessors; sessions stay. `started`: windows of earlier work
+ * (the shared setup) are already open, so the first group closes them too.
+ */
+export function groupStart(closeWindows: () => Promise<void>, started = false): () => Promise<void> {
+  let first = !started;
+  return async () => {
+    if (!first) await closeWindows();
+    first = false;
+  };
+}
+
+/**
  * Readable text for anything that was thrown. A `DOMException` or a plain object that crossed
  * `executeJavaScript` is no `Error` here, and `String(...)` of it is `[object Object]`.
  */

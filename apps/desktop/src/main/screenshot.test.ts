@@ -14,7 +14,7 @@ import {
   wslSocketDeps,
 } from "./screenshot.js";
 import type { ExecFileFn, SceneGroup } from "./screenshot.js";
-import { describeError, runGroupsWithRetry, SceneGroupError } from "./screenshot.js";
+import { describeError, groupStart, runGroupsWithRetry, SceneGroupError } from "./screenshot.js";
 import {
   acquireScreenshotLock,
   nodeLockFs,
@@ -39,6 +39,29 @@ describe("describeError", () => {
     expect(describeError({ code: 3, detail: "x" })).toBe('{"code":3,"detail":"x"}');
     expect(describeError({})).toBe("non-Error object (Object)");
     expect(describeError(undefined)).toBe("undefined");
+  });
+});
+
+describe("groupStart", () => {
+  it("closes the windows before every group but the first", async () => {
+    const calls: string[] = [];
+    const gate = groupStart(async () => {
+      calls.push("close");
+    });
+    for (const group of ["scenario", "windows", "drag"]) {
+      await gate();
+      calls.push(group);
+    }
+    expect(calls).toEqual(["scenario", "close", "windows", "close", "drag"]);
+  });
+
+  it("closes before the first group when the shared setup has opened windows", async () => {
+    let closed = 0;
+    const gate = groupStart(async () => {
+      closed++;
+    }, true);
+    await gate();
+    expect(closed).toBe(1);
   });
 });
 

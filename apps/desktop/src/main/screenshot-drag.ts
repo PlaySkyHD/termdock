@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import { pageDriver } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 import type { Point } from "./screenshot-page.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 
@@ -96,7 +97,7 @@ export async function dragScenes(deps: ScenarioDeps): Promise<void> {
     [a, sourceId, sd],
   ] as const) {
     const viewId = await attachedIn(windowId, session);
-    const input = await bridge.call(windowId, { method: "input", viewId, data: "PS1='$ '; clear\r" });
+    const input = await bridge.call(windowId, { method: "input", viewId, data: NEUTRAL_PROMPT });
     if (!input.ok) throw new Error(`input ${session.name}: ${input.error.message}`);
     await driver.waitFor(
       `[...document.querySelectorAll('.pane[data-session-id="${session.id}"] .xterm-rows > div')].some((row) => row.textContent.trim() === "$")`,

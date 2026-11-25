@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
 import { pageDriver } from "./screenshot-page.js";
+import { neutralPrompt } from "./screenshot-prompt.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 
 const tabSelector = (title: string): string => `.tab[data-tab-title=${JSON.stringify(title)}]`;
@@ -70,6 +71,8 @@ export async function tabScenes(deps: ScenarioDeps): Promise<void> {
     `document.querySelectorAll('${PANES} [data-role="writer"]').length === 1`,
     "the writer of Tab C",
   );
+  await sleep(800); // snapshot and first fit
+  for (const session of created) await neutralPrompt(bridge, windowId, session.id);
   await sleep(800);
   const viewsBefore = viewsBySession();
   const viewOf = (session: SessionInfo): string => viewsBefore.get(session.id)?.[0] ?? "none";

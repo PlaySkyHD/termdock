@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo } from "@termdock/protocol";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import { pageDriver } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 
 const sessionSelector = (name: string): string => `[data-session-name=${JSON.stringify(name)}]`;
 const HINT = '.pane[data-tab-active="true"] [data-hint="session-warnings"]';
@@ -67,7 +68,7 @@ export async function cwdScenes(deps: ScenarioDeps): Promise<void> {
   const expected = `Verzeichnis ${missing} fehlt in ${distro} – die Session läuft im Wurzelverzeichnis /.`;
   if (!text.includes(expected)) throw new Error(`Unexpected hint: ${text}`);
   // The hint tells the truth: the shell runs in /.
-  await type(view, "PS1='$ '; clear\r");
+  await type(view, NEUTRAL_PROMPT);
   await sleep(600);
   await type(view, "printf 'cwd=%s\\n' \"$PWD\"\r");
   await watch.quiet(800, 15_000);

@@ -7,13 +7,14 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SessionInfo, Workspace } from "@termdock/protocol";
 import { pageDriver } from "./screenshot-page.js";
+import { DIRECTORY_PROMPT, neutralPrompt } from "./screenshot-prompt.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 
 const sessionSelector = (name: string): string => `[data-session-name=${JSON.stringify(name)}]`;
 const workspaceSelector = (name: string): string => `[data-workspace-name=${JSON.stringify(name)}]`;
 
 export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
-  const { dir, createWindow, core, log } = deps;
+  const { dir, createWindow, core, bridge, log } = deps;
   mkdirSync(dir, { recursive: true });
   const win = createWindow(1100, 800);
   // Windows of earlier scenes lie below; a covered window stops painting.
@@ -340,6 +341,12 @@ export async function sidebarScenes(deps: ScenarioDeps): Promise<void> {
   await waitFor(
     `[...document.querySelectorAll('.pane[data-tab-active="true"] .xterm-rows > div')].some((row) => (row.textContent ?? '').includes(${JSON.stringify(projectPath)}))`,
     "the project directory in the terminal",
+  );
+  // The default prompt names user and host (#191): the directory stays in a prompt of its own.
+  await neutralPrompt(bridge, win.webContents.id, started.id, DIRECTORY_PROMPT);
+  await waitFor(
+    `[...document.querySelectorAll('.pane[data-tab-active="true"] .xterm-rows > div')].some((row) => (row.textContent ?? '').trim() === ${JSON.stringify(`${projectPath} $`)})`,
+    "the prompt with the project directory",
   );
   await capture("88-project-session.png");
   expect(

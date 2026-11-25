@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { LayoutDocument, SessionInfo } from "@termdock/protocol";
 import type { BrowserWindow } from "electron";
 import { bringToFront, captureWindow } from "./screenshot-page.js";
+import { neutralPrompt } from "./screenshot-prompt.js";
 import type { ScenarioDeps } from "./screenshot-scenario.js";
 import type { CaptureOptions } from "./screenshot-visible.js";
 
@@ -180,6 +181,7 @@ export async function restoreScenes(deps: ScenarioDeps, wsl: Wsl): Promise<void>
   await waitForViews(second, 3);
   await click(second, '[data-tab-title="Crash"] .tab__main');
   await sleep(800);
+  await neutralPrompt(bridge, second.webContents.id, crash.id);
 
   const beforeSummaries = [await summary(first), await summary(second)];
   const beforeBounds = [first.getBounds(), second.getBounds()];
@@ -357,6 +359,7 @@ async function restartScenes(
     await sleep(200);
   }
   await sleep(1_000); // snapshot and the first fit
+  await neutralPrompt(bridge, win.webContents.id, crash.id);
   await capture(win, "19a-session-restarted.png", { visible: `${pane} .terminal-view` });
   log("Crash restarted from its placeholder");
 
@@ -446,6 +449,7 @@ async function restartInViewScenes(
     shown = await rowsText();
   }
   await sleep(1_000); // the new run's first screen
+  await neutralPrompt(bridge, win.webContents.id, crash.id);
   await capture(win, "19d-restarted-in-view.png", { visible: `${pane} .terminal-view` });
   log("Crash restarted from the bar of its attached view");
 

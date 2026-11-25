@@ -25,6 +25,7 @@ import { cwdScenes } from "./screenshot-cwd.js";
 import { dragScenes } from "./screenshot-drag.js";
 import { windowsScenes } from "./screenshot-windows.js";
 import { captureWindow } from "./screenshot-page.js";
+import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
 import { restartScenes } from "./screenshot-restart.js";
 import { updateScenes } from "./screenshot-update.js";
 import { restoreScenes } from "./screenshot-restore.js";
@@ -217,7 +218,7 @@ async function playGroups(
 
   /** A short prompt without user and host name, then a clean screen, then the command. */
   const typeCommand = async (win: BrowserWindow, session: SessionInfo, command: string): Promise<void> => {
-    await type(win, session, "PS1='$ '; clear\r");
+    await type(win, session, NEUTRAL_PROMPT);
     await sleep(600);
     await type(win, session, `${command}\r`);
     // A timeout fails the run: a picture of a half-drawn screen must not pass.
@@ -523,7 +524,7 @@ async function splitScenes(
   };
   const typeCommand = async (name: string, command: string, clear = true): Promise<void> => {
     if (clear) {
-      await type(name, "PS1='$ '; clear\r");
+      await type(name, NEUTRAL_PROMPT);
       await sleep(600);
     }
     const before = command.includes("stty size") ? (await sttyScreen(name)).text : undefined;
@@ -1033,7 +1034,7 @@ async function keymapScenes(
     }
   };
 
-  await type("PS1='$ '; clear\r");
+  await type(NEUTRAL_PROMPT);
   await waitRows((current) => current.some((row) => row.startsWith("$ ")), "the short prompt");
 
   // Ctrl+C is not bound: it reaches the shell and interrupts the command.
@@ -1145,7 +1146,7 @@ async function keymapScenes(
     );
   // The short prompt in the new sessions too: the default one names user and host.
   for (const other of bridge.viewsOf(windowId).filter((each) => each !== view))
-    await bridge.call(windowId, { method: "input", viewId: other, data: "PS1='$ '; clear\r" });
+    await bridge.call(windowId, { method: "input", viewId: other, data: NEUTRAL_PROMPT });
   await settle();
 
   // Shift+click on Keys in the sidebar shows the same session in a fourth pane, a reader; pasting there is refused.

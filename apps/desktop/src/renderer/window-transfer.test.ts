@@ -244,6 +244,8 @@ describe("settleIncoming", () => {
     expect(step.result).toEqual({
       views: [
         { paneId: "a", viewId: "w-a" },
+        // A placeholder (the session ended) is named without a view, so the main process knows it is there.
+        { paneId: "b" },
         { paneId: "c", viewId: "w-c" },
       ],
     });

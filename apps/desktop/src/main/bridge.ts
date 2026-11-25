@@ -26,6 +26,7 @@ import type {
   ClientPoint,
   ProfileChange,
   TransferItem,
+  TransferPane,
   TransferView,
 } from "../shared/bridge.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
@@ -60,7 +61,9 @@ export interface WindowMoves {
   hover(windowId: number, item: TransferItem, at: ClientPoint): void;
   hoverEnd(windowId: number): void;
   drop(windowId: number, item: TransferItem, at: ClientPoint, whole: boolean): void;
-  attached(windowId: number, transferId: string, views: readonly TransferView[] | undefined): Promise<void>;
+  attached(windowId: number, transferId: string, views: readonly TransferPane[] | undefined): Promise<void>;
+  /** The core connection ended (#130): every move stops, the views it named are gone. */
+  coreClosed(): void;
   /** The window's page has loaded its layout; a new window may take its item now. */
   ready(windowId: number): void;
 }
@@ -158,6 +161,8 @@ export class DesktopBridge {
         this.outputSeq.clear();
         this.writers.clear();
         this.writerEvents.clear();
+        // A move between windows cannot hand over views of a core that is gone (review PR #190).
+        this.moves?.coreClosed();
         this.toAll({ kind: "coreClosed", restarting: this.restarts?.restarting() ?? false });
       }),
     ];
@@ -612,7 +617,7 @@ function parseCall(raw: unknown): BridgeCall {
     case "transferAttached": {
       const transferId = text(raw["transferId"], "transferId");
       if (raw["views"] === undefined) return { method: "transferAttached", transferId };
-      return { method: "transferAttached", transferId, views: transferViews(raw["views"]) };
+      return { method: "transferAttached", transferId, views: transferPanes(raw["views"]) };
     }
     default:
       throw new BadRequest(`Unknown bridge call ${String(raw["method"])}`);
@@ -683,6 +688,17 @@ function transferViews(raw: unknown): TransferView[] {
   return raw.map((view) => {
     if (!isRecord(view)) throw new BadRequest("a view must be an object");
     return { paneId: text(view["paneId"], "paneId"), viewId: text(view["viewId"], "viewId") };
+  });
+}
+
+/** The answer of a target (#68): each source pane with its new view, or without one for a placeholder. */
+function transferPanes(raw: unknown): TransferPane[] {
+  if (!Array.isArray(raw) || raw.length > MAX_PANES_PER_TAB)
+    throw new BadRequest(`views must be a list of at most ${MAX_PANES_PER_TAB}`);
+  return raw.map((pane) => {
+    if (!isRecord(pane)) throw new BadRequest("a view must be an object");
+    const paneId = text(pane["paneId"], "paneId");
+    return pane["viewId"] === undefined ? { paneId } : { paneId, viewId: text(pane["viewId"], "viewId") };
   });
 }
 

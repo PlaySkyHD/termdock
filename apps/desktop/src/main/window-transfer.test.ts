@@ -123,6 +123,7 @@ function bind(host: FakeHost): TransferHost {
     closeWindow: (id) => host.closeWindow(id),
     layoutOf: (id) => host.layouts.get(id),
     send: (id, event) => host.send(id, event),
+    sessionOf: (id, viewId) => (host.owners.get(viewId) === id ? host.sessionOf.get(viewId) : undefined),
     isWriter: (id, viewId) => host.isWriter(id, viewId),
     claimWriter: (id, viewId) => host.claimWriter(id, viewId),
     schedule: (run, ms) => host.schedule(run, ms),
@@ -245,7 +246,11 @@ describe("WindowTransfers: handover to another window", () => {
     const other = { id: "N", root: { kind: "pane" as const, id: "n", sessionId: "s9" }, activePaneId: "n" };
     host.layouts.set(1, { id: "w1", tabs: [tabItem.tab, other] });
     host.attach("w1", 2, "s1");
-    await transfers.attached(2, "t1", [{ paneId: "a", viewId: "w1" }]);
+    host.attach("w2", 2, "s2");
+    await transfers.attached(2, "t1", [
+      { paneId: "a", viewId: "w1" },
+      { paneId: "b", viewId: "w2" },
+    ]);
 
     expect(host.log).toEqual(["transferIn → 2", "claim w1 by 2", "transferOut → 1"]);
   });
@@ -269,13 +274,53 @@ describe("WindowTransfers: handover to another window", () => {
     expect(host.writers.get("s1")).toBe("v1");
   });
 
-  it("cancels when a writing view has no successor, and the source keeps everything", async () => {
+  it("cancels when the target names no pane for a source view, and the source keeps everything", async () => {
     const { host, transfers } = setup();
     transfers.drop(1, paneItem, overTwo, false);
     await transfers.attached(2, "t1", []);
 
     expect(host.log).toEqual(["transferIn → 2", "transferCancel → 2"]);
     expect(host.writers.get("s1")).toBe("v1");
+  });
+
+  it("moves the pane of an ended session, which the target shows as a placeholder, without a claim (review PR #190)", async () => {
+    const { host, transfers } = setup();
+    transfers.drop(1, paneItem, outside, false);
+    transfers.ready(10);
+    await transfers.attached(10, "t1", [{ paneId: "a" }]);
+
+    // The new window stays and the source lets its view go: no process is left that could write.
+    expect(host.log).toEqual(["open 10 at 1500,300", "transferIn → 10", "transferOut → 1"]);
+  });
+
+  it("cancels when the bridge no longer knows a view of the source, e.g. after a restart of the core (review PR #190)", async () => {
+    const { host, transfers } = setup();
+    transfers.drop(1, paneItem, overTwo, false);
+    host.owners.delete("v1");
+    host.attach("w1", 2, "s1");
+    await transfers.attached(2, "t1", [{ paneId: "a", viewId: "w1" }]);
+
+    expect(host.log).toEqual(["transferIn → 2", "transferCancel → 2"]);
+  });
+
+  it("cancels when the successor shows another session than its source pane (review PR #190)", async () => {
+    const { host, transfers } = setup();
+    transfers.drop(1, paneItem, overTwo, false);
+    host.attach("w9", 2, "s2");
+    await transfers.attached(2, "t1", [{ paneId: "a", viewId: "w9" }]);
+
+    expect(host.log).toEqual(["transferIn → 2", "transferCancel → 2"]);
+    expect(host.writers.get("s1")).toBe("v1");
+  });
+
+  it("stops every move when the core connection ends (review PR #190)", async () => {
+    const { host, transfers } = setup();
+    transfers.drop(1, paneItem, overTwo, false);
+    transfers.coreClosed();
+    host.attach("w1", 2, "s1");
+    await transfers.attached(2, "t1", [{ paneId: "a", viewId: "w1" }]);
+
+    expect(host.log).toEqual(["transferIn → 2", "transferCancel → 2"]);
   });
 
   it("gives the writers back when a later claim fails, so the source keeps every role", async () => {

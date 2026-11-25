@@ -4,7 +4,7 @@
 // (`settleIncoming`) and takes them out again when the move is cancelled (`withoutIncoming`). The handover of the
 // writer is the main process's (`main/window-transfer.ts`). Free of DOM and React.
 import type { LayoutTab, LayoutWindow, PaneNode, SessionInfo, ViewId } from "@termdock/protocol";
-import type { TransferItem, TransferSource, TransferView } from "../shared/bridge.js";
+import type { TransferItem, TransferPane, TransferSource, TransferView } from "../shared/bridge.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import { dropTarget, PANE_KIND, TAB_KIND } from "./layout-drop.js";
 import { applyMove, tabOfPane } from "./layout-moves.js";
@@ -199,22 +199,23 @@ export function startIncoming(transferId: string, panes: Readonly<Record<string,
 }
 
 /**
- * Notes how a pane ended. Once every pane has, `result` is the answer for the main process: the new view of each
- * source pane that has one, or `refused` when a pane could not attach (the main process then hands nothing over).
+ * Notes how a pane ended. Once every pane has, `result` is the answer for the main process: every source pane with
+ * its new view, or without one for a placeholder (a session that ended runs nothing that could write, review PR
+ * #190), or `refused` when a pane could not attach (the main process then hands nothing over).
  */
 export function settleIncoming(
   transfer: IncomingTransfer,
   paneId: string,
   outcome: PaneOutcome,
-): { transfer: IncomingTransfer; result?: { views: TransferView[] } | "refused" } {
+): { transfer: IncomingTransfer; result?: { views: TransferPane[] } | "refused" } {
   if (!(paneId in transfer.panes) || paneId in transfer.settled) return { transfer };
   const next: IncomingTransfer = { ...transfer, settled: { ...transfer.settled, [paneId]: outcome } };
   const ids = Object.keys(next.panes);
   if (!ids.every((id) => id in next.settled)) return { transfer: next };
   if (ids.some((id) => next.settled[id]!.failed === true)) return { transfer: next, result: "refused" };
-  const views = ids.flatMap((id) => {
+  const views = ids.map((id): TransferPane => {
     const viewId = next.settled[id]!.viewId;
-    return viewId === undefined ? [] : [{ paneId: next.panes[id]!, viewId }];
+    return viewId === undefined ? { paneId: next.panes[id]! } : { paneId: next.panes[id]!, viewId };
   });
   return { transfer: next, result: { views } };
 }

@@ -66,6 +66,8 @@ const PRELOAD = path.join(here, "..", "preload", "preload.cjs");
 const RENDERER = path.join(here, "..", "renderer", "index.html");
 /** Upper bound of a whole screenshot run, including the start of the core and WSL. */
 const SCREENSHOT_TIMEOUT_MS = 480_000;
+/** Title bar of a Windows frame at 100 %, when no window is open to measure it (#68). */
+const DEFAULT_TITLE_BAR = 31;
 /** Longest wait for the last `layout.save` when the app quits. */
 const QUIT_SAVE_TIMEOUT_MS = 3_000;
 /** Longest wait for the log file before the app exits. */
@@ -287,6 +289,7 @@ async function main(): Promise<void> {
     drop: (windowId, item, at, whole) => transfers.drop(windowId, item, at, whole),
     attached: (windowId, transferId, views) => transfers.attached(windowId, transferId, views),
     ready: (windowId) => transfers.ready(windowId),
+    coreClosed: () => transfers.coreClosed(),
   };
   const bridge: DesktopBridge = new DesktopBridge(port, layouts, quitPrompt, supervisor, moves);
   restartNotes = { ...restartNotes, bridge };
@@ -297,6 +300,23 @@ async function main(): Promise<void> {
     const win = windowsById.get(windowId);
     return win && !win.isDestroyed() ? win : undefined;
   };
+  /** Height of the frame above the client area (title bar); all windows of the app share their frame. */
+  const titleBarOf = (win: BrowserWindow | undefined): number => {
+    if (!win) return DEFAULT_TITLE_BAR;
+    return Math.max(0, win.getContentBounds().y - win.getBounds().y);
+  };
+  /** Bounds with the tab bar under the screen point, inside the work area of the screen under it (#68). */
+  const atPointer = (
+    point: { x: number; y: number },
+    size: { width: number; height: number },
+    frame?: BrowserWindow,
+  ) =>
+    boundsAtPointer(
+      point,
+      size,
+      screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) }).workArea,
+      titleBarOf(frame ?? [...windowsById.values()].find((each) => !each.isDestroyed())),
+    );
   const transfers: WindowTransfers = new WindowTransfers({
     toScreen: (windowId, point) => {
       const bounds = liveWindow(windowId)?.getContentBounds();
@@ -319,13 +339,14 @@ async function main(): Promise<void> {
       const win = liveWindow(windowId);
       if (!win) return;
       if (win.isMaximized()) win.unmaximize();
-      const { x, y } = boundsAtPointer(point, win.getBounds());
-      win.setPosition(x, y);
+      const { x, y, width, height } = atPointer(point, win.getBounds(), win);
+      win.setBounds({ x, y, width, height });
       win.focus();
     },
     closeWindow: (windowId) => liveWindow(windowId)?.close(),
     layoutOf: (windowId) => coordinator.windowOf(windowId),
     send: (windowId, event) => bridge.sendTo(windowId, event),
+    sessionOf: (windowId, viewId) => bridge.sessionOf(windowId, viewId),
     isWriter: (windowId, viewId) => bridge.isWriter(windowId, viewId),
     claimWriter: (windowId, viewId) => bridge.claimWriterFor(windowId, viewId),
     schedule: (run, ms) => {
@@ -408,7 +429,7 @@ async function main(): Promise<void> {
       return undefined;
     }
     // A saved position that no screen shows any more would open a window nobody can reach.
-    const wanted = restored?.bounds ?? (at && boundsAtPointer(at, { width, height }));
+    const wanted = restored?.bounds ?? (at && atPointer(at, { width, height }));
     const fitted =
       wanted &&
       fitBounds(

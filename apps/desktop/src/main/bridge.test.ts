@@ -553,6 +553,7 @@ describe("DesktopBridge moves between windows (#68)", () => {
       drop: (...args: unknown[]) => void calls.push(["drop", ...args]),
       attached: async (...args: unknown[]) => void calls.push(["attached", ...args]),
       ready: (...args: unknown[]) => void calls.push(["ready", ...args]),
+      coreClosed: () => void calls.push(["coreClosed"]),
     };
     const layouts = { windowOf: () => ({ id: "w", tabs: [] }), report: () => {} };
     const bridge = new DesktopBridge(core, layouts, undefined, undefined, moves);
@@ -624,6 +625,14 @@ describe("DesktopBridge moves between windows (#68)", () => {
       }),
     ).toMatchObject({ ok: false, error: { code: "bad_request" } });
     expect(calls).toEqual([]);
+  });
+
+  it("passes a placeholder pane without a view on, and stops the moves when the core connection ends (review PR #190)", async () => {
+    const { core, bridge, b, calls } = withMoves();
+    await bridge.call(b.id, { method: "transferAttached", transferId: "t1", views: [{ paneId: "p1" }] });
+    await core.close();
+
+    expect(calls).toEqual([["attached", b.id, "t1", [{ paneId: "p1" }]], ["coreClosed"]]);
   });
 
   it("tells the moves when a window's page has loaded its layout", async () => {

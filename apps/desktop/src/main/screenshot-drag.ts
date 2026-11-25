@@ -177,8 +177,12 @@ export async function dragScenes(deps: ScenarioDeps): Promise<void> {
   expect(viewIn(sourceId, sb.id) === undefined, "the source kept its view of Drag B");
   const bounds = opened.getBounds();
   const pointer = { x: below.x + beside.x, y: below.y + beside.y };
+  // Under the pointer; near the bottom of the screen it moves up into the work area, still covering the pointer.
   expect(
-    Math.abs(bounds.x - pointer.x) < 200 && Math.abs(bounds.y - pointer.y) < 200,
+    pointer.x >= bounds.x &&
+      pointer.x < bounds.x + bounds.width &&
+      pointer.y >= bounds.y &&
+      pointer.y < bounds.y + bounds.height,
     `the new window ${JSON.stringify(bounds)} is not at the pointer ${JSON.stringify(pointer)}`,
   );
   await c.capture("48-drag-new-window.png", {

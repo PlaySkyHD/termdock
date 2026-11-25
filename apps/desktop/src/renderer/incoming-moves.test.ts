@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TransferItem, TransferView } from "../shared/bridge.js";
+import type { TransferItem, TransferPane } from "../shared/bridge.js";
 import { ANSWERED_KEEP_MS, IncomingMoves, isTransferEvent, TransferInbox } from "./incoming-moves.js";
 import type { TransferEvent } from "./incoming-moves.js";
 import { UiStore } from "./ui-store.js";
@@ -27,7 +27,7 @@ function setup() {
   let next = 0;
   const store = new UiStore({ newId: () => `id${++next}` });
   store.openSession("s0");
-  const answers: Array<[string, TransferView[] | undefined]> = [];
+  const answers: Array<[string, TransferPane[] | undefined]> = [];
   const timers: Array<{ run: () => void; ms: number; stopped: boolean }> = [];
   const moves = new IncomingMoves({
     store,
@@ -66,7 +66,17 @@ describe("IncomingMoves (#68)", () => {
     expect(answers).toEqual([]);
     moves.settle(panes["b"]!, {});
 
-    expect(answers).toEqual([["t1", [{ paneId: "a", viewId: "w1" }]]]);
+    expect(answers).toEqual([["t1", [{ paneId: "a", viewId: "w1" }, { paneId: "b" }]]]);
+  });
+
+  it("answers for a tab whose sessions all ended: every pane a placeholder, none refused (review PR #190)", () => {
+    const { moves, answers, newPanes } = setup();
+    moves.receive("t1", item, { kind: "tabBar" });
+    const panes = newPanes();
+    moves.settle(panes["a"]!, {});
+    moves.settle(panes["b"]!, {});
+
+    expect(answers).toEqual([["t1", [{ paneId: "a" }, { paneId: "b" }]]]);
   });
 
   it("refuses at once without a valid target, and changes nothing", () => {

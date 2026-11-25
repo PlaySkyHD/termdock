@@ -1,7 +1,7 @@
 // The target side of a move between windows (#68): puts the item in, waits until every pane it put in is attached
 // (or shows a placeholder), answers the main process, and takes the panes out again when it refuses or the main
 // process cancels. Free of DOM and React; `App.tsx` feeds it the events and the outcomes of the panes.
-import type { BridgeEvent, TransferItem, TransferView } from "../shared/bridge.js";
+import type { BridgeEvent, TransferItem, TransferPane } from "../shared/bridge.js";
 import type { MoveTarget } from "./layout-moves.js";
 import type { UiStore } from "./ui-store.js";
 import { settleIncoming, startIncoming } from "./window-transfer.js";
@@ -13,7 +13,7 @@ export const ANSWERED_KEEP_MS = 80_000;
 export interface IncomingMovesDeps {
   store: Pick<UiStore, "receive" | "dropIncoming">;
   /** `transferAttached`; `views` undefined refuses. */
-  answer(transferId: string, views: TransferView[] | undefined): void;
+  answer(transferId: string, views: TransferPane[] | undefined): void;
   schedule?(run: () => void, ms: number): () => void;
 }
 

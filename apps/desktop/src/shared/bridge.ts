@@ -90,13 +90,22 @@ export type BridgeCall =
   | { method: "transferHoverEnd" }
   /** Released outside this window; `whole`: the item is all the window has. */
   | { method: "transferDrop"; item: TransferItem; at: ClientPoint; whole: boolean }
-  /** The answer to `transferIn`: the new views by source pane once every pane is attached; none is a refusal. */
-  | { method: "transferAttached"; transferId: string; views?: TransferView[] };
+  /**
+   * The answer to `transferIn` once every pane is attached or shows a placeholder: one entry per source pane, with
+   * its new view or without one (a placeholder: the session runs no process that could write); none is a refusal.
+   */
+  | { method: "transferAttached"; transferId: string; views?: TransferPane[] };
 
 /** A view of the source window and the pane that shows it, for a move to another window (#68). */
 export interface TransferView {
   paneId: string;
   viewId: ViewId;
+}
+
+/** A source pane in the target after a move (#68): its new view, or none when it shows a placeholder. */
+export interface TransferPane {
+  paneId: string;
+  viewId?: ViewId;
 }
 
 /**
@@ -294,7 +303,7 @@ export interface TermdockApi {
   transferHoverEnd(): Promise<void>;
   transferDrop(item: TransferItem, at: ClientPoint, whole: boolean): Promise<void>;
   /** `views` undefined refuses the move. */
-  transferAttached(transferId: string, views: TransferView[] | undefined): Promise<void>;
+  transferAttached(transferId: string, views: TransferPane[] | undefined): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

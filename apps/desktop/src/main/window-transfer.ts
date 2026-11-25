@@ -9,7 +9,7 @@ import type {
   ClientPoint,
   TransferItem,
   TransferSource,
-  TransferView,
+  TransferPane,
 } from "../shared/bridge.js";
 import type { LayoutWindow } from "@termdock/protocol";
 
@@ -37,6 +37,8 @@ export interface TransferHost {
   /** The layout the window reported last (`LayoutCoordinator.windowOf`); undefined for an unknown window. */
   layoutOf(windowId: number): LayoutWindow | undefined;
   send(windowId: number, event: BridgeEvent): boolean;
+  /** The session of a view of the window; undefined for a view the window does not have (any more). */
+  sessionOf(windowId: number, viewId: string): string | undefined;
   /** Whether the view belongs to the window and is the writer of its session right now. */
   isWriter(windowId: number, viewId: string): boolean;
   /** `session.claimWriter` for a view of the window; rejects for a view of another window. */
@@ -144,7 +146,7 @@ export class WindowTransfers {
   async attached(
     windowId: number,
     transferId: string,
-    views: readonly TransferView[] | undefined,
+    views: readonly TransferPane[] | undefined,
   ): Promise<void> {
     const transfer = this.transfers.get(transferId);
     if (!transfer || transfer.target !== windowId || transfer.waiting) return;
@@ -155,10 +157,20 @@ export class WindowTransfers {
     }
     const claimed: string[] = [];
     for (const { paneId, viewId } of transfer.item.views) {
-      if (!this.host.isWriter(transfer.source, viewId)) continue;
       const successor = views.find((view) => view.paneId === paneId);
       try {
-        if (!successor) throw new Error(`no view for pane ${paneId}`);
+        // The bridge forgot the view (a restart of the core, the session archived): its role is unknown, so
+        // nothing may be handed over or detached on the strength of it (review PR #190).
+        const session = this.host.sessionOf(transfer.source, viewId);
+        if (session === undefined) throw new Error(`the source's view ${viewId} is gone`);
+        if (!successor) throw new Error(`no answer for pane ${paneId}`);
+        // A placeholder: the session ended and runs nothing that could write; the old view just goes.
+        if (successor.viewId === undefined) continue;
+        if (this.host.sessionOf(transfer.target, successor.viewId) !== session)
+          throw new Error(
+            `view ${successor.viewId} of the target does not show the session of pane ${paneId}`,
+          );
+        if (!this.host.isWriter(transfer.source, viewId)) continue;
         await this.host.claimWriter(transfer.target, successor.viewId);
         claimed.push(viewId);
       } catch (error) {
@@ -175,6 +187,14 @@ export class WindowTransfers {
     const source = sourceOf(transfer.item);
     if (holdsOnly(this.host.layoutOf(transfer.source), source)) this.host.closeWindow(transfer.source);
     else this.host.send(transfer.source, { kind: "transferOut", source });
+  }
+
+  /**
+   * The core connection ended (#130): the views every move named belong to a core that is gone, and the windows
+   * attach new ones. Every move stops; the target takes out what it put in.
+   */
+  coreClosed(): void {
+    for (const transfer of [...this.transfers.values()]) this.cancel(transfer, "the core connection ended");
   }
 
   /**

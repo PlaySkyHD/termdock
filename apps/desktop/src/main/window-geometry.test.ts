@@ -108,12 +108,31 @@ describe("windowAtPoint and boundsAtPointer (#68)", () => {
     expect(windowAtPoint({ x: 800, y: 200 }, windows, [1, 2])).toBeUndefined();
   });
 
-  it("puts the tab bar of a new window under the pointer", () => {
-    expect(boundsAtPointer({ x: 1000.4, y: 300 }, { width: 1000, height: 640 })).toEqual({
-      x: 1000 - POINTER_OFFSET.x,
-      y: 300 - POINTER_OFFSET.y,
+  it("puts the tab bar of a new window under the pointer, below the title bar", () => {
+    expect(boundsAtPointer({ x: 500.4, y: 300 }, { width: 1000, height: 640 }, primary, 31)).toEqual({
+      x: 500 - POINTER_OFFSET.x,
+      y: 300 - 31 - POINTER_OFFSET.y,
       width: 1000,
       height: 640,
     });
+  });
+
+  it("keeps the window inside the work area of the screen under the pointer (review PR #190)", () => {
+    // Near the bottom right corner of the primary screen: moved in, the title bar stays reachable.
+    expect(boundsAtPointer({ x: 1900, y: 1030 }, { width: 1000, height: 640 }, primary, 31)).toEqual({
+      x: 920,
+      y: 400,
+      width: 1000,
+      height: 640,
+    });
+    // Above the top of the left screen: no title bar above the work area.
+    expect(boundsAtPointer({ x: -1200, y: 5 }, { width: 1000, height: 640 }, left, 31)).toEqual({
+      x: -1280,
+      y: 0,
+      width: 1000,
+      height: 640,
+    });
+    // Larger than the screen: as large as its work area.
+    expect(boundsAtPointer({ x: 100, y: 100 }, { width: 3000, height: 2000 }, primary, 31)).toEqual(primary);
   });
 });

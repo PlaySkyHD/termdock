@@ -57,19 +57,32 @@ export function screenshotOrigin(
   return { x: (area?.workArea.x ?? 0) + SHOT_INSET, y: (area?.workArea.y ?? 0) + SHOT_INSET };
 }
 
-/** Where the pointer lies in a window that opens or moves under it (#68): over its tab bar, a bit right of the edge. */
+/**
+ * Where the pointer lies in a window that opens or moves under it (#68), measured from the top left corner of its
+ * client area: over its tab bar (35 px high), a bit right of the edge.
+ */
 export const POINTER_OFFSET = { x: 80, y: 16 } as const;
 
-/** Bounds of a window of `size` whose tab bar lies under the screen point (#68). */
+/**
+ * Bounds of a window of `size` whose tab bar lies under the screen point (#68): the frame starts `titleBar` pixels
+ * above the client area. The window stays inside `workArea`, the work area of the screen under the pointer (shrunk to
+ * it when larger), so its title bar is never off the screen; near an edge the pointer then lies elsewhere on it.
+ */
 export function boundsAtPointer(
   point: { x: number; y: number },
   size: { width: number; height: number },
+  workArea: WindowBounds,
+  titleBar: number,
 ): WindowBounds {
+  const width = Math.min(size.width, workArea.width);
+  const height = Math.min(size.height, workArea.height);
+  const clamp = (value: number, start: number, room: number): number =>
+    Math.min(Math.max(Math.round(value), start), start + room);
   return {
-    x: Math.round(point.x - POINTER_OFFSET.x),
-    y: Math.round(point.y - POINTER_OFFSET.y),
-    width: size.width,
-    height: size.height,
+    x: clamp(point.x - POINTER_OFFSET.x, workArea.x, workArea.width - width),
+    y: clamp(point.y - titleBar - POINTER_OFFSET.y, workArea.y, workArea.height - height),
+    width,
+    height,
   };
 }
 

@@ -1974,13 +1974,13 @@ Die Gruppe `windows` SHALL mit Sichtbarkeitsselektor aufnehmen: `34-windows-new-
 
 ### Requirement: Tabs und Panes zwischen Fenstern ziehen
 
-Ein Tab oder ein Pane (Griff) SHALL sich über den Rand seines Fensters ziehen lassen. Der Main SHALL dem Fenster unter dem Zeiger die Position melden, das Tab-Leiste und Kanten der Panes wie beim Anordnen hervorhebt; die Mitte ist gesperrt, sie ersetzte eine View vor der Übergabe. Ablegen dort SHALL das Element einsetzen, außerhalb aller Fenster in einem neuen Fenster an der Mausposition. Ist es der ganze Inhalt seines Fensters, wandert stattdessen das Fenster. Esc bricht ab.
+Ein Tab oder Pane (Griff) SHALL sich über den Fensterrand ziehen lassen. Der Main SHALL dem Fenster unter dem Zeiger die Position melden; es hebt Tab-Leiste und Kanten der Panes hervor. Ablegen dort SHALL das Element nach den Regeln des Anordnens einsetzen, außer: Mitte eines Panes, Layout-Muster und Tausch nehmen keinen Drop an. Außerhalb aller Fenster öffnet ein neues an der Mausposition; ist das Element der ganze Fensterinhalt, wandert das Fenster. Esc bricht ab.
 
 #### Scenario: Zonen im anderen Fenster
 
 - **GIVEN** Fenster A mit den Tabs `s1` und `s2`, Fenster B zeigt `s3` in einem Pane
 - **WHEN** der Benutzer den Tab `s1` aus A über die rechte Kante des Panes von B zieht
-- **THEN** zeigt B die fünf Zonen mit hervorgehobener rechter Zone und einen Schatten mit dem Namen von `s1`, und A zeigt `s1` weiter
+- **THEN** zeigt B die Zonen des Panes mit hervorgehobener rechter Zone und gesperrter Mitte und einen Schatten mit dem Namen von `s1`, und A zeigt `s1` weiter
 
 #### Scenario: Ablegen im anderen Fenster
 
@@ -2051,6 +2051,18 @@ Beim Ziehen zwischen Fenstern SHALL die View das Fenster wechseln und ihre Rolle
 - **GIVEN** der Benutzer legt das schreibende Pane von `s1` in B ab
 - **WHEN** das Anhängen in B scheitert
 - **THEN** entfernt B das eingesetzte Pane, A behält es schreibend, und der Main sendet weder `claimWriter` noch `detach` für `v1`
+
+#### Scenario: Beendete Session
+
+- **GIVEN** in A zeigt ein Tab die Session `s1` im Zustand `Exited` (die View zeigt die letzte Ausgabe)
+- **WHEN** der Benutzer den Tab neben alle Fenster zieht
+- **THEN** zeigt das neue Fenster den Platzhalter von `s1`, der Main sendet kein `session.claimWriter`, und A gibt den Tab ab
+
+#### Scenario: Core-Neustart während der Übergabe
+
+- **GIVEN** eine Übergabe an B läuft
+- **WHEN** die Verbindung zum Core endet
+- **THEN** bricht der Main die Übergabe ab, B entfernt die eingesetzten Panes, und A behält das Element; eine spätere Antwort von B ändert nichts
 
 #### Scenario: Zeitlimit
 

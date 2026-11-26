@@ -21,7 +21,19 @@ class FakeSurface implements TerminalSurface {
   private listener: ((data: string) => void) | undefined;
 
   write(data: Uint8Array | string): void {
-    this.screen.push(decode(data));
+    const text = decode(data);
+    this.screen.push(text);
+    // The parser of xterm.js hands the data of each OSC 9 to the handlers, newest first, until one returns true.
+    // eslint-disable-next-line no-control-regex
+    for (const [, id, body] of text.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x1b\\|\x07)/g)) {
+      if (id !== "9") continue;
+      for (const handler of [...this.osc9].reverse()) if (handler(body!)) break;
+    }
+  }
+  osc9: Array<(data: string) => boolean> = [];
+  onOsc9(handler: (data: string) => boolean): () => void {
+    this.osc9.push(handler);
+    return () => (this.osc9 = this.osc9.filter((each) => each !== handler));
   }
   reset(): void {
     this.screen = ["<reset>"];
@@ -788,5 +800,73 @@ describe("TerminalController", () => {
     expect(api.inputs).toEqual([]);
     expect(surface.screen).not.toContain("late");
     expect(api.listeners.size).toBe(0);
+  });
+
+  describe("current directory of a Windows shell (OSC 9;9, #200)", () => {
+    const report = (path: string): string => `\x1b]9;9;"${path}"\x1b\\`;
+
+    it("reports the directory of live output once per change and answers currentCwd", async () => {
+      const { api, controller } = await opened({});
+      const seen: string[] = [];
+      controller.onCwd((path) => seen.push(path));
+      expect(controller.currentCwd()).toBeUndefined();
+
+      api.output("s1", 1, `${report("C:\\Windows")}C:\\Windows>`);
+      api.output("s1", 2, `${report("C:\\Windows")}C:\\Windows>`);
+      api.output("s1", 3, report("D:\\work dir"));
+
+      expect(seen).toEqual(["C:\\Windows", "D:\\work dir"]);
+      expect(controller.currentCwd()).toBe("D:\\work dir");
+    });
+
+    it("learns the last directory from the snapshot of a view that attaches later", async () => {
+      const api = new FakeApi();
+      const controller = new TerminalController(api, new FakeSurface(), () => {});
+      const opening = controller.open("s1");
+      api.answerAttach({
+        snapshot: bytes(`${report("C:\\old")}x${report("\\\\server\\share\\dir")}>`),
+        outputSeq: 4,
+      });
+      await opening;
+      expect(controller.currentCwd()).toBe("\\\\server\\share\\dir");
+    });
+
+    it("drops a path with control characters, a relative or a too long path and keeps the last good one", async () => {
+      const { api, controller } = await opened({});
+      const seen: string[] = [];
+      controller.onCwd((path) => seen.push(path));
+      api.output("s1", 1, report("C:\\good"));
+      api.output("s1", 2, report("C:\\bad\u0001dir"));
+      api.output("s1", 3, report("relative\\dir"));
+      api.output("s1", 4, report(`C:\\${"a".repeat(600)}`));
+      expect(seen).toEqual(["C:\\good"]);
+      expect(controller.currentCwd()).toBe("C:\\good");
+    });
+
+    it("leaves other OSC 9 sequences (notifications) to the next handler", async () => {
+      const { api, surface, controller } = await opened({});
+      const fallthrough: boolean[] = [];
+      const inner = surface.osc9[0]!;
+      surface.osc9[0] = (data) => {
+        const handled = inner(data);
+        fallthrough.push(handled);
+        return handled;
+      };
+      api.output("s1", 1, "\x1b]9;Build finished\x1b\\");
+      api.output("s1", 2, report("C:\\x"));
+      expect(fallthrough).toEqual([false, true]);
+      expect(controller.currentCwd()).toBe("C:\\x");
+    });
+
+    it("stops reporting after the listener is removed and after dispose", async () => {
+      const { api, surface, controller } = await opened({});
+      const seen: string[] = [];
+      const off = controller.onCwd((path) => seen.push(path));
+      off();
+      api.output("s1", 1, report("C:\\a"));
+      expect(seen).toEqual([]);
+      await controller.dispose();
+      expect(surface.osc9).toEqual([]);
+    });
   });
 });

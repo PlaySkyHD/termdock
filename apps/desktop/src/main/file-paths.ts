@@ -92,6 +92,20 @@ export function isRoot(location: FileLocation): boolean {
     : path.win32.parse(location.path).root === location.path;
 }
 
+/**
+ * Places that `delete`, `move` and `rename` never touch (ADR 0009): the roots, and what the system itself lives in.
+ * WSL: `/`, every entry directly under `/` (`/home`, `/usr`, `/proc`, …), every entry directly under `/mnt`
+ * (`/mnt/c` is the Windows drive) and under `/mnt/wsl`. Windows: the drive itself. The path is normalized.
+ */
+export function isProtected(location: FileLocation): boolean {
+  if (isRoot(location)) return true;
+  if (location.backend === "windows") return false;
+  const segments = location.path.split("/").filter((segment) => segment !== "");
+  if (segments.length <= 1) return true;
+  if (segments[0] === "mnt") return segments.length === 2 || (segments[1] === "wsl" && segments.length === 3);
+  return false;
+}
+
 /** The folder of a location, or undefined for a root. */
 export function parentOf(location: FileLocation): FileLocation | undefined {
   if (isRoot(location)) return undefined;
@@ -144,6 +158,20 @@ export function isValidEntryName(name: unknown, backend: FileLocation["backend"]
 const PROGRAM_EXTENSIONS = new Set([
   ".exe",
   ".dll",
+  ".pyz",
+  ".pyzw",
+  ".pyc",
+  ".pyo",
+  ".wsb",
+  ".appinstaller",
+  ".diagcab",
+  ".vb",
+  ".mde",
+  ".accde",
+  ".xll",
+  ".search-ms",
+  ".rdp",
+  ".website",
   ".py",
   ".pyw",
   ".ws",
@@ -187,7 +215,17 @@ const PROGRAM_EXTENSIONS = new Set([
   ".sh",
 ]);
 
-export function isProgramName(name: string): boolean {
+/** The extensions of a `PATHEXT` value (`.COM;.EXE;…`), lower case; entries that are no extension are dropped. */
+export function pathExtensions(pathExt: string | undefined): string[] {
+  return (pathExt ?? "")
+    .split(";")
+    .map((extension) => extension.trim().toLowerCase())
+    .filter((extension) => /^\.[^.\\/]+$/.test(extension));
+}
+
+/** `extra` are further program extensions of this machine (`pathExtensions(process.env.PATHEXT)`). */
+export function isProgramName(name: string, extra: readonly string[] = []): boolean {
   // Windows drops trailing dots and spaces from a name: `run.bat.` is `run.bat`.
-  return PROGRAM_EXTENSIONS.has(path.extname(name.replace(/[. ]+$/, "")).toLowerCase());
+  const extension = path.extname(name.replace(/[. ]+$/, "")).toLowerCase();
+  return PROGRAM_EXTENSIONS.has(extension) || extra.includes(extension);
 }

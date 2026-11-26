@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { FileLocation } from "../shared/files.js";
 import {
   checkDialogPath,
   checkLocation,
@@ -7,8 +8,10 @@ import {
   childOf,
   isInside,
   isProgramName,
+  isProtected,
   isRoot,
   isValidDistroName,
+  pathExtensions,
   isValidEntryName,
   nameOf,
   parentOf,
@@ -168,7 +171,74 @@ describe("isValidEntryName", () => {
   });
 });
 
+describe("isProtected", () => {
+  const wsl = (p: string): FileLocation => ({ backend: "wsl", distro: "Ubuntu", path: p });
+
+  it("protects the roots, the folders under /, the drives of /mnt and /mnt/wsl/*", () => {
+    for (const p of [
+      "/",
+      "/home",
+      "/usr",
+      "/mnt",
+      "/proc",
+      "/etc",
+      "/mnt/c",
+      "/mnt/d",
+      "/mnt/wsl",
+      "/mnt/wsl/x",
+    ]) {
+      expect(isProtected(wsl(p)), p).toBe(true);
+    }
+    expect(isProtected({ backend: "windows", path: "C:\\" })).toBe(true);
+  });
+
+  it("leaves everything below alone", () => {
+    for (const p of ["/home/dev", "/mnt/c/Users", "/mnt/wsl/x/y", "/tmp/a", "/mnt/c/Users/dev/a.txt"]) {
+      expect(isProtected(wsl(p)), p).toBe(false);
+    }
+    expect(isProtected({ backend: "windows", path: "C:\\Users" })).toBe(false);
+  });
+});
+
+describe("pathExtensions", () => {
+  it("reads a PATHEXT value in lower case and drops what is no extension", () => {
+    expect(pathExtensions(".COM;.EXE; .Foo ;;junk;.a.b;.x\\y")).toEqual([".com", ".exe", ".foo"]);
+    expect(pathExtensions(undefined)).toEqual([]);
+  });
+
+  it("makes isProgramName refuse them", () => {
+    expect(isProgramName("a.foo")).toBe(false);
+    expect(isProgramName("a.foo", [".foo"])).toBe(true);
+  });
+});
+
 describe("isProgramName", () => {
+  it("flags the types of the review", () => {
+    for (const name of [
+      "a.pyz",
+      "a.pyzw",
+      "a.pyc",
+      "a.pyo",
+      "a.wsb",
+      "a.appinstaller",
+      "a.appx",
+      "a.msix",
+      "a.diagcab",
+      "a.vb",
+      "a.mde",
+      "a.accde",
+      "a.xll",
+      "a.search-ms",
+      "a.rdp",
+      "a.settingcontent-ms",
+      "a.library-ms",
+      "a.url",
+      "a.website",
+    ]) {
+      expect(isProgramName(name), name).toBe(true);
+    }
+  });
+
   it("flags what the system would run", () => {
     for (const name of ["a.exe", "a.BAT", "a.ps1", "a.lnk", "a.js", "a.sh"])
       expect(isProgramName(name), name).toBe(true);

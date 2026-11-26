@@ -7,7 +7,7 @@ Legt fest, wie die Desktop-App Dateien für den Datei-Explorer erreicht: wie Ort
 
 ### Requirement: Orte werden im Main geprüft und übersetzt
 
-Der Main SHALL jeden Ort aus dem Renderer vor dem Zugriff prüfen: absoluter Pfad, höchstens 512 Zeichen, keine Steuerzeichen, kein Segment `..`. Ein WSL-Ort SHALL einen Distro-Namen im Muster von `wsl.exe -l` tragen, den der Core kennt, und wird zu `\\wsl.localhost\<distro>\<pfad>`. Ein Windows-Ort SHALL die Form `X:\…` haben; UNC-, Geräte- und Datenstrom-Pfade MUST abgelehnt werden. Ein abgelehnter Ort ergibt `EINVAL`, ohne das Dateisystem zu berühren.
+Der Main SHALL jeden Ort aus dem Renderer vor dem Zugriff prüfen: absoluter Pfad, höchstens 512 Zeichen, keine Steuerzeichen, kein Segment `..`. Ein WSL-Ort SHALL eine dem Core bekannte Distro tragen und wird zu `\\wsl.localhost\<distro>\<pfad>`. Ein Windows-Ort SHALL die Form `X:\…` haben; UNC-, Geräte- und Datenstrom-Pfade MUST abgelehnt werden, (keine NTLM-Anmeldung an fremden Servern). Vom Nutzer verbundene Laufwerke (`Z:\`) sind erlaubt. Ein abgelehnter Ort ergibt `EINVAL`.
 
 #### Scenario: WSL-Pfad wird übersetzt
 
@@ -59,7 +59,7 @@ Der Main SHALL jeden Ort aus dem Renderer vor dem Zugriff prüfen: absoluter Pfa
 
 ### Requirement: Löschen ist endgültig
 
-`delete` SHALL eine Datei oder einen Ordner endgültig und rekursiv entfernen, ohne Papierkorb und ohne eigene Rückfrage; die Rückfrage ist Sache des Renderers. Ein Symlink SHALL selbst entfernt werden, sein Ziel nie. Eine Wurzel (`/`, `C:\`) MUST mit `EINVAL` abgelehnt werden, ein fehlender Eintrag ergibt `ENOENT`.
+`delete` SHALL eine Datei oder einen Ordner endgültig und rekursiv entfernen, ohne Papierkorb und ohne eigene Rückfrage; die Rückfrage ist Sache des Renderers. Ein Symlink SHALL selbst entfernt werden, sein Ziel nie. Geschützte Orte MUST mit `EINVAL` abgelehnt werden, ebenso beim Verschieben und Umbenennen: bei WSL `/` samt allem direkt darunter sowie alles direkt unter `/mnt` und `/mnt/wsl` (`/mnt/c` ist Laufwerk C:), bei Windows das Laufwerk. Ein fehlender Eintrag ergibt `ENOENT`.
 
 #### Scenario: Ordner mit Inhalt
 
@@ -72,9 +72,20 @@ Der Main SHALL jeden Ort aus dem Renderer vor dem Zugriff prüfen: absoluter Pfa
 - **WHEN** der Renderer `/` oder `C:\` löscht, oder `/nope`, das es nicht gibt
 - **THEN** antwortet der Dienst `EINVAL` bzw. `ENOENT`
 
+#### Scenario: Geschützte Orte
+
+- **WHEN** der Renderer `/mnt/c`, `/mnt/wsl/docker-desktop`, `/home` oder `/usr` löscht, verschiebt oder umbenennt
+- **THEN** antwortet der Dienst jedes Mal `EINVAL`, und `/mnt/c/Users` oder `/home/dev` bleiben löschbar
+
+#### Scenario: Symlink auf einen Ordner
+
+- **GIVEN** ein Linux-Symlink `/tmp/x/link` auf den Ordner `/tmp/x/target` mit einer Datei
+- **WHEN** der Renderer `/tmp/x/link` löscht
+- **THEN** ist der Symlink weg, und `target` samt Datei bleibt
+
 ### Requirement: Herunterladen nach Windows
 
-`download` SHALL eine WSL-Datei oder einen WSL-Ordner nach Windows kopieren; das Ziel wählt der Nutzer in einem Dialog des Main, dessen Pfad absolut sein MUST und kein `\\?\`- oder Geräte-Präfix tragen darf. Ein Ordner SHALL rekursiv kopiert werden; Symlinks und für Windows ungültige Namen werden übersprungen und in `skipped` gezählt. Ein vorhandener Zielordner MUST `EEXIST` ergeben, ein gescheitertes Kopieren den angelegten Teil entfernen. Bei Abbruch antwortet er `cancelled: true`.
+`download` SHALL eine WSL-Datei oder einen WSL-Ordner nach Windows kopieren; das Ziel wählt der Nutzer in einem Dialog des Main, dessen Pfad absolut sein MUST und kein `\\?\`- oder Geräte-Präfix tragen darf. Ein Ordner SHALL rekursiv kopiert werden; Symlinks und für Windows ungültige Namen werden übersprungen und in `skipped` gezählt. Der Name des Quellordners MUST für Windows gültig sein (sonst `EINVAL`). Ein vorhandener Zielordner ergibt `EEXIST`.
 
 #### Scenario: Datei speichern
 
@@ -89,13 +100,19 @@ Der Main SHALL jeden Ort aus dem Renderer vor dem Zugriff prüfen: absoluter Pfa
 
 ### Requirement: Zeigen und Öffnen
 
-`reveal` SHALL den Eintrag mit `shell.showItemInFolder` im Windows-Explorer zeigen, `open` ihn mit `shell.openPath` mit dem zugeordneten Programm öffnen. Beide SHALL einen fehlenden Eintrag mit `ENOENT` beantworten, ohne die Shell aufzurufen. `open` MUST Dateien ablehnen (`EINVAL`), die Windows als Programm oder Skript startet (z. B. `.exe`, `.bat`, `.ps1`, `.lnk`). Eine Fehlermeldung der Shell MUST NOT an den Renderer gehen.
+`reveal` SHALL den Eintrag mit `shell.showItemInFolder` im Windows-Explorer zeigen, `open` ihn mit `shell.openPath` mit dem zugeordneten Programm öffnen. Beide SHALL einen fehlenden Eintrag mit `ENOENT` beantworten, ohne die Shell aufzurufen. `open` MUST Dateien ablehnen (`EINVAL`), die Windows als Programm oder Skript startet (feste Liste, dazu die Endungen aus `PATHEXT`). Eine Fehlermeldung der Shell MUST NOT an den Renderer gehen.
 
 #### Scenario: Programm öffnen
 
 - **GIVEN** die Datei `/tool.exe`
 - **WHEN** der Renderer sie öffnen lässt
 - **THEN** antwortet der Dienst `EINVAL` und ruft `shell.openPath` nicht auf
+
+#### Scenario: Weitere Programmtypen
+
+- **GIVEN** die Dateien `/a.pyz`, `/b.rdp`, `/c.appinstaller` und `/d.foo` (`.foo` steht in `PATHEXT`)
+- **WHEN** der Renderer sie öffnen lässt
+- **THEN** antwortet der Dienst jedes Mal `EINVAL`
 
 #### Scenario: Textdatei zeigen und öffnen
 

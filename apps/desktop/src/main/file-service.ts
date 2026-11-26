@@ -1,6 +1,6 @@
 // File access of the explorer (ADR 0009): Node `fs/promises` on Windows paths and on `\\wsl.localhost\<distro>`.
 // Free of Electron: dialogs and shell come in as dependencies. Every operation answers with a result, never throws.
-import { cp, copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, copyFile, lstat, readdir, rename, rm, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { MAX_LIST_ENTRIES } from "../shared/files.js";
 import type {
@@ -19,7 +19,9 @@ import {
   childOf,
   isInside,
   isProgramName,
+  isProtected,
   isRoot,
+  pathExtensions,
   isValidEntryName,
   nameOf,
   parentOf,
@@ -51,6 +53,8 @@ export interface FileServiceDeps {
   /** Only the operation and code are logged, never a path or the text of an OS error. */
   log?: (line: string) => void;
   now?: () => number;
+  /** The `PATHEXT` of this machine: its extensions count as programs for `open`; default `process.env.PATHEXT`. */
+  pathExt?: string;
 }
 
 /** How long a list of distros is trusted before a miss asks the core again. */
@@ -93,7 +97,11 @@ class Refused extends Error {
 export class FileService {
   private known: { names: readonly string[]; at: number } | undefined;
 
-  constructor(private readonly deps: FileServiceDeps) {}
+  private readonly programExtensions: string[];
+
+  constructor(private readonly deps: FileServiceDeps) {
+    this.programExtensions = pathExtensions(deps.pathExt ?? process.env["PATHEXT"]);
+  }
 
   async list(raw: FileLocation): Promise<FileListResult> {
     return this.guard("list", async () => {
@@ -119,7 +127,7 @@ export class FileService {
       const location = await this.checked(raw);
       if (!isValidEntryName(newName, location.backend)) throw new Refused("EINVAL");
       const parent = parentOf(location);
-      if (!parent) throw new Refused("EINVAL");
+      if (!parent || isProtected(location)) throw new Refused("EINVAL");
       const target = childOf(parent, newName);
       await this.moveEntry(location, target);
       return { ok: true, location: target };
@@ -131,7 +139,7 @@ export class FileService {
       const location = await this.checked(raw);
       const targetDir = await this.checked(rawTarget);
       // No copy across backends: that would be a download or an upload with its own rules.
-      if (isRoot(location) || !sameBackend(location, targetDir) || isInside(location, targetDir)) {
+      if (isProtected(location) || !sameBackend(location, targetDir) || isInside(location, targetDir)) {
         throw new Refused("EINVAL");
       }
       const target = childOf(targetDir, nameOf(location));
@@ -143,11 +151,20 @@ export class FileService {
   async delete(raw: FileLocation): Promise<FileDoneResult> {
     return this.guard("delete", async () => {
       const location = await this.checked(raw);
-      if (isRoot(location)) throw new Refused("EINVAL");
+      // `/mnt/c` is the Windows drive C: seen from WSL: protected places are never deleted (ADR 0009).
+      if (isProtected(location)) throw new Refused("EINVAL");
       const target = this.fsPath(location);
-      // Without `force` a missing entry is `ENOENT`; a symlink is removed itself, never followed.
-      await lstat(target);
-      await rm(target, { recursive: true });
+      // A missing entry is `ENOENT`.
+      if ((await probe(target)).link) {
+        // The link itself, never its target: `rm` would follow a junction or a link to a folder over 9P.
+        try {
+          await unlink(target);
+        } catch {
+          await rmdir(target); // a directory junction or link answers `unlink` with EPERM or EISDIR
+        }
+      } else {
+        await rm(target, { recursive: true });
+      }
       return { ok: true };
     });
   }
@@ -160,6 +177,8 @@ export class FileService {
       // A symlink as the chosen entry is followed; symlinks inside a folder are skipped (they need rights on Windows).
       const info = await stat(source);
       const name = nameOf(location);
+      // The folder's own name becomes a Windows name too (`a:b` would be a data stream, `nul` a device).
+      if (info.isDirectory() && !isValidEntryName(name, "windows")) throw new Refused("EINVAL");
       let skipped = 0;
       if (info.isDirectory()) {
         const folder = this.windowsTarget(await this.deps.dialogs.chooseFolder(windowId));
@@ -170,7 +189,7 @@ export class FileService {
         // Entries Windows cannot hold (a `:` makes a data stream, `nul` a device) and symlinks are skipped and counted.
         const skip = async (from: string): Promise<boolean> =>
           from !== source &&
-          (!isValidEntryName(path.win32.basename(from), "windows") || (await lstat(from)).isSymbolicLink());
+          (!isValidEntryName(path.win32.basename(from), "windows") || (await probe(from)).link);
         try {
           await cp(source, destination, {
             recursive: true,
@@ -203,7 +222,7 @@ export class FileService {
     return this.guard("reveal", async () => {
       const location = await this.checked(raw);
       const target = this.fsPath(location);
-      await lstat(target);
+      await probe(target);
       this.deps.shell.showItemInFolder(target);
       return { ok: true };
     });
@@ -216,7 +235,8 @@ export class FileService {
       const info = await stat(target);
       if (!info.isFile() && !info.isDirectory()) throw new Refused("EINVAL");
       // What the system would run is not opened from here; a link is judged by its own name.
-      if (info.isFile() && isProgramName(nameOf(location))) throw new Refused("EINVAL");
+      if (info.isFile() && isProgramName(nameOf(location), this.programExtensions))
+        throw new Refused("EINVAL");
       // `openPath` answers with an error text; it may name the path, so it is not passed on.
       return (await this.deps.shell.openPath(target)) === "" ? { ok: true } : fail("OTHER");
     });
@@ -230,8 +250,8 @@ export class FileService {
   private async moveEntry(from: FileLocation, to: FileLocation): Promise<void> {
     const source = this.fsPath(from);
     const target = this.fsPath(to);
-    const own = await lstat(source, { bigint: true });
-    const there = await lstat(target, { bigint: true }).then(
+    const own = await probe(source);
+    const there = await probe(target).then(
       (info) => info,
       (error: unknown) => {
         if (codeOf(error) === "ENOENT") return undefined;
@@ -239,7 +259,8 @@ export class FileService {
       },
     );
     // On a case-insensitive folder `a` to `A` finds the entry itself: that is a rename, not a clash.
-    const itself = there !== undefined && there.ino !== 0n && there.ino === own.ino && there.dev === own.dev;
+    const itself =
+      there?.ino !== undefined && there.ino !== 0n && there.ino === own.ino && there.dev === own.dev;
     if (there !== undefined && !(itself && source !== target)) throw new Refused("EEXIST");
     await rename(source, target);
   }
@@ -313,9 +334,34 @@ export class FileService {
   }
 }
 
+interface Probe {
+  link: boolean;
+  /** Absent when `lstat` itself failed and the folder listing answered. */
+  ino?: bigint;
+  dev?: bigint;
+}
+
+/**
+ * `lstat` that also works for a Linux symlink to a folder: over `\\wsl.localhost` such a link answers `lstat` with
+ * `EISDIR`, but the listing of its folder still reports it as a symlink (ADR 0009). A missing entry throws `ENOENT`.
+ */
+async function probe(target: string): Promise<Probe> {
+  try {
+    const info = await lstat(target, { bigint: true });
+    return { link: info.isSymbolicLink(), ino: info.ino, dev: info.dev };
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") throw error;
+    const name = path.win32.basename(target);
+    const siblings = await readdir(path.win32.dirname(target), { withFileTypes: true }).catch(() => []);
+    const found = siblings.find((dirent) => dirent.name === name);
+    if (!found) throw error;
+    return { link: found.isSymbolicLink() };
+  }
+}
+
 async function exists(target: string): Promise<boolean> {
   try {
-    await lstat(target);
+    await probe(target);
     return true;
   } catch (error) {
     if (codeOf(error) === "ENOENT") return false;

@@ -1,5 +1,7 @@
 // The file service against a temporary folder. A WSL location is mapped into it (`wslRoot`), so both backends run
 // through the same code as in the app. With TERMDOCK_WSL_TESTS=1 one test also reaches the real `\\wsl.localhost`.
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -26,10 +28,18 @@ let openAnswer = "";
 let distros: string[] = ["Ubuntu"];
 let distroLookups = 0;
 
-const wsl = (p: string): FileLocation => ({ backend: "wsl", distro: "Ubuntu", path: p });
+/**
+ * A WSL location in the test distro. `/x` means `/w/x`: entries directly under `/` are protected from delete and
+ * move, so the tests work one level down. Paths that do not start with `/` stay as they are (invalid ones).
+ */
+const wsl = (p: string): FileLocation => ({
+  backend: "wsl",
+  distro: "Ubuntu",
+  path: p === "/" ? "/w" : p.startsWith("/") ? `/w${p}` : p,
+});
 const win = (p: string): FileLocation => ({ backend: "windows", path: p });
-/** The Windows path of a name inside the WSL side of the temp folder, and of the Windows side. */
-const wslSide = (...parts: string[]): string => path.join(root, "wsl", "Ubuntu", ...parts);
+/** The Windows path of a name inside the WSL side (`/w`) of the temp folder, and of the Windows side. */
+const wslSide = (...parts: string[]): string => path.join(root, "wsl", "Ubuntu", "w", ...parts);
 const winSide = (...parts: string[]): string => path.join(root, "win", ...parts);
 
 function service(overrides: Partial<FileServiceDeps> = {}): FileService {
@@ -316,6 +326,30 @@ describe("delete", () => {
     expect(existsSync(wslSide())).toBe(true);
   });
 
+  it("refuses protected places and deletes nothing there", async () => {
+    const files = service();
+    const protectedPaths = [
+      "/home",
+      "/usr",
+      "/mnt",
+      "/proc",
+      "/mnt/c",
+      "/mnt/wsl",
+      "/mnt/wsl/docker-desktop",
+    ];
+    for (const p of protectedPaths) {
+      expect(await files.delete({ backend: "wsl", distro: "Ubuntu", path: p }), p).toEqual(failure("EINVAL"));
+      expect(await files.rename({ backend: "wsl", distro: "Ubuntu", path: p }, "x"), p).toEqual(
+        failure("EINVAL"),
+      );
+      expect(await files.move({ backend: "wsl", distro: "Ubuntu", path: p }, wsl("/")), p).toEqual(
+        failure("EINVAL"),
+      );
+    }
+    expect(await files.delete(win("C:\\"))).toEqual(failure("EINVAL"));
+    expect(existsSync(wslSide())).toBe(true);
+  });
+
   it("deletes a symlink, not its target", async () => {
     mkdirSync(wslSide("dir"));
     writeFileSync(wslSide("dir", "f"), "");
@@ -381,6 +415,21 @@ describe("download", () => {
     expect(readdirSync(winSide("out", "dir"))).toEqual(["ok"]);
   });
 
+  it("refuses a folder whose own name Windows cannot hold", async () => {
+    mkdirSync(wslSide("a-b"));
+    // A trailing dot is a legal Linux name; the extended-length path form lets this Windows host create it.
+    try {
+      mkdirSync(`\\\\?\\${wslSide("odd.")}`);
+    } catch {
+      return; // the host does not allow it; `isValidEntryName` itself is covered in file-paths.test.ts
+    }
+    dialogAnswers.folder = winSide();
+    const files = service({ wslRoot: (distro) => `\\\\?\\${path.join(root, "wsl", distro)}` });
+    expect(await files.download(1, wsl("/odd."))).toEqual(failure("EINVAL"));
+    expect(readdirSync(winSide())).toEqual([]);
+    expect(await files.download(1, wsl("/a-b"))).toMatchObject({ ok: true, cancelled: false });
+  });
+
   it("refuses an extended-length or device path from the dialog", async () => {
     writeFileSync(wslSide("a.txt"), "x");
     dialogAnswers.file = "\\\\?\\C:\\x";
@@ -401,7 +450,9 @@ describe("download", () => {
     writeFileSync(winSide("w.txt"), "");
     writeFileSync(wslSide("a.txt"), "");
     expect(await service().download(1, win(winSide("w.txt")))).toEqual(failure("EINVAL"));
-    expect(await service().download(1, wsl("/"))).toEqual(failure("EINVAL"));
+    expect(await service().download(1, { backend: "wsl", distro: "Ubuntu", path: "/" })).toEqual(
+      failure("EINVAL"),
+    );
     dialogAnswers.file = "relative\\x";
     expect(await service().download(1, wsl("/a.txt"))).toEqual(failure("EINVAL"));
   });
@@ -427,6 +478,14 @@ describe("reveal and open", () => {
     expect(await service().open(wsl("/tool.exe"))).toEqual(failure("EINVAL"));
     expect(await service().open(wsl("/run.bat"))).toEqual(failure("EINVAL"));
     expect(shellCalls).toEqual([`open ${wslSide("dir")}`]);
+  });
+
+  it("also refuses the extensions of PATHEXT of this machine", async () => {
+    writeFileSync(wslSide("x.foo"), "");
+    writeFileSync(wslSide("y.pyz"), "");
+    expect(await service({ pathExt: ".COM;.EXE;.FOO;junk;" }).open(wsl("/x.foo"))).toEqual(failure("EINVAL"));
+    expect(await service({ pathExt: "" }).open(wsl("/x.foo"))).toEqual({ ok: true });
+    expect(await service({ pathExt: "" }).open(wsl("/y.pyz"))).toEqual(failure("EINVAL"));
   });
 
   it("answers ENOENT without calling the shell for a missing entry", async () => {
@@ -468,27 +527,62 @@ describe("errors", () => {
 
 // Reaches the real `\\wsl.localhost` (ADR 0009). Local only: GitHub runners have no distro.
 describe.skipIf(process.env["TERMDOCK_WSL_TESTS"] !== "1")("real WSL (TERMDOCK_WSL_TESTS=1)", () => {
-  it("lists /tmp, writes, renames, moves and deletes through the UNC path", async () => {
-    const files = new FileService({
+  const base = `/tmp/termdock-test-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const unc = `\\\\wsl.localhost\\Ubuntu${base.replaceAll("/", "\\")}`;
+  const at = (rest: string): FileLocation => ({ backend: "wsl", distro: "Ubuntu", path: `${base}${rest}` });
+  const realFiles = () =>
+    new FileService({
       distros: async () => ["Ubuntu"],
       dialogs: { saveFile: async () => undefined, chooseFolder: async () => undefined },
       shell: { showItemInFolder: () => {}, openPath: async () => "" },
     });
-    const base = `/tmp/termdock-files-test-${process.pid}-${Date.now()}`;
-    const unc = `\\\\wsl.localhost\\Ubuntu${base.replaceAll("/", "\\")}`;
+
+  beforeEach(() => {
     mkdirSync(unc, { recursive: true });
-    try {
-      writeFileSync(`${unc}\\a.txt`, "hello");
-      mkdirSync(`${unc}\\sub`);
-      const listed = await files.list(wsl(base));
-      expect(listed).toMatchObject({ ok: true, total: 2 });
-      expect(await files.rename(wsl(`${base}/a.txt`), "b.txt")).toMatchObject({ ok: true });
-      expect(await files.move(wsl(`${base}/b.txt`), wsl(`${base}/sub`))).toMatchObject({ ok: true });
-      expect(readFileSync(`${unc}\\sub\\b.txt`, "utf8")).toBe("hello");
-      expect(await files.delete(wsl(base))).toEqual({ ok: true });
-      expect(existsSync(unc)).toBe(false);
-    } finally {
-      rmSync(unc, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    rmSync(unc, { recursive: true, force: true });
+  });
+
+  it("lists /tmp, writes, renames, moves and deletes through the UNC path", async () => {
+    const files = realFiles();
+    writeFileSync(`${unc}\\a.txt`, "hello");
+    mkdirSync(`${unc}\\sub`);
+    expect(await files.list(at(""))).toMatchObject({ ok: true, total: 2 });
+    expect(await files.rename(at("/a.txt"), "b.txt")).toMatchObject({ ok: true });
+    expect(await files.move(at("/b.txt"), at("/sub"))).toMatchObject({ ok: true });
+    expect(readFileSync(`${unc}\\sub\\b.txt`, "utf8")).toBe("hello");
+    expect(await files.delete(at(""))).toEqual({ ok: true });
+    expect(existsSync(unc)).toBe(false);
+  }, 30_000);
+
+  it("deletes a real Linux symlink to a folder and keeps the target", async () => {
+    const files = realFiles();
+    mkdirSync(`${unc}\\target`);
+    writeFileSync(`${unc}\\target\\keep.txt`, "keep");
+    execFileSync(
+      "wsl.exe",
+      ["-d", "Ubuntu", "--cd", "~", "--exec", "ln", "-s", `${base}/target`, `${base}/link`],
+      {
+        env: { ...process.env, WSL_UTF8: "1" },
+      },
+    );
+    expect(await files.list(at(""))).toMatchObject({
+      entries: expect.arrayContaining([expect.objectContaining({ name: "link", kind: "symlink" })]),
+    });
+    expect(await files.delete(at("/link"))).toEqual({ ok: true });
+    expect(readdirSync(unc).sort()).toEqual(["target"]);
+    expect(readFileSync(`${unc}\\target\\keep.txt`, "utf8")).toBe("keep");
+  }, 30_000);
+
+  it("refuses /mnt/c and the folders under /", async () => {
+    const files = realFiles();
+    for (const p of ["/mnt/c", "/home", "/mnt/wsl"]) {
+      expect(await files.delete({ backend: "wsl", distro: "Ubuntu", path: p }), p).toEqual({
+        ok: false,
+        code: "EINVAL",
+      });
     }
   }, 30_000);
 });

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   assertNoPromptLeak,
   DIRECTORY_PROMPT,
+  EXPLORER_ROW,
   findPromptLeak,
   NEUTRAL_PROMPT,
+  READ_VISIBLE_ROWS,
   waitNoPromptLeak,
 } from "./screenshot-prompt.js";
 
@@ -31,6 +33,16 @@ describe("findPromptLeak", () => {
     "",
   ])("passes %j", (row) => {
     expect(findPromptLeak([row])).toBeUndefined();
+  });
+
+  // Issue #202 (openspec change explorer-panel): the header and rows of the explorer panel.
+  it("finds a user folder in a path of the explorer panel, but not in a terminal row", () => {
+    expect(findPromptLeak([`${EXPLORER_ROW}/home/dev/project`])).toBe(`${EXPLORER_ROW}/home/dev/project`);
+    expect(findPromptLeak([`${EXPLORER_ROW}C:\\Users\\dev\\x`])).toBeDefined();
+    expect(findPromptLeak([`${EXPLORER_ROW}/tmp/termdock-shot-1/a.txt`])).toBeUndefined();
+    expect(findPromptLeak([`${EXPLORER_ROW}C:\\Users\\Public\\termdock-shot-1`])).toBeUndefined();
+    expect(findPromptLeak(["cat /home/dev/notes"])).toBeUndefined();
+    expect(READ_VISIBLE_ROWS).toContain(".explorer");
   });
 
   it("returns the first leaking row", () => {

@@ -1,7 +1,13 @@
 import { validateLayoutDocument } from "@termdock/protocol";
 import type { LayoutDocument, LayoutWindow, SessionInfo } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { toLayoutDocument, windowPart, windowsFromDocument, withPart } from "../shared/layout-mapping.js";
+import {
+  toLayoutDocument,
+  windowPart,
+  windowsFromDocument,
+  withoutExplorer,
+  withPart,
+} from "../shared/layout-mapping.js";
 import { UiStore } from "./ui-store.js";
 
 function session(id: string): SessionInfo {
@@ -154,6 +160,19 @@ describe("document to store and back", () => {
       maximized: true,
       tabs: [],
     });
+  });
+
+  // Issue #202 (openspec change explorer-panel): the explorer panel of each window, protocol 1.9.
+  it("passes the explorer panel of a window through, and strips it for an older core", () => {
+    const [first] = windowsFromDocument(document);
+    const part = { ...windowPart(first!), explorerVisible: false, explorerWidth: 312 };
+    const next = withPart(first!, part);
+    expect(next).toMatchObject({ explorerVisible: false, explorerWidth: 312 });
+    expect(windowPart(next)).toEqual(part);
+
+    const stripped = withoutExplorer(toLayoutDocument([next]));
+    expect(stripped?.windows[0]).toEqual(first);
+    expect(withoutExplorer(toLayoutDocument([first!]))).toBeUndefined();
   });
 
   it("returns no windows without a document", () => {

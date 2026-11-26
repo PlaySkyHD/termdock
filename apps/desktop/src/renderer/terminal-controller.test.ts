@@ -833,6 +833,18 @@ describe("TerminalController", () => {
       expect(controller.currentCwd()).toBeUndefined();
     });
 
+    // Issue #202 (openspec change explorer-panel): a restart keeps the view, the new shell reports the same path.
+    it("reports the same path again after forgetCwd", async () => {
+      const { api, controller } = await opened({}, windows);
+      const seen: string[] = [];
+      controller.onCwd((path) => seen.push(path));
+      api.output("s1", 1, report("C:\\proj"));
+      controller.forgetCwd();
+      expect(controller.currentCwd()).toBeUndefined();
+      api.output("s1", 2, report("C:\\proj"));
+      expect(seen).toEqual(["C:\\proj", "C:\\proj"]);
+    });
+
     it("keeps the other listeners and the parser running when a listener throws", async () => {
       const { api, surface, controller } = await opened({}, windows);
       const seen: string[] = [];

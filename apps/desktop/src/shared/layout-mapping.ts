@@ -26,8 +26,23 @@ export function withPart(window: LayoutWindow, part: LayoutWindowPart): LayoutWi
     ...(window.maximized === undefined ? {} : { maximized: window.maximized }),
     ...(part.sidebarVisible === undefined ? {} : { sidebarVisible: part.sidebarVisible }),
     ...(part.sidebarWidth === undefined ? {} : { sidebarWidth: part.sidebarWidth }),
+    ...(part.explorerVisible === undefined ? {} : { explorerVisible: part.explorerVisible }),
+    ...(part.explorerWidth === undefined ? {} : { explorerWidth: part.explorerWidth }),
     tabs: part.tabs,
     ...(part.activeTabId === undefined ? {} : { activeTabId: part.activeTabId }),
+  };
+}
+
+/**
+ * The document without the fields of protocol 1.9 (`explorerVisible`, `explorerWidth`, #202), for a core 1.8 that
+ * still runs after an update and refuses unknown fields; undefined when the document has none of them.
+ */
+export function withoutExplorer(layout: LayoutDocument): LayoutDocument | undefined {
+  if (!layout.windows.some((window) => "explorerVisible" in window || "explorerWidth" in window))
+    return undefined;
+  return {
+    ...layout,
+    windows: layout.windows.map(({ explorerVisible: _visible, explorerWidth: _width, ...window }) => window),
   };
 }
 

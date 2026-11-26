@@ -1,7 +1,7 @@
 // Current directory per session in the renderer (issue #199, openspec change session-current-cwd).
 import type { SessionInfo, SessionState } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
-import { currentCwdOf, withCurrentCwd } from "./session-cwd.js";
+import { currentCwdOf, relayCwd, withCurrentCwd } from "./session-cwd.js";
 import { UiStore } from "./ui-store.js";
 
 function session(id: string, state: SessionState = "Running", currentCwd?: string): SessionInfo {
@@ -92,5 +92,114 @@ describe("UiStore current directory", () => {
     store.sessionUpdated({ ...session("a"), name: "neu" });
     expect(store.getState().sessions[0]?.name).toBe("neu");
     expect(currentCwdOf(store.getState(), "a")).toBe("/tmp");
+  });
+});
+
+// Issue #202 (openspec change explorer-panel): the directory of a Windows shell from its view into the store.
+describe("relayCwd", () => {
+  class FakeSource {
+    cwd: string | undefined;
+    readonly listeners = new Set<(path: string) => void>();
+    currentCwd = (): string | undefined => this.cwd;
+    onCwd = (listener: (path: string) => void): (() => void) => {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    };
+    forgetCwd = (): void => {
+      this.cwd = undefined;
+    };
+    /** Like the controller: only a change reaches the listeners. */
+    report(path: string): void {
+      if (path === this.cwd) return;
+      this.cwd = path;
+      for (const listener of this.listeners) listener(path);
+    }
+  }
+
+  it("takes the known directory, then each change, until it is stopped", () => {
+    const store = newStore([session("w")]);
+    store.openSession("w");
+    const paneId = store.getState().window.tabs[0]!.activePaneId;
+    const source = new FakeSource();
+    source.cwd = "C:\\Temp";
+
+    const stop = relayCwd(store, paneId, source);
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\Temp");
+    source.report("C:\\Temp\\sub");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\Temp\\sub");
+
+    stop();
+    source.report("D:\\");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\Temp\\sub");
+    expect(source.listeners.size).toBe(0);
+  });
+
+  it("changes the store only when a second view reports another path", () => {
+    const store = newStore([session("w")]);
+    store.openSession("w");
+    const paneId = store.getState().window.tabs[0]!.activePaneId;
+    const first = new FakeSource();
+    const second = new FakeSource();
+    relayCwd(store, paneId, first);
+    relayCwd(store, paneId, second);
+    first.report("C:\\a");
+    const before = store.getState();
+    second.report("C:\\a");
+    expect(store.getState()).toBe(before);
+  });
+
+  it("keeps no path of the old run after a restart, and takes the new shell's, also the same one", () => {
+    const store = newStore([session("w")]);
+    store.openSession("w");
+    const paneId = store.getState().window.tabs[0]!.activePaneId;
+    const source = new FakeSource();
+    const stop = relayCwd(store, paneId, source);
+    source.report("C:\\proj\\sub");
+
+    // The run ends and starts again in the same view: until the new shell reports, the directory is unknown.
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Starting");
+    store.sessionStateChanged("w", "Running");
+    expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
+    source.report("C:\\proj\\sub");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj\\sub");
+
+    // A report while the store still says Starting is taken once the run is live.
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Starting");
+    source.report("C:\\proj");
+    expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
+    store.sessionStateChanged("w", "Running");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj");
+
+    stop();
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Running");
+    source.report("D:\\");
+    expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
+  });
+
+  it("keeps a report made during Starting when the store changes for another reason before Running", () => {
+    const store = newStore([session("w"), session("x")]);
+    store.openSession("w");
+    const paneId = store.getState().window.tabs[0]!.activePaneId;
+    const source = new FakeSource();
+    relayCwd(store, paneId, source);
+    source.report("C:\\proj\\sub");
+
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Starting");
+    source.report("C:\\proj");
+    // Another session changes while this one is still starting: the new shell's report must stay.
+    store.sessionStateChanged("x", "Exited", 0);
+    store.sessionStateChanged("w", "Running");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj");
+  });
+
+  it("relays nothing for a pane that is not in the window", () => {
+    const store = newStore([session("w")]);
+    const source = new FakeSource();
+    relayCwd(store, "nope", source);
+    expect(source.listeners.size).toBe(0);
   });
 });

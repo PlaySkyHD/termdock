@@ -691,7 +691,14 @@ function changeOf(raw: unknown, allowed: readonly string[], name: string): Recor
   return Object.fromEntries(present);
 }
 
-const PART_KEYS = ["sidebarVisible", "sidebarWidth", "tabs", "activeTabId"];
+const PART_KEYS = [
+  "sidebarVisible",
+  "sidebarWidth",
+  "explorerVisible",
+  "explorerWidth",
+  "tabs",
+  "activeTabId",
+];
 
 /**
  * Shape only: what a renderer may report of its window. Id, position, size and maximization are the main

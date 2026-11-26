@@ -146,6 +146,10 @@ export interface LayoutWindow {
   maximized?: boolean;
   sidebarVisible?: boolean;
   sidebarWidth?: number;
+  /** The explorer panel on the right (#202); missing means shown. Protocol 1.9. */
+  explorerVisible?: boolean;
+  /** Width of the explorer panel in pixels (#202); missing means the default of the app. Protocol 1.9. */
+  explorerWidth?: number;
   /** 0 to 64 tabs. A window without tabs shows only the sidebar and the empty state. */
   tabs: LayoutTab[];
   /** Id of a tab in `tabs`. Required when there are tabs, omitted when there are none. */
@@ -295,5 +299,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 1.6: method `session.restart` (restart an ended or interrupted session from the app, #156).
  * 1.7: optional settings key `checkForUpdates` (auto-update of the installed app, #136).
  * 1.8: optional `currentCwd` in `SessionInfo` and event `session.cwdChanged` (current directory, #199).
+ * 1.9: optional `explorerVisible` and `explorerWidth` in `LayoutWindow` (explorer panel, #202).
  */
-export const PROTOCOL_VERSION = "1.8" as const;
+export const PROTOCOL_VERSION = "1.9" as const;

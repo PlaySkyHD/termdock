@@ -257,8 +257,8 @@ describe("parseResponse", () => {
     expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
   });
 
-  it("speaks protocol 1.8 (issue #199: currentCwd and session.cwdChanged)", () => {
-    expect(PROTOCOL_VERSION).toBe("1.8");
+  it("speaks protocol 1.9 (issue #202: explorerVisible and explorerWidth in the layout)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.9");
   });
 
   it("allows an empty snapshot and no writer", () => {
@@ -556,6 +556,7 @@ describe("negotiateHello", () => {
     const result = negotiateHello(hello("1.7"));
     expect(result).toEqual({ ok: true, value: { protocolVersion: PROTOCOL_VERSION } });
     expect(negotiateHello(hello("1.8")).ok).toBe(true);
+    expect(negotiateHello(hello("1.9")).ok).toBe(true);
     expect(result).toEqual({ ok: true, value: { protocolVersion: PROTOCOL_VERSION } });
   });
 

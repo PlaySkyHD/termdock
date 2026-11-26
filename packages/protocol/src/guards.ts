@@ -334,7 +334,21 @@ function checkLayoutTab(value: unknown, path: string, ids: Set<string>): string 
 
 function checkLayoutWindow(value: unknown, path: string, ids: Set<string>): void {
   const obj = record(value, path);
-  onlyKeys(obj, ["id", "bounds", "maximized", "sidebarVisible", "sidebarWidth", "tabs", "activeTabId"], path);
+  onlyKeys(
+    obj,
+    [
+      "id",
+      "bounds",
+      "maximized",
+      "sidebarVisible",
+      "sidebarWidth",
+      "explorerVisible",
+      "explorerWidth",
+      "tabs",
+      "activeTabId",
+    ],
+    path,
+  );
   claimId(obj, path, ids);
   optional(obj, "bounds", path, (bounds, boundsPath) => {
     const box = record(bounds, boundsPath);
@@ -347,6 +361,8 @@ function checkLayoutWindow(value: unknown, path: string, ids: Set<string>): void
   optional(obj, "maximized", path, isBoolean);
   optional(obj, "sidebarVisible", path, isBoolean);
   optional(obj, "sidebarWidth", path, isPositiveNumber);
+  optional(obj, "explorerVisible", path, isBoolean);
+  optional(obj, "explorerWidth", path, isPositiveNumber);
   const tabs = present(obj, "tabs", path);
   if (!Array.isArray(tabs) || tabs.length > MAX_TABS_PER_WINDOW) {
     fail(`${path}.tabs must be an array of at most ${MAX_TABS_PER_WINDOW} tabs`);

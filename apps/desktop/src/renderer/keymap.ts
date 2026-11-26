@@ -22,6 +22,8 @@ export const COMMAND_IDS = [
   "focusUp",
   "focusDown",
   "toggleSidebar",
+  "toggleExplorer",
+  "focusExplorer",
   "newWindow",
   "copy",
   "paste",
@@ -58,6 +60,9 @@ export const DEFAULT_KEYMAP: Keymap = {
   focusUp: "Alt+Up",
   focusDown: "Alt+Down",
   toggleSidebar: "Ctrl+Shift+B",
+  // Ctrl+Shift+E (VS Code) splits already (#27): X for eXplorer, O for Ordner (#202).
+  toggleExplorer: "Ctrl+Shift+X",
+  focusExplorer: "Ctrl+Shift+O",
   newWindow: "Ctrl+Shift+N",
   copy: "Ctrl+Shift+C",
   paste: "Ctrl+Shift+V",
@@ -91,6 +96,8 @@ export const COMMAND_LABELS: Readonly<Record<CommandId, string>> = {
   focusUp: "Fokus ins Pane oben",
   focusDown: "Fokus ins Pane unten",
   toggleSidebar: "Seitenleiste ein-/ausblenden",
+  toggleExplorer: "Explorer ein-/ausblenden",
+  focusExplorer: "Fokus in den Explorer",
   newWindow: "Neues Fenster",
   copy: "Auswahl kopieren",
   paste: "Einfügen",
@@ -215,6 +222,18 @@ export function handleKey(
   event.preventDefault();
   if (event.type === "keydown") commands.run(command);
   return false;
+}
+
+/** Where the window's key handler sees a key: a text field of the page, the explorer panel (#202), anything else. */
+export type KeyPlace = "textField" | "explorer" | "other";
+
+/**
+ * Whether the window's key handler leaves a bound key alone. Copy and paste belong to a text field there; in the
+ * explorer they would reach the terminal of the active pane although the keys are the panel's (input lock: the
+ * shell gets input only from its terminal), so they do nothing there.
+ */
+export function leavesKey(command: CommandId | undefined, place: KeyPlace): boolean {
+  return (command === "copy" || command === "paste") && place !== "other";
 }
 
 export interface KeymapRow {

@@ -462,7 +462,7 @@ Protokoll 1.6 SHALL die Methode `session.restart { sessionId }` enthalten; unbek
 #### Scenario: Version
 
 - **WHEN** ein Client die Protokollversion liest
-- **THEN** ist sie `1.8`, und Clients mit `1.2` bis `1.7` werden weiter angenommen
+- **THEN** ist sie `1.9` (1.9 ergänzt `explorerVisible` und `explorerWidth` im Layout), und Clients mit `1.2` bis `1.8` werden weiter angenommen
 
 ### Requirement: Aktuelles Verzeichnis im Vertrag
 

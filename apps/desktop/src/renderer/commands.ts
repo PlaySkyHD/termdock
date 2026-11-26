@@ -54,6 +54,8 @@ export interface CommandDeps extends SplitDeps {
   toggleSearch(): void;
   /** Opens the settings dialog (#64); it is modal, its keys are its own. */
   openSettings(): void;
+  /** The tree of the explorer panel takes the keyboard focus (#202); the panel shows by then (App). */
+  focusExplorer(): void;
 }
 
 /** Stores with a split whose session is still being created; a second split waits for it (no session over the limit). */
@@ -300,6 +302,15 @@ export async function runCommand(command: CommandId, deps: CommandDeps): Promise
     case "toggleSidebar":
       store.toggleSidebar();
       deps.refocus();
+      return;
+    case "toggleExplorer":
+      // A hidden panel cannot keep the focus: the terminal takes it, also when the panel had it.
+      store.toggleExplorer();
+      deps.refocus();
+      return;
+    case "focusExplorer":
+      store.showExplorer();
+      deps.focusExplorer();
       return;
     case "copy": {
       const text = deps.activeController()?.selectedText() ?? "";

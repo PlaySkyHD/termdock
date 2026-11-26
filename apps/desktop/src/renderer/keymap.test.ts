@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { COMMAND_IDS, DEFAULT_KEYMAP, handleKey, keymapRows, overviewRows, resolveKey } from "./keymap.js";
+import {
+  COMMAND_IDS,
+  DEFAULT_KEYMAP,
+  handleKey,
+  keymapRows,
+  leavesKey,
+  overviewRows,
+  resolveKey,
+} from "./keymap.js";
 import type { CommandId, KeyLike } from "./keymap.js";
 
 /** A key press as xterm.js and the window see it; `code` is the physical key, independent of the layout. */
@@ -41,6 +49,9 @@ describe("resolveKey", () => {
     ["Alt+Up", press("ArrowUp", { altKey: true }), "focusUp"],
     ["Alt+Down", press("ArrowDown", { altKey: true }), "focusDown"],
     ["Ctrl+Shift+B", press("KeyB", ctrlShift), "toggleSidebar"],
+    // Issue #202 (openspec change explorer-panel).
+    ["Ctrl+Shift+X", press("KeyX", ctrlShift), "toggleExplorer"],
+    ["Ctrl+Shift+O", press("KeyO", ctrlShift), "focusExplorer"],
     ["Ctrl+Shift+N", press("KeyN", ctrlShift), "newWindow"],
     ["Ctrl+Shift+C", press("KeyC", ctrlShift), "copy"],
     ["Ctrl+Shift+V", press("KeyV", ctrlShift), "paste"],
@@ -151,6 +162,18 @@ describe("overviewRows", () => {
       shortcut: "Ctrl+1 … Ctrl+9",
     });
     expect(rows.some((row) => row.command === "gotoTab2")).toBe(false);
+  });
+});
+
+// Issue #202 (openspec change explorer-panel): the input lock with the focus in the explorer.
+describe("leavesKey", () => {
+  it("leaves copy and paste to a text field and keeps them from the terminal in the explorer", () => {
+    expect(leavesKey("paste", "explorer")).toBe(true);
+    expect(leavesKey("copy", "explorer")).toBe(true);
+    expect(leavesKey("paste", "textField")).toBe(true);
+    expect(leavesKey("paste", "other")).toBe(false);
+    expect(leavesKey("toggleExplorer", "explorer")).toBe(false);
+    expect(leavesKey(undefined, "explorer")).toBe(false);
   });
 });
 

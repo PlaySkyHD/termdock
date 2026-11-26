@@ -23,6 +23,7 @@ import type { GroupRetry, QuietWatch, SceneGroup } from "./screenshot.js";
 import { crashScenes } from "./screenshot-crash.js";
 import { cwdScenes } from "./screenshot-cwd.js";
 import { dragScenes } from "./screenshot-drag.js";
+import { explorerScenes } from "./screenshot-explorer.js";
 import { windowsScenes } from "./screenshot-windows.js";
 import { captureWindow } from "./screenshot-page.js";
 import { NEUTRAL_PROMPT } from "./screenshot-prompt.js";
@@ -338,6 +339,7 @@ async function playGroups(
   await play("drag", () => dragScenes(deps));
   await play("crash", () => crashScenes(deps));
   await play("update", () => updateScenes(deps));
+  await play("explorer", () => explorerScenes(deps));
   await play("restart", () => restartScenes(deps));
 }
 

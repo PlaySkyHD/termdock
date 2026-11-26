@@ -173,6 +173,12 @@ describe("screenshotScenes", () => {
     expect(screenshotScenes([...base, "--scenes", "restart,crash"])).toEqual(["crash", "restart"]);
     // The update dialog (#136) installs nothing and also comes before the restart.
     expect(screenshotScenes([...base, "--scenes", "restart,update"])).toEqual(["update", "restart"]);
+    // The explorer panel (#202) comes before the restart as well.
+    expect(screenshotScenes([...base, "--scenes", "restart,explorer,update"])).toEqual([
+      "update",
+      "explorer",
+      "restart",
+    ]);
   });
 
   it("reads the option wherever it stands", () => {

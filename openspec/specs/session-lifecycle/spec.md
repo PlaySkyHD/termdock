@@ -584,17 +584,27 @@ Die Registry SHALL das Verzeichnis über `Backend.currentCwd` nur für Sessions 
 
 - **GIVEN** eine Session, deren Backend immer `/tmp` meldet
 - **WHEN** nach mehreren Ausgabepausen abgefragt wird
-- **THEN** gibt es genau eine Meldung; liefert eine Abfrage nichts, bleibt `/tmp`
+- **THEN** gibt es genau eine Meldung; liefert eine Abfrage nichts (Fehler, Zeitüberschreitung), bleibt `/tmp`
+
+### Requirement: Entferntes Verzeichnis
+
+Meldet das Backend `null` (das Verzeichnis der Shell wurde entfernt), SHALL die Registry `currentCwd` entfernen und eine Änderung ohne Verzeichnis melden, wenn es einen Wert gab.
+
+#### Scenario: Ordner gelöscht
+
+- **GIVEN** eine Session mit View und `currentCwd: "/tmp/build"`
+- **WHEN** der Ordner gelöscht wird und das Backend nach der nächsten Ausgabepause `null` meldet
+- **THEN** hat die Session kein `currentCwd`, und `session.cwdChanged` ohne `currentCwd` geht hinaus
 
 ### Requirement: Drosselung der Verzeichnisabfrage
 
-Je Session MUST höchstens eine Abfrage laufen, und zwischen dem Beginn zweier Abfragen MUST mindestens 1 s liegen; Ausgabe während einer Abfrage plant höchstens eine weitere. Eine Antwort ohne neues Verzeichnis SHALL den Abstand bis 8 s verdoppeln; ein neues Verzeichnis, Eingabe und Anhängen setzen ihn auf 1 s zurück. Ohne View SHALL die Registry keine Abfrage planen; geht die letzte View, entfällt eine geplante Abfrage, und der bekannte Wert bleibt.
+Je Session MUST höchstens eine Abfrage laufen, und zwischen dem Beginn zweier Abfragen MUST mindestens 1 s liegen; Ausgabe während einer Abfrage plant höchstens eine weitere. Eine Antwort ohne Neues SHALL den Abstand bis 8 s verdoppeln; ein neues Ergebnis, Eingabe mit Enter (CR oder LF) und Anhängen setzen ihn auf 1 s zurück, einzelne Tasten nicht. Ohne View SHALL die Registry keine Abfrage planen; geht die letzte View, entfällt eine geplante Abfrage, und der bekannte Wert bleibt.
 
 #### Scenario: Rückzug bei unveränderter Antwort
 
-- **GIVEN** eine Session mit View, deren Programm 30 s lang alle 500 ms neu zeichnet, und ein gleichbleibendes Verzeichnis
-- **WHEN** die Ausgabe läuft und danach die schreibende View tippt
-- **THEN** fragt die Registry in den 30 s höchstens achtmal und nach der Eingabe innerhalb von 1 s erneut
+- **GIVEN** eine Session mit View, deren Programm 30 s lang alle 500 ms neu zeichnet und einzelne Tasten bekommt, und ein gleichbleibendes Verzeichnis
+- **WHEN** die Ausgabe läuft und danach die schreibende View eine Zeile mit Enter sendet
+- **THEN** fragt die Registry in den 30 s höchstens achtmal und nach dem Enter innerhalb von 1 s erneut
 
 #### Scenario: Gedrosselt
 
@@ -610,7 +620,7 @@ Je Session MUST höchstens eine Abfrage laufen, und zwischen dem Beginn zweier A
 
 ### Requirement: Abbau der Verzeichnisabfrage
 
-Verlässt eine Session `Running` und `Detached`, SHALL die Registry `currentCwd` entfernen und, wenn es einen Wert gab, nach dem Zustandswechsel eine Änderung ohne Verzeichnis melden. Endet oder wechselt die PTY, oder wird die Registry freigegeben, MUST sie den Timer abbauen und ein noch ausstehendes Ergebnis verwerfen. Das Repository MUST `currentCwd` nicht speichern.
+Verlässt eine Session `Running` und `Detached`, SHALL die Registry `currentCwd` entfernen und, wenn es einen Wert gab, nach dem Zustandswechsel eine Änderung ohne Verzeichnis melden. Die Abfrage gehört zur Session: Endet oder wechselt die PTY, MUST die Registry den Timer abbauen und das Ergebnis einer laufenden Abfrage verwerfen; die nächste beginnt erst nach deren Ende. Archivieren, Löschen und Freigeben der Registry bauen sie ab. Das Repository MUST `currentCwd` nicht speichern.
 
 #### Scenario: Ende des Prozesses
 
@@ -623,6 +633,12 @@ Verlässt eine Session `Running` und `Detached`, SHALL die Registry `currentCwd`
 - **GIVEN** eine laufende Abfrage einer Session
 - **WHEN** die PTY endet, bevor das Backend antwortet
 - **THEN** übernimmt die Registry das Ergebnis nicht, und kein Timer der Session bleibt
+
+#### Scenario: Wiederanbinden während einer Abfrage
+
+- **GIVEN** eine laufende Abfrage einer Session mit View
+- **WHEN** der tmux-Client verloren geht und die Registry eine neue PTY bindet, bevor das Backend antwortet
+- **THEN** startet keine zweite Abfrage, bis die erste endet, deren Antwort verworfen wird; danach fragt die Registry für die neue PTY
 
 #### Scenario: Freigabe der Registry
 

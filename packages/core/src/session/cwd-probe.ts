@@ -11,11 +11,14 @@ export const CWD_MIN_INTERVAL_MS = 1_000;
  */
 export const CWD_MAX_INTERVAL_MS = 8_000;
 
+/** A directory, `null` for "the session has none to show" (removed), undefined for "cannot tell". */
+export type CwdAnswer = string | null | undefined;
+
 export interface CwdProbeOptions {
   /** Asks the backend; undefined or a rejection means "cannot tell" and is dropped. */
-  query: () => Promise<string | undefined>;
-  /** Called with every answer while the probe lives; the caller decides whether it is a change. */
-  onResult: (cwd: string) => void;
+  query: () => Promise<CwdAnswer>;
+  /** Called with every answer of the current binding; the caller decides whether it is a change. */
+  onResult: (cwd: string | null) => void;
   quietMs?: number;
   minIntervalMs?: number;
   maxIntervalMs?: number;
@@ -24,16 +27,17 @@ export interface CwdProbeOptions {
 }
 
 /**
- * One session's directory queries: at most one at a time, and between their starts at least the current interval.
- * The interval starts at `minIntervalMs` and doubles with every answer that brought no new directory, up to
- * `maxIntervalMs`; a new directory, `input` (someone typed, maybe a `cd`) and `poke` set it back. Output
- * (`activity`) asks once it has paused for `quietMs`; `poke` asks as soon as the interval allows (a view attached),
- * and later output does not put it off. Output during a query plans exactly one more after it. `idle` drops what is
- * planned (no view left), `dispose` also drops the answer of a running query; afterwards nothing is planned any more.
+ * One session's directory queries, for the session's whole life (across PTY changes): at most one at a time, and
+ * between their starts at least the current interval. The interval starts at `minIntervalMs` and doubles with every
+ * answer that brought nothing new, up to `maxIntervalMs`; a new answer, `input` (Enter was typed, maybe a `cd`) and
+ * `poke` set it back. Output (`activity`) asks once it has paused for `quietMs`; `poke` asks as soon as the interval
+ * allows (a view attached), and later output does not put it off. Output during a query plans exactly one more after
+ * it. `idle` drops what is planned (no view left). `unbind` (the PTY ended or was replaced) also drops the answer of
+ * a running query, but the query still counts: no second one starts before it ends. `dispose` ends the probe.
  */
 export class CwdProbe {
-  private readonly query: () => Promise<string | undefined>;
-  private readonly onResult: (cwd: string) => void;
+  private readonly query: () => Promise<CwdAnswer>;
+  private readonly onResult: (cwd: string | null) => void;
   private readonly quietMs: number;
   private readonly minIntervalMs: number;
   private readonly maxIntervalMs: number;
@@ -46,8 +50,10 @@ export class CwdProbe {
   private again = false;
   private lastStart = Number.NEGATIVE_INFINITY;
   private interval: number;
-  /** The last directory the backend answered, for the back-off. */
-  private lastAnswer: string | undefined;
+  /** The last answer the backend gave, for the back-off. */
+  private lastAnswer: string | null | undefined;
+  /** Raised by `unbind`; a query started under an older one has its answer dropped. */
+  private generation = 0;
   private disposed = false;
 
   constructor(options: CwdProbeOptions) {
@@ -65,7 +71,7 @@ export class CwdProbe {
     this.schedule(this.quietMs, false);
   }
 
-  /** Someone typed into the session: the next query may come after `minIntervalMs` again. */
+  /** Enter was typed into the session: the next query may come after `minIntervalMs` again. */
   input(): void {
     this.interval = this.minIntervalMs;
   }
@@ -82,9 +88,16 @@ export class CwdProbe {
     this.again = false;
   }
 
+  /** The PTY ended or is replaced: nothing planned stays, and the answer of a running query is dropped. */
+  unbind(): void {
+    this.idle();
+    this.generation += 1;
+    this.lastAnswer = undefined;
+  }
+
   dispose(): void {
     this.disposed = true;
-    this.idle();
+    this.unbind();
   }
 
   private schedule(delayMs: number, urgent: boolean): void {
@@ -105,13 +118,18 @@ export class CwdProbe {
     this.timer = undefined;
     this.running = true;
     this.lastStart = this.now();
+    const generation = this.generation;
+    const current = (): boolean => !this.disposed && generation === this.generation;
     void this.query()
       .then(
         (cwd) => {
+          if (!current()) return;
           this.backOff(cwd);
-          if (!this.disposed && cwd !== undefined) this.onResult(cwd);
+          if (cwd !== undefined) this.onResult(cwd);
         },
-        () => this.backOff(undefined),
+        () => {
+          if (current()) this.backOff(undefined);
+        },
       )
       .finally(() => {
         this.running = false;
@@ -121,7 +139,7 @@ export class CwdProbe {
       });
   }
 
-  private backOff(cwd: string | undefined): void {
+  private backOff(cwd: CwdAnswer): void {
     if (cwd !== undefined && cwd !== this.lastAnswer) {
       this.lastAnswer = cwd;
       this.interval = this.minIntervalMs;

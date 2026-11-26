@@ -6,16 +6,16 @@ interface Harness {
   probe: CwdProbe;
   /** Start time (fake clock) of every query. */
   starts: number[];
-  results: string[];
+  results: (string | null)[];
   /** Queries that have not answered; `answer` settles the oldest. */
-  pending: Array<(cwd: string | undefined) => void>;
-  answer(cwd: string | undefined): Promise<void>;
+  pending: Array<(cwd: string | null | undefined) => void>;
+  answer(cwd: string | null | undefined): Promise<void>;
 }
 
 function harness(): Harness {
   const starts: number[] = [];
-  const results: string[] = [];
-  const pending: Array<(cwd: string | undefined) => void> = [];
+  const results: (string | null)[] = [];
+  const pending: Array<(cwd: string | null | undefined) => void> = [];
   const probe = new CwdProbe({
     query: () =>
       new Promise((resolve) => {
@@ -145,8 +145,33 @@ describe("CwdProbe", () => {
     expect(h.starts).toHaveLength(1);
   });
 
+  it("unbind drops the answer of the running query, which still holds back the next one", async () => {
+    const h = harness();
+    h.probe.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    h.probe.unbind();
+    // The new PTY asks at once, but the old query has not ended yet.
+    h.probe.poke();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.starts).toHaveLength(1);
+    await h.answer("/old");
+    expect(h.results).toEqual([]);
+    await vi.advanceTimersByTimeAsync(CWD_QUIET_MS);
+    expect(h.starts).toHaveLength(2);
+    await h.answer("/new");
+    expect(h.results).toEqual(["/new"]);
+  });
+
+  it("passes on null (no directory) and counts it for the back-off", async () => {
+    const h = harness();
+    h.probe.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    await h.answer(null);
+    expect(h.results).toEqual([null]);
+  });
+
   it("drops an empty answer and a failing query", async () => {
-    const results: string[] = [];
+    const results: (string | null)[] = [];
     let calls = 0;
     const probe = new CwdProbe({
       query: async () => {

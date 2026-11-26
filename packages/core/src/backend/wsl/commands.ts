@@ -213,15 +213,16 @@ export function currentCwdArgs(target: TmuxTarget, id: SessionId): string[] {
 const DELETED_SUFFIX = " (deleted)";
 
 /**
- * The path from `currentCwdArgs` without its line end, or undefined for a failed call and for anything a client would
- * reject (`isValidCurrentCwd`) or that is no absolute Linux path. A path with a newline never gets through. A removed
- * directory (`… (deleted)`, measured with tmux 3.6) is no directory to show: undefined as well.
+ * The path from `currentCwdArgs` without its line end, or undefined ("cannot tell") for a failed call and for anything
+ * a client would reject (`isValidCurrentCwd`) or that is no absolute Linux path. A path with a newline never gets
+ * through. A removed directory (`/… (deleted)`, measured with tmux 3.6) is `null`: the shell has no directory to show.
  */
-export function parseCurrentCwd(result: RunResult): string | undefined {
+export function parseCurrentCwd(result: RunResult): string | null | undefined {
   if (result.code !== 0 || result.timedOut) return undefined;
   const path = result.stdout.replace(/\r?\n$/, "");
-  if (path.endsWith(DELETED_SUFFIX)) return undefined;
-  return path.startsWith("/") && isValidCurrentCwd(path) ? path : undefined;
+  if (!path.startsWith("/")) return undefined;
+  if (path.endsWith(DELETED_SUFFIX)) return null;
+  return isValidCurrentCwd(path) ? path : undefined;
 }
 
 /** tty of each tmux client of the session, one per line (issue #34). */
@@ -306,14 +307,21 @@ export function listDistrosArgs(): string[] {
   return ["-l", "-v"];
 }
 
-/**
- * tmux reported that the session or its server does not exist (as opposed to WSL failing). `no current target`: the
- * server has no session left but has not exited yet, because clients are still connected (tmux 3.6 waits for them,
- * e.g. parallel `has-session` calls of a shutdown or a directory query, issue #199).
- */
+/** tmux reported that the session or its server does not exist (as opposed to WSL failing). */
 export function isMissingSession(result: RunResult): boolean {
   if (result.timedOut || result.code !== 1) return false;
-  return /can't find session|no server running|error connecting to|no current target/.test(result.stderr);
+  return /can't find session|no server running|error connecting to/.test(result.stderr);
+}
+
+/**
+ * Like `isMissingSession`, plus `no current target`: the server has no session left but has not exited yet, because
+ * clients are still connected (tmux 3.6 waits for them, e.g. the parallel `has-session` calls of a shutdown). Only
+ * for the check after `kill-session`, where the session is meant to be gone (issue #199). Never for `listLive`,
+ * `exists` or the pane status: there an unclear answer must not count a whole distro as ended.
+ */
+export function isGoneAfterKill(result: RunResult): boolean {
+  if (isMissingSession(result)) return true;
+  return !result.timedOut && result.code === 1 && /no current target/.test(result.stderr);
 }
 
 /** Parses `#{pane_dead} #{pane_dead_status} #{pane_dead_signal}`; a signal maps to 128 + n like a shell. */

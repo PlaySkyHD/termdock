@@ -77,20 +77,21 @@ describe("SessionRegistry: current directory", () => {
     expect(registry.get(id).currentCwd).toBe("/tmp");
   });
 
-  it("backs off for output that changes nothing and asks within a second again once the writer types", async () => {
+  it("backs off for output that changes nothing, also while keys drive a TUI, and leaves it on Enter", async () => {
     const { registry, backend, cwds } = setup();
     const { id } = await registry.create({ name: "top", launch: spec });
     backend.setCwd(id, "/tmp");
     await registry.attachView(id, "v1");
-    // A TUI repaints all the time; the answers stay the same.
+    // A TUI repaints all the time and gets single keys; the answers stay the same.
     for (let t = 0; t < 30_000; t += 500) {
+      registry.input(id, "v1", t % 1_000 === 0 ? "j" : new Uint8Array([0x1b, 0x5b, 0x41]));
       backend.pty(id).emitData("frame");
       await pass(500);
     }
     expect(backend.cwdCalls.length).toBeLessThanOrEqual(8);
 
     const before = backend.cwdCalls.length;
-    registry.input(id, "v1", "q");
+    registry.input(id, "v1", new TextEncoder().encode("q\r"));
     backend.setCwd(id, "/srv");
     backend.pty(id).emitData("$ ");
     await pass(CWD_MIN_INTERVAL_MS);
@@ -202,6 +203,48 @@ describe("SessionRegistry: current directory", () => {
     await pass(5_000);
     expect(backend.cwdCalls).toHaveLength(2);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("starts no second query for the new PTY before the one of the old PTY ended, and drops its answer", async () => {
+    const { registry, backend, cwds } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setCwd(id, "/old");
+    let open!: () => void;
+    backend.cwdGate = new Promise((resolve) => (open = resolve));
+    await registry.attachView(id, "v1");
+    await pass(0);
+    expect(backend.cwdPending).toBe(1);
+
+    // The tmux client is lost; the re-attach binds a new PTY while the old query still runs.
+    backend.pty(id).loseClient();
+    await pass(CWD_MAX_INTERVAL_MS);
+    expect(backend.attaches.map((call) => call.id)).toEqual([id]);
+    expect(backend.cwdCalls).toHaveLength(1);
+
+    backend.cwdGate = undefined;
+    open();
+    await pass(0);
+    expect(cwds).toEqual([]);
+    backend.setCwd(id, "/new");
+    await pass(CWD_QUIET_MS);
+    expect(backend.cwdCalls).toHaveLength(2);
+    expect(cwds.map((event) => event.currentCwd)).toEqual(["/new"]);
+  });
+
+  it("drops the directory and reports it as unknown once the backend says it is gone", async () => {
+    const { registry, backend, cwds } = setup();
+    const { id } = await registry.create({ name: "shell", launch: spec });
+    backend.setCwd(id, "/tmp/build");
+    await registry.attachView(id, "v1");
+    await pass(0);
+
+    backend.setCwd(id, null);
+    await pass(CWD_MIN_INTERVAL_MS);
+    backend.pty(id).emitData("$ ");
+    await pass(CWD_QUIET_MS);
+
+    expect(cwds.map((event) => event.currentCwd)).toEqual(["/tmp/build", undefined]);
+    expect("currentCwd" in registry.get(id)).toBe(false);
   });
 
   it("never asks a backend without currentCwd", async () => {

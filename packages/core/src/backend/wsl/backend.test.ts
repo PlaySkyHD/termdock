@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LaunchSpec } from "@termdock/protocol";
-import { WslBackend } from "./backend.js";
+import { MAX_CWD_QUERIES, WslBackend } from "./backend.js";
 import type { RunResult } from "./commands.js";
 import type { KeepaliveProcess } from "./keepalive.js";
 import type { PtyProcess } from "../conpty/pty.js";
@@ -248,6 +248,51 @@ describe("WslBackend", () => {
     await backend.kill("s1", spec);
     expect(calls.slice(-2).map(subcommand)).toEqual(["kill-session", "has-session"]);
     expect(running()).toEqual([]);
+  });
+
+  // Issue #199: a tmux server without sessions that still waits for its clients answers `no current target`.
+  const emptyServer: RunResult = { code: 1, stdout: "", stderr: "no current target\n" };
+
+  it("kill resolves when has-session meets a server without sessions (shutdown with parallel kills)", async () => {
+    const { backend, panes } = setup({
+      distro: "Ubuntu",
+      respond: (args) =>
+        subcommand(args) === "has-session" && !args.includes("display-message") ? emptyServer : undefined,
+    });
+    panes.set("td-s1", "0  ");
+    await expect(backend.kill("s1", spec)).resolves.toBeUndefined();
+  });
+
+  it("listLive and exists do not take `no current target` for ended sessions", async () => {
+    const { backend } = setup({ distro: "Ubuntu", respond: () => emptyServer });
+    expect(await backend.listLive([{ id: "a", spec }])).toBeUndefined();
+    await expect(backend.exists("a", spec)).rejects.toThrow(/no current target/);
+  });
+
+  it("currentCwd runs at most MAX_CWD_QUERIES wsl.exe calls at once over all sessions", async () => {
+    let running = 0;
+    let most = 0;
+    const releases: (() => void)[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async () => {
+        running += 1;
+        most = Math.max(most, running);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        running -= 1;
+        return ok("/tmp\n");
+      },
+    });
+    const answers = Promise.all(["a", "b", "c", "d", "e", "f"].map((id) => backend.currentCwd(id, spec)));
+    await flush();
+    expect(running).toBe(MAX_CWD_QUERIES);
+    while (releases.length > 0) {
+      releases.shift()!();
+      await flush();
+    }
+    expect(await answers).toEqual(Array(6).fill("/tmp"));
+    expect(most).toBe(MAX_CWD_QUERIES);
   });
 
   it("kill rejects when the session survives the deadline", async () => {

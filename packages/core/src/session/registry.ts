@@ -411,6 +411,7 @@ export class SessionRegistry {
         entry.reattachRun.wake();
       }
       this.releasePty(entry);
+      this.disposeCwd(entry);
     }
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
@@ -616,6 +617,8 @@ export class SessionRegistry {
     entry.views.clear();
     entry.output.clear();
     entry.modes.reset();
+    // Archived is final: no PTY will be bound again (issue #199).
+    this.disposeCwd(entry);
     this.setState(entry, "Archived");
     return snapshotInfo(entry.info);
   }
@@ -685,6 +688,7 @@ export class SessionRegistry {
     if (info.writerViewId !== undefined) this.setWriter(entry, undefined);
     entry.views.clear();
     entry.output.clear();
+    this.disposeCwd(entry);
     this.sessions.delete(sessionId);
     this.unsaved.delete(sessionId);
   }
@@ -900,8 +904,9 @@ export class SessionRegistry {
     this.assertWriter(entry, viewId);
     if (!entry.pty) throw new CoreError("invalid_state", `Session ${sessionId} has no running process`);
     entry.pty.write(data);
-    // Typing may be a `cd`: the directory queries leave their back-off (issue #199).
-    entry.cwd?.input();
+    // A finished command line may be a `cd`: the directory queries leave their back-off (issue #199). Single keys (a
+    // TUI being driven) do not, or the back-off would never take hold.
+    if (endsLine(data)) entry.cwd?.input();
   }
 
   /**
@@ -1161,26 +1166,38 @@ export class SessionRegistry {
   }
 
   /**
-   * The directory queries of a newly bound PTY (issue #199), or none when the backend cannot tell. An answer counts
-   * only while this probe is the session's: `releasePty` disposes it, so a late answer of an ended PTY is dropped.
+   * The directory queries of the session (issue #199), one probe for the whole entry, or none when the backend cannot
+   * tell. It outlives PTY changes, so a query still running for the old PTY keeps the next one waiting; `releasePty`
+   * unbinds it, which drops that query's answer. Ended with the entry (`disposeCwd`).
    */
   private cwdProbe(entry: SessionEntry): CwdProbe | undefined {
-    entry.cwd?.dispose();
+    if (entry.cwd) return entry.cwd;
     const backend = this.backendFor(entry.info.launch);
     if (!backend?.currentCwd) return undefined;
-    const { id, launch } = entry.info;
     return new CwdProbe({
-      query: () => backend.currentCwd?.(id, launch) ?? Promise.resolve(undefined),
+      query: () => backend.currentCwd?.(entry.info.id, entry.info.launch) ?? Promise.resolve(undefined),
       onResult: (cwd) => this.setCwd(entry, cwd),
       now: this.monotonicNow,
     });
   }
 
-  /** Takes a directory the backend reported; only a change of a running session is reported. Not saved. */
-  private setCwd(entry: SessionEntry, cwd: string): void {
-    if (!RUN_STATES.has(entry.info.state) || entry.info.currentCwd === cwd) return;
-    entry.info.currentCwd = cwd;
-    this.cwdListeners.emit({ sessionId: entry.info.id, currentCwd: cwd });
+  /** The probe of a session that is archived, deleted or whose registry is disposed. */
+  private disposeCwd(entry: SessionEntry): void {
+    entry.cwd?.dispose();
+    entry.cwd = undefined;
+  }
+
+  /**
+   * Takes what the backend reported: a directory, or `null` for "none to show" (removed), which drops the known one.
+   * Only a change of a running session is reported. Not saved.
+   */
+  private setCwd(entry: SessionEntry, cwd: string | null): void {
+    if (!RUN_STATES.has(entry.info.state)) return;
+    const next = cwd ?? undefined;
+    if (entry.info.currentCwd === next) return;
+    if (next === undefined) delete entry.info.currentCwd;
+    else entry.info.currentCwd = next;
+    this.cwdListeners.emit({ sessionId: entry.info.id, currentCwd: next });
   }
 
   /** Output of the session: into the buffer and the modes, numbered, to the views and the history. */
@@ -1305,9 +1322,8 @@ export class SessionRegistry {
     const pty = entry.pty;
     for (const subscription of entry.ptySubscriptions) subscription.dispose();
     entry.ptySubscriptions = [];
-    // Its timer and a running query end with the PTY (issue #199).
-    entry.cwd?.dispose();
-    entry.cwd = undefined;
+    // Nothing stays planned for the PTY, and the answer of a query still running for it is dropped (issue #199).
+    entry.cwd?.unbind();
     entry.pty = undefined;
     pty?.dispose();
   }
@@ -1507,6 +1523,12 @@ function newEntry(info: SessionInfo): SessionEntry {
     reattachRun: undefined,
     cwd: undefined,
   };
+}
+
+/** Whether input holds Enter (CR or LF), as typed or pasted. */
+function endsLine(data: Uint8Array | string): boolean {
+  if (typeof data === "string") return data.includes("\r") || data.includes("\n");
+  return data.includes(13) || data.includes(10);
 }
 
 function assertSize(size: TerminalSize): void {

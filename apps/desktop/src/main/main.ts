@@ -217,6 +217,8 @@ async function main(): Promise<void> {
   let restartHold: Promise<void> | undefined;
   // Set once the bridge exists; the supervisor tells the windows about restarts through it (#130).
   let restartNotes: { last: SupervisorState; bridge?: DesktopBridge } = { last: "connecting" };
+  /** Tells the layout coordinator about a new core connection (#202); set once the coordinator exists. */
+  const layoutHooks: { coreConnected?: () => void } = {};
   // Connects or starts the core, at the app start and after the connection ended (#130).
   const supervisor = new CoreSupervisor<CoreClient>({
     connect: async () => {
@@ -243,6 +245,8 @@ async function main(): Promise<void> {
     onState: (state) => {
       const { last, bridge: notes } = restartNotes;
       restartNotes = { ...restartNotes, last: state };
+      // Another core may speak another version: it gets the explorer fields of the layout until it refuses them.
+      if (state === "connected") layoutHooks.coreConnected?.();
       // The button after the limit: the windows show the restart again (a lost connection says it itself).
       if (last === "failed" && state === "restarting") notes?.coreRestarting();
       if (last !== "restarting") return;
@@ -283,6 +287,7 @@ async function main(): Promise<void> {
   // A `let` so the screenshot run can start over with a fresh one, like a restart of the app.
   const newCoordinator = (): LayoutCoordinator => new LayoutCoordinator({ core: port, log });
   let coordinator = newCoordinator();
+  layoutHooks.coreConnected = () => coordinator.coreConnected();
   const layouts: WindowLayouts = {
     windowOf: (windowId) => coordinator.windowOf(windowId),
     report: (windowId, part) => coordinator.report(windowId, part),

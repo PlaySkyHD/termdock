@@ -82,6 +82,57 @@ export function needsDefaultDistro(target: ExplorerTarget): boolean {
   );
 }
 
+/** What a window knows of the default distro of WSL, per core generation (`wsl.distros`). */
+export interface DistroLookup {
+  generation: number;
+  /** The answer named one. Only an answer with a name is kept for good. */
+  name?: string;
+  /** Answers without a name or failures in a row. */
+  failures: number;
+  /** Not asked again before this time (ms); 0 after an answer with a name. */
+  retryAt: number;
+}
+
+/** The longest wait between two questions after failures. */
+export const DISTRO_RETRY_MAX_MS = 60_000;
+const DISTRO_RETRY_FIRST_MS = 2_000;
+
+/** The known default distro for `generation`, if any. */
+export function knownDistro(lookup: DistroLookup | undefined, generation: number): string | undefined {
+  return lookup?.generation === generation ? lookup.name : undefined;
+}
+
+/**
+ * Whether the window asks `wsl.distros` now: the panel needs it, nothing is known for this core generation, and the
+ * wait after a failure is over. The window checks again on every render, e.g. at the next `cwdChanged`.
+ */
+export function asksDistro(
+  lookup: DistroLookup | undefined,
+  generation: number,
+  needed: boolean,
+  now: number,
+): boolean {
+  if (!needed) return false;
+  if (lookup?.generation !== generation) return true;
+  return lookup.name === undefined && now >= lookup.retryAt;
+}
+
+/**
+ * The lookup after an answer (`name`, or undefined for a failure or an answer without one, e.g. `unavailable`).
+ * Failures wait 2 s, 4 s, 8 s … up to `DISTRO_RETRY_MAX_MS` before the next question; nothing failed is kept for good.
+ */
+export function distroAnswered(
+  lookup: DistroLookup | undefined,
+  generation: number,
+  name: string | undefined,
+  now: number,
+): DistroLookup {
+  if (name !== undefined) return { generation, name, failures: 0, retryAt: 0 };
+  const failures = (lookup?.generation === generation ? lookup.failures : 0) + 1;
+  const wait = Math.min(DISTRO_RETRY_MAX_MS, DISTRO_RETRY_FIRST_MS * 2 ** (failures - 1));
+  return { generation, failures, retryAt: now + wait };
+}
+
 /**
  * The path for the header, shortened from the left to at most `max` characters: the end of a path says more than
  * its start. The full path goes into the tooltip.

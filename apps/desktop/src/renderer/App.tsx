@@ -17,7 +17,14 @@ import {
 } from "./commands.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ExplorerPanel } from "./ExplorerPanel.js";
-import { explorerTarget, needsDefaultDistro } from "./explorer-source.js";
+import {
+  asksDistro,
+  distroAnswered,
+  explorerTarget,
+  knownDistro,
+  needsDefaultDistro,
+} from "./explorer-source.js";
+import type { DistroLookup } from "./explorer-source.js";
 import { explorerVisible, explorerWidth } from "./explorer-view.js";
 import { relayCwd } from "./session-cwd.js";
 import { DragProvider, useDrag, useDropHandler } from "./drag/DragProvider.js";
@@ -29,8 +36,8 @@ import { tabOfPane } from "./layout-moves.js";
 import type { MoveSource, MoveTarget } from "./layout-moves.js";
 import type { MenuEntry } from "./sidebar-model.js";
 import type { CommandDeps } from "./commands.js";
-import { handleKey, resolveKey } from "./keymap.js";
-import type { KeyCommands } from "./keymap.js";
+import { handleKey, leavesKey, resolveKey } from "./keymap.js";
+import type { KeyCommands, KeyPlace } from "./keymap.js";
 import { startLayoutSync } from "./layout-sync.js";
 import { PaneTree } from "./PaneTree.js";
 import { coreHints } from "./session-display.js";
@@ -123,7 +130,13 @@ export function App({ api }: { api: TermdockApi }) {
   const [createError, setCreateError] = useState<string>();
   // Raised by clicks that leave the focus on a button; the active terminal takes it back.
   const [focusSignal, setFocusSignal] = useState(0);
-  const refocus = useCallback(() => setFocusSignal((signal) => signal + 1), []);
+  // Set by the key that focuses the explorer (#202); the panel takes the focus once it shows, then clears it. Every
+  // way back to the terminal clears it too, so a slow listing never takes the keys afterwards (`focusStep`).
+  const [explorerFocus, setExplorerFocus] = useState(false);
+  const refocus = useCallback(() => {
+    setExplorerFocus(false);
+    setFocusSignal((signal) => signal + 1);
+  }, []);
 
   /**
    * Shift+click in the sidebar: the active pane splits to the right and the new pane shows `sessionId`. With the
@@ -251,40 +264,40 @@ export function App({ api }: { api: TermdockApi }) {
   const { sidebarVisible = true, tabs } = state.window;
   // The explorer panel (#202) follows the session of the active, writing pane of the active tab.
   const explorerShown = explorerVisible(state.window);
-  // The default distro of WSL, for a WSL session that names none (`sessionLocation`): asked once per core
-  // generation, and only when the panel needs it (`wsl.distros` runs wsl.exe in the core). A failure leaves such a
-  // session at "Verzeichnis unbekannt".
-  const [defaultDistro, setDefaultDistro] = useState<{ generation: number; name?: string }>();
-  const knownDistro = defaultDistro?.generation === state.coreGeneration ? defaultDistro : undefined;
+  // The default distro of WSL, for a WSL session that names none (`sessionLocation`): asked only when the panel
+  // needs it (`wsl.distros` runs wsl.exe in the core), kept per core generation once it names one; a failure or an
+  // answer without one is asked again after a growing wait, at the next render (e.g. the next `cwdChanged`).
+  const [distroLookup, setDistroLookup] = useState<DistroLookup>();
+  const generation = state.coreGeneration;
   const target = explorerTarget(
     state.window,
     state.sessions,
     (paneId) => statuses[paneId]?.role,
-    knownDistro?.name,
+    knownDistro(distroLookup, generation),
   );
-  const asksDistro = explorerShown && knownDistro === undefined && needsDefaultDistro(target);
+  const askDistro = asksDistro(
+    distroLookup,
+    generation,
+    explorerShown && needsDefaultDistro(target),
+    Date.now(),
+  );
   useEffect(() => {
-    if (!asksDistro) return;
+    if (!askDistro) return;
     let current = true;
-    const generation = state.coreGeneration;
+    const answer = (name: string | undefined): void => {
+      if (current) setDistroLookup((lookup) => distroAnswered(lookup, generation, name, Date.now()));
+    };
     api.listDistros().then(
-      (result) =>
-        current &&
-        setDefaultDistro({
-          generation,
-          ...(result.defaultDistro === undefined ? {} : { name: result.defaultDistro }),
-        }),
+      (result) => answer(result.defaultDistro),
       (error: unknown) => {
         console.error(error);
-        if (current) setDefaultDistro({ generation });
+        answer(undefined);
       },
     );
     return () => {
       current = false;
     };
-  }, [api, asksDistro, state.coreGeneration]);
-  // Set by the key that focuses the panel; the panel takes the focus once it shows, then clears it.
-  const [explorerFocus, setExplorerFocus] = useState(false);
+  }, [api, askDistro, generation]);
 
   const showForm = (): void => {
     if (!sidebarVisible) store.toggleSidebar();
@@ -388,9 +401,8 @@ export function App({ api }: { api: TermdockApi }) {
       // The dialogs and menus of the sidebar (#63) are modal too: their keys are theirs.
       if (event.target instanceof Element && event.target.closest('[aria-modal="true"], [role="menu"]'))
         return;
-      // The form's fields keep copy and paste.
-      const command = resolveKey(event);
-      if ((command === "copy" || command === "paste") && isTextField(event.target)) return;
+      // The form's fields keep copy and paste; in the explorer they do nothing (`leavesKey`, #202).
+      if (leavesKey(resolveKey(event), keyPlace(event.target))) return;
       handleKey(event, keyCommands);
     };
     window.addEventListener("keydown", onKeyDown);
@@ -540,7 +552,11 @@ export function App({ api }: { api: TermdockApi }) {
                 onController={setController}
                 // A press only makes the pane active; taking the input is the pane's button or a double
                 // click (TerminalView, #66), so neither the writer nor the size jump on a click.
-                onPanePress={(tabId, paneId) => store.focusPane(tabId, paneId)}
+                onPanePress={(tabId, paneId) => {
+                  // A press into a pane puts the keys there; a waiting wish of the explorer is void.
+                  setExplorerFocus(false);
+                  store.focusPane(tabId, paneId);
+                }}
                 onClosePane={(tabId, paneId) => store.closePane(tabId, paneId)}
                 commands={keyCommands}
                 onPanePaste={(paneId) => {
@@ -751,6 +767,12 @@ function isTextField(target: EventTarget | null): boolean {
     !target.classList.contains("xterm-helper-textarea") &&
     (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
   );
+}
+
+/** Where a key of the window was pressed (`leavesKey`): a text field, the explorer panel (#202) or elsewhere. */
+function keyPlace(target: EventTarget | null): KeyPlace {
+  if (isTextField(target)) return "textField";
+  return target instanceof Element && target.closest(".explorer") ? "explorer" : "other";
 }
 
 function EmptyState({

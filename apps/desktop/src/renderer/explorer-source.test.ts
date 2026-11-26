@@ -2,8 +2,12 @@
 import type { LayoutTab, LayoutWindow, SessionInfo } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  asksDistro,
+  DISTRO_RETRY_MAX_MS,
+  distroAnswered,
   explorerPaneId,
   explorerTarget,
+  knownDistro,
   needsDefaultDistro,
   sessionLocation,
   shortPath,
@@ -132,5 +136,31 @@ describe("shortPath", () => {
     expect(short).toHaveLength(20);
     expect(short.startsWith("…")).toBe(true);
     expect(short.endsWith("/end")).toBe(true);
+  });
+});
+
+describe("default distro lookup", () => {
+  it("asks only when needed, keeps a named answer per core generation", () => {
+    expect(asksDistro(undefined, 0, false, 0)).toBe(false);
+    expect(asksDistro(undefined, 0, true, 0)).toBe(true);
+    const known = distroAnswered(undefined, 0, "Ubuntu", 10);
+    expect(knownDistro(known, 0)).toBe("Ubuntu");
+    expect(asksDistro(known, 0, true, 10_000_000)).toBe(false);
+    // A new core may have another default.
+    expect(knownDistro(known, 1)).toBeUndefined();
+    expect(asksDistro(known, 1, true, 10)).toBe(true);
+  });
+
+  it("asks again after a failure or an answer without a name, with a growing wait", () => {
+    const first = distroAnswered(undefined, 0, undefined, 1_000);
+    expect(knownDistro(first, 0)).toBeUndefined();
+    expect(asksDistro(first, 0, true, 2_999)).toBe(false);
+    expect(asksDistro(first, 0, true, 3_000)).toBe(true);
+    const second = distroAnswered(first, 0, undefined, 3_000);
+    expect(second.retryAt).toBe(7_000);
+    let lookup = second;
+    for (let i = 0; i < 10; i += 1) lookup = distroAnswered(lookup, 0, undefined, 0);
+    expect(lookup.retryAt).toBe(DISTRO_RETRY_MAX_MS);
+    expect(knownDistro(distroAnswered(lookup, 0, "Debian", 0), 0)).toBe("Debian");
   });
 });

@@ -204,13 +204,13 @@ Das Panel SHALL der Session des aktiven Panes im aktiven Tab folgen, wenn es sch
 
 ### Requirement: Eine Quelle für das Verzeichnis
 
-Das Verzeichnis einer Windows-Shell (OSC 9;9 ihrer View) SHALL in denselben Store gehen wie das einer WSL-Session aus dem Core; melden mehrere Views denselben Pfad, ändert sich der Store nicht. Nach einem Neustart SHALL die Session das letzte Verzeichnis ihrer View wieder bekommen. Eine WSL-Session ohne Distro im Store SHALL die Standard-Distro von WSL nutzen (`wsl.distros`, nur gefragt, wenn das Panel sie braucht).
+Das Verzeichnis einer Windows-Shell (OSC 9;9 ihrer View) SHALL in denselben Store gehen wie das einer WSL-Session aus dem Core; melden mehrere Views denselben Pfad, ändert sich der Store nicht. Endet ein Lauf, SHALL die View seinen Pfad vergessen, damit der erste Bericht des neuen Laufs zählt. Eine WSL-Session ohne Distro im Store SHALL die Standard-Distro von WSL nutzen (`wsl.distros`, nur gefragt, wenn das Panel sie braucht; ohne Antwort mit Namen erneut nach wachsender Pause, höchstens 60 s).
 
 #### Scenario: Neustart einer Windows-Session
 
-- **GIVEN** eine Windows-Session in `C:\proj`, die endet und mit „Neu starten“ in derselben View wieder läuft
-- **WHEN** ihre neue Shell wieder `C:\proj` meldet
-- **THEN** zeigt das Panel `C:\proj`, nicht „Verzeichnis unbekannt“
+- **GIVEN** eine Windows-Session in `C:\proj\sub`, die endet und mit „Neu starten“ in derselben View wieder läuft
+- **WHEN** die neue Shell noch nichts gemeldet hat und danach `C:\proj\sub` meldet
+- **THEN** zeigt das Panel erst „Verzeichnis unbekannt“, nicht den Pfad des alten Laufs, und danach `C:\proj\sub`
 
 #### Scenario: Windows-Shell
 
@@ -255,6 +255,22 @@ Das Verzeichnis einer Windows-Shell (OSC 9;9 ihrer View) SHALL in denselben Stor
 - **GIVEN** das Panel zeigt `docs`, `src` (aufgeklappt, darin `lib`), Dateien
 - **WHEN** der Nutzer `Ctrl+Shift+O`, Pos1, runter, links, rechts, rechts und Escape drückt
 - **THEN** ist erst `src` zu- und wieder aufgeklappt, `src/lib` gewählt, und danach hat das Terminal den Fokus, ohne dass die Shell eine dieser Tasten erhielt
+
+### Requirement: Eingabe-Lock und Fokuswunsch
+
+Mit dem Fokus im Panel MUST auch Kopieren und Einfügen (`Ctrl+Shift+C`, `Ctrl+Shift+V`) nichts tun, statt in die Shell des aktiven Panes zu schreiben. Der Fokuswunsch von `Ctrl+Shift+O` SHALL einmal gelten und mit Escape, Ausblenden, einem Druck ins Terminal oder jeder Rückgabe des Fokus ans Terminal verfallen, damit eine langsame Listung den Fokus nicht später an sich zieht.
+
+#### Scenario: Einfügen im Panel
+
+- **GIVEN** der Baum hat den Fokus, und in der Zwischenablage steht `echo x`
+- **WHEN** der Nutzer `Ctrl+Shift+V` drückt
+- **THEN** erhält die Shell nichts
+
+#### Scenario: Langsame Listung nach Escape
+
+- **GIVEN** der Nutzer drückt `Ctrl+Shift+O`, während die Wurzel noch lädt, und gleich danach Escape
+- **WHEN** die Listung danach ankommt
+- **THEN** bleibt der Fokus im Terminal
 
 ### Requirement: Datei öffnen
 

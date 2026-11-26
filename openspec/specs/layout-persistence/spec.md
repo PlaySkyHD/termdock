@@ -113,7 +113,7 @@ Das gespeicherte Layout und seine Revision SHALL nach einem Neustart des Core mi
 
 ### Requirement: Explorer im Layout-Fenster
 
-Seit Protokoll 1.9 SHALL ein Fenster im `LayoutDocument` zusätzlich optional `explorerVisible` (Boolean) und `explorerWidth` (Zahl größer 0) tragen dürfen: Sichtbarkeit und Breite des Explorer-Panels. Der Core SHALL sie unverändert speichern und liefern. Lehnt ein Core 1.8 die Felder mit `bad_request` ab (die Meldung nennt sie), SHALL der Main das Layout ohne sie speichern; eine andere Ablehnung bleibt eine.
+Seit Protokoll 1.9 SHALL ein Fenster im `LayoutDocument` zusätzlich optional `explorerVisible` (Boolean) und `explorerWidth` (Zahl größer 0) tragen dürfen: Sichtbarkeit und Breite des Explorer-Panels. Der Core SHALL sie unverändert speichern und liefern. Lehnt ein Core 1.8 sie als unbekannte Felder ab (genau diese Meldung des `bad_request`), SHALL der Main das Layout ohne sie speichern und sie diesem Core bis zur nächsten Verbindung nicht mehr senden; jede andere Ablehnung bleibt eine.
 
 #### Scenario: Explorer des Fensters
 
@@ -123,6 +123,6 @@ Seit Protokoll 1.9 SHALL ein Fenster im `LayoutDocument` zusätzlich optional `e
 
 #### Scenario: Älterer Core
 
-- **GIVEN** ein Core, der `explorerVisible` mit `bad_request` ablehnt
-- **WHEN** der Main das Layout speichert
-- **THEN** speichert er es ein zweites Mal ohne die Felder des Explorers, und Tabs und Panes bleiben erhalten
+- **GIVEN** ein Core, der `explorerVisible` mit `bad_request` „params.layout.windows[0].explorerVisible is not a known field“ ablehnt
+- **WHEN** der Main das Layout zweimal speichert
+- **THEN** speichert er es beim ersten Mal ein zweites Mal ohne die Felder des Explorers, beim zweiten Mal gleich ohne sie, und Tabs und Panes bleiben erhalten; „explorerWidth must be a number greater than 0“ ist dagegen eine echte Ablehnung

@@ -21,7 +21,7 @@ import {
   treeFor,
 } from "./explorer-tree.js";
 import type { ExplorerRow, ExplorerTree, ListRequest } from "./explorer-tree.js";
-import { hintText, openErrorText, panelView } from "./explorer-view.js";
+import { focusStep, hintText, openErrorText, panelView } from "./explorer-view.js";
 
 export interface ExplorerPanelProps {
   files: FilesApi;
@@ -130,13 +130,18 @@ export function ExplorerPanel({
     }
   };
 
-  // The key that focuses the panel: the tree takes the keys, the panel itself while it shows a text. While the root
-  // loads the request waits for the tree; it is used once, so showing the panel later does not take the focus.
+  // The key that focuses the panel (`focusStep`): the tree takes the keys, the panel itself while it shows a text.
+  // While the root loads the wish waits for the tree; it is used once, so showing the panel later takes nothing.
   useEffect(() => {
-    if (!focusWanted) return;
-    (treeElement.current ?? panel.current)?.focus();
-    if (treeElement.current || view.state !== "loading") onFocused();
-  });
+    const step = focusStep(focusWanted, view.state, treeElement.current !== null);
+    if (step.target === "tree") treeElement.current?.focus();
+    else if (step.target === "panel") panel.current?.focus();
+    if (focusWanted && step.settled) onFocused();
+  }, [focusWanted, view.state]);
+  // A panel that goes away keeps no wish for the next one.
+  const settle = useRef(onFocused);
+  settle.current = onFocused;
+  useEffect(() => () => settle.current(), []);
 
   useEffect(() => {
     if (selected !== undefined)

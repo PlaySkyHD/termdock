@@ -324,12 +324,14 @@ describe("LayoutCoordinator revision conflict", () => {
   });
 
   // Issue #202 (openspec change explorer-panel): a core 1.8 refuses the explorer fields of protocol 1.9.
-  it("saves without the explorer fields when an older core refuses them", async () => {
+  /** The message of the guards of a core 1.8 for an unknown key of a layout window. */
+  const unknownField = (key: string, index = 0): IpcError =>
+    new IpcError("bad_request", `params.layout.windows[${index}].${key} is not a known field`);
+
+  it("saves without the explorer fields when an older core refuses them, and leaves them out for that core", async () => {
     const { core, coordinator } = setup();
     await coordinator.load();
-    core.saveErrors = [
-      new IpcError("bad_request", 'layout.windows[0]."explorerVisible" is not a known field'),
-    ];
+    core.saveErrors = [unknownField("explorerVisible")];
     coordinator.addWindow(1, windowWith("w1"));
     coordinator.report(1, { tabs: [tab("t1", pane("p1"))], activeTabId: "t1", explorerVisible: false });
 
@@ -338,18 +340,38 @@ describe("LayoutCoordinator revision conflict", () => {
     expect(core.saves).toHaveLength(2);
     expect(core.saves[0]?.layout.windows[0]?.explorerVisible).toBe(false);
     expect(core.stored?.windows[0]).toEqual({ id: "w1", tabs: [tab("t1", pane("p1"))], activeTabId: "t1" });
+
+    // The next save to the same core is one request without the fields.
+    coordinator.report(1, { tabs: [tab("t1", pane("p1"))], activeTabId: "t1", explorerWidth: 300 });
+    await coordinator.flush();
+    expect(core.saves).toHaveLength(3);
+    expect(core.saves[2]?.layout.windows[0]).not.toHaveProperty("explorerWidth");
+
+    // Another core (restart, update) gets them again.
+    coordinator.coreConnected();
+    coordinator.report(1, { tabs: [tab("t1", pane("p1"))], activeTabId: "t1", explorerWidth: 320 });
+    await coordinator.flush();
+    expect(core.saves).toHaveLength(4);
+    expect(core.stored?.windows[0]?.explorerWidth).toBe(320);
   });
 
-  it("does not strip the explorer fields for another refusal", async () => {
+  it("does not strip the explorer fields for another refusal, also one that names them", async () => {
     const { core, coordinator, log } = setup();
     await coordinator.load();
-    core.saveErrors = [new IpcError("bad_request", "layout.windows[0].sidebarWidth must be a number")];
+    core.saveErrors = [
+      new IpcError("bad_request", "params.layout.windows[0].explorerWidth must be a number greater than 0"),
+      new IpcError("bad_request", "params.layout.windows[0].sidebarWidth must be a number greater than 0"),
+    ];
     coordinator.addWindow(1, windowWith("w1"));
     coordinator.report(1, { tabs: [], explorerWidth: 300 });
 
     await coordinator.flush();
-
     expect(core.saves).toHaveLength(1);
+    expect(log.join("\n")).toContain("explorerWidth must be");
+
+    await coordinator.flush();
+    expect(core.saves).toHaveLength(2);
+    expect(core.saves[1]?.layout.windows[0]?.explorerWidth).toBe(300);
     expect(log.join("\n")).toContain("sidebarWidth");
   });
 
@@ -357,11 +379,7 @@ describe("LayoutCoordinator revision conflict", () => {
     const { core, coordinator } = setup();
     await coordinator.load();
     const conflict = (): IpcError => new IpcError("invalid_state", "stale base revision");
-    core.saveErrors = [
-      new IpcError("bad_request", '"explorerWidth" is not a known field'),
-      conflict(),
-      conflict(),
-    ];
+    core.saveErrors = [unknownField("explorerWidth"), conflict(), conflict()];
     coordinator.addWindow(1, windowWith("w1"));
     coordinator.report(1, { tabs: [], explorerWidth: 300 });
 

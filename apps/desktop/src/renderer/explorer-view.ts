@@ -99,6 +99,22 @@ export function panelView(target: ExplorerTarget, tree: ExplorerTree | undefined
   return rows.length === 0 ? { state: "empty", message: "Ordner ist leer", rows } : { state: "listed", rows };
 }
 
+/**
+ * The focus wish of `Ctrl+Shift+O` (`focusWanted`): where the panel puts the focus and whether the wish is settled.
+ * The tree takes it once it shows; while the root loads the panel itself holds it and the wish waits for the tree;
+ * a text (error, empty, no session) settles it on the panel. Without a wish nothing happens. The window clears the
+ * wish on Escape, hiding, `refocus` and a press into a pane, so a slow listing cannot take the keys later.
+ */
+export function focusStep(
+  wanted: boolean,
+  state: PanelState,
+  hasTree: boolean,
+): { target?: "tree" | "panel"; settled: boolean } {
+  if (!wanted) return { settled: true };
+  if (hasTree) return { target: "tree", settled: true };
+  return { target: "panel", settled: state !== "loading" };
+}
+
 /** The text of a row that is not an entry: loading, empty folder, error, cut listing. */
 export function hintText(row: Exclude<ExplorerRow, { kind: "entry" }>): string {
   switch (row.kind) {

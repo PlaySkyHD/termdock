@@ -186,6 +186,14 @@ export class TerminalController {
   }
 
   /**
+   * Forgets the reported directory: the run of the session ended (#202). The view stays through a restart (#164), and
+   * the first report of the new shell is a change again, also when it names the same path.
+   */
+  forgetCwd(): void {
+    this.cwd = undefined;
+  }
+
+  /**
    * Calls `listener` with the new path each time the reported directory changes (not at every prompt, and not for a
    * rejected path). The function returned removes the listener; `dispose` removes all.
    */

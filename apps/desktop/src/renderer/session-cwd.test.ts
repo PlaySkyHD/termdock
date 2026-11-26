@@ -105,7 +105,12 @@ describe("relayCwd", () => {
       this.listeners.add(listener);
       return () => this.listeners.delete(listener);
     };
+    forgetCwd = (): void => {
+      this.cwd = undefined;
+    };
+    /** Like the controller: only a change reaches the listeners. */
     report(path: string): void {
+      if (path === this.cwd) return;
       this.cwd = path;
       for (const listener of this.listeners) listener(path);
     }
@@ -143,18 +148,26 @@ describe("relayCwd", () => {
     expect(store.getState()).toBe(before);
   });
 
-  it("gives a restarted session the last directory of its view again", () => {
+  it("keeps no path of the old run after a restart, and takes the new shell's, also the same one", () => {
     const store = newStore([session("w")]);
     store.openSession("w");
     const paneId = store.getState().window.tabs[0]!.activePaneId;
     const source = new FakeSource();
     const stop = relayCwd(store, paneId, source);
-    source.report("C:\\proj");
+    source.report("C:\\proj\\sub");
 
-    // The run ends and starts again; the view stays and its shell reports the same path, which is no change for it.
+    // The run ends and starts again in the same view: until the new shell reports, the directory is unknown.
     store.sessionStateChanged("w", "Exited", 0);
-    expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
     store.sessionStateChanged("w", "Starting");
+    store.sessionStateChanged("w", "Running");
+    expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
+    source.report("C:\\proj\\sub");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj\\sub");
+
+    // A report while the store still says Starting is taken once the run is live.
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Starting");
+    source.report("C:\\proj");
     expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
     store.sessionStateChanged("w", "Running");
     expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj");
@@ -162,6 +175,7 @@ describe("relayCwd", () => {
     stop();
     store.sessionStateChanged("w", "Exited", 0);
     store.sessionStateChanged("w", "Running");
+    source.report("D:\\");
     expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
   });
 

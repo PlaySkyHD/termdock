@@ -224,6 +224,18 @@ export function handleKey(
   return false;
 }
 
+/** Where the window's key handler sees a key: a text field of the page, the explorer panel (#202), anything else. */
+export type KeyPlace = "textField" | "explorer" | "other";
+
+/**
+ * Whether the window's key handler leaves a bound key alone. Copy and paste belong to a text field there; in the
+ * explorer they would reach the terminal of the active pane although the keys are the panel's (input lock: the
+ * shell gets input only from its terminal), so they do nothing there.
+ */
+export function leavesKey(command: CommandId | undefined, place: KeyPlace): boolean {
+  return (command === "copy" || command === "paste") && place !== "other";
+}
+
 export interface KeymapRow {
   command: CommandId;
   label: string;

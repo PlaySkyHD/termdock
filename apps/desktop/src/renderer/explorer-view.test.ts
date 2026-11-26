@@ -6,6 +6,7 @@ import {
   EXPLORER_MIN_WIDTH,
   explorerVisible,
   explorerWidth,
+  focusStep,
   hintText,
   listErrorText,
   openErrorText,
@@ -59,6 +60,15 @@ describe("panelView", () => {
     expect(panelView(FOLDER, one)).toMatchObject({ state: "listed", rows: [{ kind: "entry", name: "a" }] });
     // A refresh keeps the tree until its answer.
     expect(panelView(FOLDER, refreshAll(one).tree).state).toBe("listed");
+  });
+
+  it("settles the focus wish once: on the tree, or on the panel while it shows a text", () => {
+    expect(focusStep(false, "listed", true)).toEqual({ settled: true });
+    expect(focusStep(true, "listed", true)).toEqual({ target: "tree", settled: true });
+    // The root still loads: the panel holds the focus, the wish waits for the tree.
+    expect(focusStep(true, "loading", false)).toEqual({ target: "panel", settled: false });
+    expect(focusStep(true, "error", false)).toEqual({ target: "panel", settled: true });
+    expect(focusStep(true, "notRunning", false)).toEqual({ target: "panel", settled: true });
   });
 
   it("names the rows that are not entries", () => {

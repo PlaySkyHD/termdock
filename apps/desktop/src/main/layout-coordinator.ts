@@ -23,10 +23,16 @@ export const SAVE_DELAY_MS = 400;
 export const SAVE_MAX_WAIT_MS = 2_000;
 /** Tries for one document when the revision is stale: reload the revision, save the same state again. */
 const MAX_ATTEMPTS = 3;
-/** A `bad_request` of a core that does not know the explorer fields of a layout window (protocol 1.8, #202). */
+/**
+ * The refusal of a core 1.8, whose guards do not know the explorer fields of a layout window (#202): exactly the
+ * message of an unknown key, for exactly these keys. A value error of a core 1.9 (`explorerWidth must be …`) is none.
+ */
+const UNKNOWN_EXPLORER_FIELD =
+  /^params\.layout\.windows\[\d+\]\.(explorerVisible|explorerWidth) is not a known field$/;
+
 function refusesExplorer(error: unknown): boolean {
   return (
-    error instanceof IpcError && error.code === "bad_request" && /explorer(Visible|Width)/.test(error.message)
+    error instanceof IpcError && error.code === "bad_request" && UNKNOWN_EXPLORER_FIELD.test(error.message)
   );
 }
 
@@ -71,6 +77,8 @@ export class LayoutCoordinator {
   private timer: NodeJS.Timeout | undefined;
   private firstChange = 0;
   private running: Promise<void> | undefined;
+  /** The core of this connection refused the explorer fields (protocol 1.8): they are not sent to it any more. */
+  private withoutExplorerFields = false;
 
   constructor(options: LayoutCoordinatorOptions) {
     this.core = options.core;
@@ -167,6 +175,14 @@ export class LayoutCoordinator {
     this.changed();
   }
 
+  /**
+   * The main process is connected to a core (again, #130): it may be another version, so the explorer fields go to
+   * it until it refuses them (#202). Unsaved changes are saved with the next change or flush.
+   */
+  coreConnected(): void {
+    this.withoutExplorerFields = false;
+  }
+
   /** Saves at once if something changed and waits until the core has answered. Never rejects. */
   flush(): Promise<void> {
     this.clearTimer();
@@ -220,7 +236,7 @@ export class LayoutCoordinator {
   }
 
   private async write(document: LayoutDocument): Promise<void> {
-    let layout = document;
+    let layout = (this.withoutExplorerFields && withoutExplorer(document)) || document;
     for (let attempt = 1; ;) {
       if (!this.loaded) await this.checkNothingUnloaded();
       try {
@@ -233,9 +249,10 @@ export class LayoutCoordinator {
       } catch (error) {
         // A core 1.8 that still runs after an update refuses the explorer fields of 1.9 as unknown (#202): the rest
         // of the layout is saved without them (once more, not counted as a conflict), so tabs and panes are not
-        // lost until its restart. Any other refusal stays one.
+        // lost until its restart, and later saves to this core leave them out. Any other refusal stays one.
         const older = refusesExplorer(error) ? withoutExplorer(layout) : undefined;
         if (older !== undefined) {
+          this.withoutExplorerFields = true;
           layout = older;
           continue;
         }

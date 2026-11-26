@@ -35,6 +35,19 @@ export function explorerPaneId(tab: LayoutTab, roleOf: (paneId: string) => ViewR
 }
 
 /**
+ * The pane that "Pfad ins Terminal einfügen" (#203) writes into: the pane the panel follows, if its view writes. It is
+ * the writer of the panel's session in `tab`: `explorerPaneId` prefers a writing pane, so without it the tab has none.
+ * Undefined without a writer; the entry is disabled then (input lock).
+ */
+export function pastePaneId(
+  tab: LayoutTab,
+  roleOf: (paneId: string) => ViewRole | undefined,
+): string | undefined {
+  const paneId = explorerPaneId(tab, roleOf);
+  return roleOf(paneId) === "writer" ? paneId : undefined;
+}
+
+/**
  * The location of the session's current directory: a Linux path in its distro, or a Windows path. A WSL session
  * that names no distro runs in the default distro of WSL (`defaultDistro`): the core pins it only after it reported
  * the new session (`session.created` comes before the start), and no later event carries the pinned one.

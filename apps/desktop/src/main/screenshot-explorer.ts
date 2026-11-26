@@ -35,7 +35,7 @@ export async function explorerScenes(deps: ScenarioDeps): Promise<void> {
     win.show();
     win.moveTop();
     win.focus();
-    const { evaluate, waitFor, capture, click, key, center, dragTo, mouse } = pageDriver(win, dir);
+    const { evaluate, waitFor, capture, click, fill, key, center, dragTo, mouse } = pageDriver(win, dir);
     await waitFor(`document.querySelector('.app') && !document.querySelector('.app--loading')`, "the window");
     const exists = (selector: string): string => `document.querySelector(${JSON.stringify(selector)})`;
     /** The state of the panel and the path of its header, for messages. */
@@ -207,6 +207,21 @@ export async function explorerScenes(deps: ScenarioDeps): Promise<void> {
     )
       throw new Error("Showing the explorer took the focus from the terminal");
 
+    await actionScenes({
+      linuxDir,
+      shell,
+      type,
+      evaluate,
+      waitFor,
+      capture,
+      click,
+      fill,
+      key,
+      center,
+      dragTo,
+      mouse,
+    });
+
     const message = (): Promise<string> =>
       evaluate<string>(`document.querySelector('${PANEL} [data-explorer-message]').textContent`);
 
@@ -239,6 +254,157 @@ export async function explorerScenes(deps: ScenarioDeps): Promise<void> {
     }
     if (distro !== undefined) await removeLinuxDir(distro, linuxDir);
   }
+}
+
+type Driver = ReturnType<typeof pageDriver>;
+
+/**
+ * The file actions (#203) on the WSL folder of the scenes (docs/, src/, README.md, notes.txt; the panel lists it, the
+ * terminal has the focus): the context menu by right click and Shift+F10, the path pasted into the shell, rename in
+ * the row with a taken name and a free one, a move by drag (first aborted with Escape) and the confirmation of a
+ * delete. The native download dialog is not opened, and the clipboard of the user is not touched ("Pfad kopieren").
+ */
+async function actionScenes(
+  scene: Pick<
+    Driver,
+    "evaluate" | "waitFor" | "capture" | "click" | "fill" | "key" | "center" | "dragTo" | "mouse"
+  > & {
+    linuxDir: string;
+    shell: string;
+    type(viewId: string, data: string): Promise<void>;
+  },
+): Promise<void> {
+  const { linuxDir, shell, type, evaluate, waitFor, capture, click, fill, key, center, dragTo, mouse } =
+    scene;
+  const exists = (selector: string): string => `document.querySelector(${JSON.stringify(selector)})`;
+  const MENU = '[data-menu="Aktionen für den Eintrag"]';
+  const RENAME = `${PANEL} [data-explorer-rename]`;
+  const NOTICE = `${PANEL} [data-explorer-notice]`;
+  const DIALOG = '[data-dialog="confirm"]';
+  const notes = `${linuxDir}/notes.txt`;
+  const docs = `${linuxDir}/docs`;
+  const menuItems = (): Promise<string[]> =>
+    evaluate<string[]>(
+      `[...document.querySelectorAll('${MENU} [data-menu-item]')].map((item) => item.dataset.menuItem)`,
+    );
+  const text = (selector: string): Promise<string> =>
+    evaluate<string>(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`);
+  const selectedPath = (): Promise<string> =>
+    evaluate<string>(`document.querySelector('${PANEL} [aria-selected="true"]')?.dataset.path ?? ''`);
+  const treeFocused = `document.activeElement && document.activeElement.matches('${PANEL} [role="tree"]')`;
+
+  // --- The context menu of a folder by right click: no "Öffnen", but download (WSL) -------------------------------
+  const src = await center(row(`${linuxDir}/src`));
+  mouse("mouseDown", src.x, src.y, "right");
+  mouse("mouseUp", src.x, src.y, "right");
+  await waitFor(exists(MENU), "the context menu of src by right click");
+  const folderItems = await menuItems();
+  if (folderItems.join() !== "download,reveal,copyPath,pastePath,rename,delete")
+    throw new Error(`The menu of a WSL folder has ${folderItems.join()}`);
+  if (
+    await evaluate<boolean>(`${exists(`${MENU} [data-menu-item="pastePath"]`)}.hasAttribute('aria-disabled')`)
+  )
+    throw new Error("Pasting the path is disabled although the shell writes");
+  await capture("75a-explorer-menu.png", { visible: MENU });
+  await key("Escape");
+  await waitFor(`!${exists(MENU)} && ${treeFocused}`, "the menu to close and the tree to keep the focus");
+
+  // --- Shift+F10 on a file: the first entry has the focus; the path goes quoted into the shell, without Enter ------
+  await click(row(notes));
+  await key("F10", ["shift"], 500);
+  await waitFor(exists(MENU), "the context menu by Shift+F10");
+  if ((await evaluate<string>(`document.activeElement?.dataset.menuItem ?? ''`)) !== "open")
+    throw new Error("The menu by Shift+F10 does not focus its first entry, Öffnen");
+  await click(`${MENU} [data-menu-item="pastePath"]`);
+  const pasted = `'${notes}'`;
+  const prompt = `document.querySelector('.pane[data-tab-active="true"] .xterm-rows')?.textContent ?? ''`;
+  await waitFor(
+    `(${prompt}).includes(${JSON.stringify(pasted)}) && document.activeElement?.classList.contains('xterm-helper-textarea')`,
+    "the quoted path at the prompt and the terminal with the focus",
+  );
+  // Nothing ran: the line still waits (no Enter). Ctrl+U clears it.
+  await type(shell, "\u0015");
+
+  // --- Rename in the row: F2 marks the name without the extension ------------------------------------------------
+  await key("O", ["control", "shift"]);
+  await waitFor(treeFocused, "the focus in the tree");
+  await click(row(notes));
+  await key("F2");
+  await waitFor(exists(RENAME), "the field of the rename");
+  const marked = await evaluate<string>(
+    `(() => { const f = document.querySelector('${RENAME}'); return f.value.slice(f.selectionStart, f.selectionEnd); })()`,
+  );
+  if (marked !== "notes") throw new Error(`F2 marks "${marked}", not the name without its extension`);
+  await fill(RENAME, "todo.txt");
+  await capture("75b-explorer-rename.png", { visible: RENAME });
+
+  // --- A taken name: the hint, the folder listed again, both files still there ---------------------------------------
+  await fill(RENAME, "README.md");
+  await key("Return");
+  await waitFor(`${exists(NOTICE)} && !${exists(RENAME)}`, "the hint after renaming to a taken name");
+  if ((await text(NOTICE)) !== "„README.md“ gibt es in diesem Ordner schon")
+    throw new Error(`The explorer names a taken name as: ${await text(NOTICE)}`);
+  await waitFor(
+    `${exists(row(notes))} && ${exists(row(`${linuxDir}/README.md`))}`,
+    "both files after the refusal",
+  );
+  await capture("75c-explorer-rename-taken.png", { visible: NOTICE });
+
+  // --- A free name: the row has it and stays selected ----------------------------------------------------------------
+  const todo = `${linuxDir}/todo.txt`;
+  await key("F2");
+  await waitFor(exists(RENAME), "the field of the second rename");
+  await fill(RENAME, "todo.txt");
+  await key("Return");
+  await waitFor(`${exists(row(todo))} && !${exists(row(notes))} && !${exists(NOTICE)}`, "the renamed file");
+  if ((await selectedPath()) !== todo)
+    throw new Error(`After the rename ${await selectedPath()} is selected`);
+
+  // --- Move by drag: Escape aborts; a drop on docs moves, opens docs and selects the file there -------------------
+  const readme = `${linuxDir}/README.md`;
+  const target = await center(row(docs));
+  await dragTo(await center(row(readme)), target);
+  await waitFor(
+    `${exists(row(docs))}.classList.contains('drop-target--over')`,
+    "docs as the target under the pointer",
+  );
+  await key("Escape");
+  mouse("mouseUp", target.x, target.y);
+  await waitFor(`!${exists("[data-drag-ghost]")}`, "the aborted drag to end");
+  await dragTo(await center(row(todo)), await center(row(docs)));
+  await waitFor(
+    `${exists(row(docs))}.classList.contains('drop-target--over')`,
+    "docs under the dragged file",
+  );
+  mouse("mouseUp", target.x, target.y);
+  const moved = `${docs}/todo.txt`;
+  await waitFor(`${exists(row(moved))} && !${exists(row(todo))}`, "the moved file in docs");
+  if ((await selectedPath()) !== moved) throw new Error(`After the move ${await selectedPath()} is selected`);
+  if (!(await evaluate<boolean>(`Boolean(${exists(row(readme))})`)))
+    throw new Error("The drag aborted with Escape moved README.md");
+  await capture("75d-explorer-moved.png", { visible: row(moved) });
+
+  // --- Delete: the confirmation names the folder and its entries, the focus on "Abbrechen" ------------------------
+  await key("O", ["control", "shift"]);
+  await waitFor(treeFocused, "the focus in the tree before the delete");
+  await key("Left"); // from docs/todo.txt to docs
+  if ((await selectedPath()) !== docs) throw new Error(`Left selected ${await selectedPath()}, not docs`);
+  await key("Delete");
+  await waitFor(exists(DIALOG), "the confirmation of the delete");
+  const question = await text(`${DIALOG} [data-confirm="message"]`);
+  if (!question.includes("„docs“") || !question.includes("1 Eintrag"))
+    throw new Error(`The confirmation says: ${question}`);
+  if ((await evaluate<string>(`document.activeElement?.dataset.confirm ?? ''`)) !== "cancel")
+    throw new Error("The confirmation does not focus Abbrechen first");
+  await capture("75e-explorer-delete.png", { visible: DIALOG });
+  await click(`${DIALOG} [data-confirm="ok"]`);
+  await waitFor(`!${exists(DIALOG)} && !${exists(row(docs))}`, "docs to be deleted");
+  await waitFor(treeFocused, "the tree to take the focus back after the dialog");
+  await key("Escape");
+  await waitFor(
+    `document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')`,
+    "the terminal to take the focus back after the actions",
+  );
 }
 
 /** Removes the folder of the scenes in the distro (argument array, no shell). */

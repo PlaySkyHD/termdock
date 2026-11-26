@@ -1,7 +1,7 @@
 // Keyboard of the explorer tree (#202): what a key does on the visible rows. Pure; the panel runs the action. The
 // keys follow the tree view of VS Code and the Windows Explorer: up and down move, right opens or goes into a
-// folder, left closes or goes to the parent folder, Enter opens a file or a folder, Escape hands the keys back to the
-// terminal.
+// folder, left closes or goes to the parent folder, Enter opens a file or a folder, F2 renames, Delete asks to delete
+// (#203), Escape hands the keys back to the terminal.
 import type { ExplorerRow } from "./explorer-tree.js";
 
 export type ExplorerKeyAction =
@@ -10,6 +10,10 @@ export type ExplorerKeyAction =
   | { kind: "collapse"; path: string }
   /** A file: `files.open`. */
   | { kind: "open"; path: string }
+  /** F2 (#203): the name of the entry becomes a field. The panel checks that the menu offers it. */
+  | { kind: "rename"; path: string }
+  /** Delete (#203): the confirmation for the entry. The panel checks that the menu offers it. */
+  | { kind: "delete"; path: string }
   /** The terminal of the active pane takes the focus. */
   | { kind: "leave" };
 
@@ -69,6 +73,10 @@ export function explorerKey(
       return current.expanded
         ? { kind: "collapse", path: current.path }
         : { kind: "expand", path: current.path };
+    case "F2":
+      return current ? { kind: "rename", path: current.path } : undefined;
+    case "Delete":
+      return current ? { kind: "delete", path: current.path } : undefined;
     default:
       return undefined;
   }

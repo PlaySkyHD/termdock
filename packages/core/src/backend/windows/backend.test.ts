@@ -1,6 +1,6 @@
 // Windows backend (issue #65) through the session registry. The sessions run a real `cmd.exe` in a ConPTY and need no
 // WSL, so these tests run on the Windows CI runner too. Each test ends only the shells it started.
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,6 +12,7 @@ import type { PtyProcess, PtyProcessExit } from "../conpty/pty.js";
 import type { Disposable } from "../types.js";
 import { WindowsBackend } from "./backend.js";
 import type { WindowsBackendOptions } from "./backend.js";
+import { CMD_CWD_HOOK, POWERSHELL_CWD_HOOK } from "./shells.js";
 
 const onWindows = process.platform === "win32";
 const decoder = new TextDecoder();
@@ -262,6 +263,36 @@ describe.runIf(onWindows)("WindowsBackend with cmd.exe (issue #65)", { timeout: 
     await sees(s, session.id, "E=no");
   });
 
+  it("makes the real cmd report its directory with OSC 9;9 at each prompt (#200)", async () => {
+    const s = setup();
+    const dir = tempDir();
+    const session = await s.registry.create({ name: "cmd", launch: cmd(dir) });
+    await s.registry.attachView(session.id, "v1");
+    await sees(s, session.id, `\x1b]9;9;${dir}\x1b\\`);
+    // A directory below, typed as it is shown, so the case of the path is the one the test typed.
+    const below = join(dir, "sub");
+    mkdirSync(below);
+    type(s, session.id, "v1", `cd /d ${below}`);
+    await sees(s, session.id, `\x1b]9;9;${below}\x1b\\`);
+  });
+
+  it("makes the real Windows PowerShell report its directory with OSC 9;9 and keep a working prompt (#200)", async () => {
+    const s = setup();
+    const dir = tempDir();
+    const session = await s.registry.create({
+      name: "ps",
+      launch: { backend: "windows", shell: "powershell", cwd: dir },
+    });
+    await s.registry.attachView(session.id, "v1");
+    await sees(s, session.id, `\x1b]9;9;"${dir}"\x1b\\`);
+    const below = join(dir, "sub dir");
+    mkdirSync(below);
+    type(s, session.id, "v1", `cd '${below}'`);
+    await sees(s, session.id, `\x1b]9;9;"${below}"\x1b\\`);
+    type(s, session.id, "v1", "Write-Output ('td'+'-ok-200')");
+    await sees(s, session.id, "td-ok-200");
+  });
+
   it("runs launch.command as an argument array, without a shell", async () => {
     const s = setup();
     const session = await s.registry.create({
@@ -365,7 +396,7 @@ describe("WindowsBackend without a real shell", () => {
     expect(session.launch.shell).toBe("pwsh");
     expect(withPwsh.spawned[0]).toEqual({
       file: "C:\\PF\\PowerShell\\7\\pwsh.exe",
-      args: ["-NoLogo"],
+      args: ["-NoLogo", "-NoExit", "-Command", POWERSHELL_CWD_HOOK],
       cwd: "C:\\",
     });
     const without = fake({ isFile: async (file) => file.endsWith("powershell.exe") });
@@ -415,7 +446,25 @@ describe("WindowsBackend without a real shell", () => {
       },
     });
     await registry.create({ name: "x", launch: cmd("C:\\") });
-    expect(envs).toEqual([{ SystemRoot: "C:\\Windows", KEEP: "1" }]);
+    expect(envs).toEqual([{ SystemRoot: "C:\\Windows", KEEP: "1", PROMPT: `${CMD_CWD_HOOK}$P$G` }]);
+  });
+
+  it("sets the prompt hook of cmd only without launch.command (#200)", async () => {
+    const envs: Readonly<Record<string, string>>[] = [];
+    const { registry } = fake({
+      env: { SystemRoot: "C:\\Windows" },
+      spawnPty: async (_file, _args, _size, _cwd, env) => {
+        envs.push(env);
+        return new FakeProcess();
+      },
+    });
+    await registry.create({ name: "a", launch: cmd("C:\\", { env: { Prompt: "$G " } }) });
+    await registry.create({
+      name: "b",
+      launch: cmd("C:\\", { command: ["C:\\Windows\\System32\\cmd.exe", "/d", "/c", "echo x"] }),
+    });
+    expect(envs[0]).toEqual({ SystemRoot: "C:\\Windows", PROMPT: `${CMD_CWD_HOOK}$G ` });
+    expect(envs[1]).toEqual({ SystemRoot: "C:\\Windows" });
   });
 
   it("counts a directory check that does not answer as missing", async () => {

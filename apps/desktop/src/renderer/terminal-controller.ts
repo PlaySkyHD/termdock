@@ -3,6 +3,7 @@
 import type { SessionId, TerminalSize, ViewId } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import { handleKey } from "./keymap.js";
+import { parseCwdOsc } from "./osc-cwd.js";
 import type { KeyCommands, KeyLike } from "./keymap.js";
 import { MIN_FONT_SIZE, NORMAL_FONT_SIZE, readerFontSize } from "./terminal-size.js";
 
@@ -34,6 +35,11 @@ export interface TerminalSurface {
    * keeps the key from the terminal. Called once; a later call replaces the handler.
    */
   onKey(handler: (event: KeyEvent) => boolean): void;
+  /**
+   * Installs a handler for OSC 9 (`parser.registerOscHandler(9, …)`, #200); it gets the data after `9;`. Returning
+   * false leaves the sequence to the next handler (notifications); the returned function removes the handler.
+   */
+  onOsc9(handler: (data: string) => boolean): () => void;
   /** Selected text of the terminal, empty without a selection. */
   getSelection(): string;
   /**
@@ -127,6 +133,8 @@ export class TerminalController {
   private readonly claimOnOpen: (() => boolean) | undefined;
   private readonly onAttached: ControllerOptions["onAttached"];
   private readonly rawSnapshot: boolean;
+  private cwd: string | undefined;
+  private readonly cwdListeners = new Set<(path: string) => void>();
 
   constructor(
     private readonly api: ViewApi,
@@ -168,9 +176,47 @@ export class TerminalController {
     return true;
   }
 
+  /**
+   * The current directory the shell reported with OSC 9;9 (Windows sessions with the prompt hook of the core, #200):
+   * an absolute Windows path, or undefined while none was seen (WSL sessions never report one here). The snapshot of
+   * a view carries the raw output, so a view that attaches later learns the last path too.
+   */
+  currentCwd(): string | undefined {
+    return this.cwd;
+  }
+
+  /**
+   * Calls `listener` with the new path each time the reported directory changes (not at every prompt, and not for a
+   * rejected path). The function returned removes the listener; `dispose` removes all.
+   */
+  onCwd(listener: (path: string) => void): () => void {
+    this.cwdListeners.add(listener);
+    return () => this.cwdListeners.delete(listener);
+  }
+
+  private handleOsc9(data: string): boolean {
+    const parsed = parseCwdOsc(data);
+    // A notification or progress report is not ours: xterm.js goes on with it.
+    if (parsed.kind === "other") return false;
+    if (parsed.kind === "cwd" && parsed.path !== this.cwd) {
+      this.cwd = parsed.path;
+      // A throwing listener must reach neither the other listeners nor the parser of xterm.js.
+      for (const listener of [...this.cwdListeners]) {
+        try {
+          listener(parsed.path);
+        } catch {
+          // Not ours to report; the listener's owner handles its own errors.
+        }
+      }
+    }
+    return true;
+  }
+
   /** Attaches a new view to the session and shows it. Subscribes first, so no output is lost. */
   async open(sessionId: SessionId): Promise<void> {
     this.sessionId = sessionId;
+    // Only a Windows session reports its directory this way; in WSL the output is the program's, not the hook's.
+    if (this.rawSnapshot) this.unsubscribe.push(this.surface.onOsc9((data) => this.handleOsc9(data)));
     this.unsubscribe.push(this.api.onEvent((event) => this.onEvent(event)));
     this.unsubscribe.push(
       this.surface.onData((data) => {
@@ -260,6 +306,7 @@ export class TerminalController {
     this.cancelLayout?.();
     this.cancelLayout = undefined;
     this.stopListening();
+    this.cwdListeners.clear();
     const viewId = this.viewId;
     this.viewId = undefined;
     if (viewId !== undefined) await this.api.detach(viewId).catch(() => {});

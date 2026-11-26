@@ -368,6 +368,39 @@ describe("WslBackend", () => {
     await expect(refused.backend.redraw("s1", spec)).rejects.toThrow(/can't find client/);
   });
 
+  it("currentCwd asks tmux once with --cd ~ and a 5 s limit and returns the path (issue #199)", async () => {
+    const timeouts: number[] = [];
+    const calls: (readonly string[])[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      run: async (args, options) => {
+        calls.push(args);
+        timeouts.push(options.timeoutMs);
+        return ok("/home/nic/Projekt Ä\n");
+      },
+    });
+    expect(await backend.currentCwd("s1", { ...spec, distro: "Ubuntu" })).toBe("/home/nic/Projekt Ä");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.slice(0, 5)).toEqual(["-d", "Ubuntu", "--cd", "~", "--exec"]);
+    expect(calls[0]!.at(-1)).toBe("#{pane_current_path}");
+    expect(timeouts).toEqual([5_000]);
+  });
+
+  it("currentCwd gives undefined for a missing session, a WSL failure, a timeout and a bad id", async () => {
+    expect(await setup({ distro: "Ubuntu" }).backend.currentCwd("gone", spec)).toBeUndefined();
+    expect(
+      await setup({ distro: "Ubuntu", respond: () => distroMissing }).backend.currentCwd("s1", spec),
+    ).toBe(undefined);
+    const slow = setup({
+      distro: "Ubuntu",
+      respond: () => ({ code: null, stdout: "", stderr: "", timedOut: true }),
+    });
+    expect(await slow.backend.currentCwd("s1", spec)).toBeUndefined();
+    expect(await setup({ distro: "Ubuntu" }).backend.currentCwd("a;b", spec)).toBeUndefined();
+    // No distro configured and WSL cannot list one: still no rejection.
+    expect(await setup({ respond: () => distroMissing }).backend.currentCwd("s1", spec)).toBeUndefined();
+  });
+
   it("returns no snapshot for a missing session and throws when WSL fails", async () => {
     expect(await setup({ distro: "Ubuntu" }).backend.snapshot("gone", spec)).toBeUndefined();
     const down = setup({ distro: "Ubuntu", respond: () => distroMissing });

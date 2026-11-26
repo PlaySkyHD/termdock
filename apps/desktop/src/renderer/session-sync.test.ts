@@ -1,6 +1,7 @@
 import type { CoreStatusResult, SessionInfo, SessionState, Workspace } from "@termdock/protocol";
 import { describe, expect, it } from "vitest";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
+import { currentCwdOf } from "./session-cwd.js";
 import { connectStore } from "./session-sync.js";
 import { UiStore } from "./ui-store.js";
 
@@ -125,6 +126,34 @@ describe("connectStore", () => {
     await connection.ready;
 
     expect(states(s)).toEqual([["a", "Exited"]]);
+  });
+
+  it("applies cwdChanged, also one that arrives before the list, in order with state changes (issue #199)", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+
+    api.emit({ kind: "cwdChanged", sessionId: "a", currentCwd: "/tmp" });
+    api.emit({ kind: "cwdChanged", sessionId: "b", currentCwd: "/srv" });
+    api.emit({ kind: "stateChanged", sessionId: "b", state: "Exited", lastExitCode: 0 });
+    api.answer([session("a", "Running"), session("b", "Running")]);
+    await connection.ready;
+    expect(currentCwdOf(s.getState(), "a")).toBe("/tmp");
+    expect(currentCwdOf(s.getState(), "b")).toBeUndefined();
+
+    api.emit({ kind: "cwdChanged", sessionId: "a", currentCwd: "/home/nic" });
+    expect(currentCwdOf(s.getState(), "a")).toBe("/home/nic");
+    api.emit({ kind: "cwdChanged", sessionId: "a" });
+    expect(currentCwdOf(s.getState(), "a")).toBeUndefined();
+  });
+
+  it("takes the directory from the list", async () => {
+    const api = new FakeApi();
+    const s = store();
+    const connection = connectStore(s, api, () => {});
+    api.answer([{ ...session("a", "Detached"), currentCwd: "/tmp" }]);
+    await connection.ready;
+    expect(currentCwdOf(s.getState(), "a")).toBe("/tmp");
   });
 
   it("takes the warnings of state changes, also of one that arrives before the list (issue #113)", async () => {

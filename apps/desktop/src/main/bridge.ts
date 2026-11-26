@@ -148,6 +148,10 @@ export class DesktopBridge {
           ...(warnings === undefined ? {} : { warnings }),
         });
       }),
+      // State of the session like `stateChanged` (#199): every window keeps all sessions in its store.
+      core.on("session.cwdChanged", ({ sessionId, currentCwd }) =>
+        this.toAll({ kind: "cwdChanged", sessionId, ...(currentCwd === undefined ? {} : { currentCwd }) }),
+      ),
       core.on("session.created", ({ session }) => this.toAll({ kind: "sessionCreated", session })),
       core.on("session.updated", ({ session }) => this.toAll({ kind: "sessionUpdated", session })),
       core.on("session.removed", ({ sessionId }) => {

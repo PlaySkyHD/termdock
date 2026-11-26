@@ -1,5 +1,5 @@
 // Argument arrays for wsl.exe and tmux plus parsers for their output (ADR 0003, design add-wsl-backend).
-import { MAX_PATH_LENGTH } from "@termdock/protocol";
+import { isValidCurrentCwd, MAX_PATH_LENGTH } from "@termdock/protocol";
 import type { LaunchSpec, SessionId } from "@termdock/protocol";
 import type { TerminalSnapshot } from "../types.js";
 
@@ -188,6 +188,40 @@ export function snapshotArgs(target: TmuxTarget, id: SessionId): string[] {
     paneTarget(name),
     CURSOR_FORMAT,
   ]);
+}
+
+/**
+ * The directory of the session's pane (issue #199): tmux reads it from the foreground process, no terminal output is
+ * parsed. `has-session` first, like `paneStatusArgs`, so a missing session is an error and not an empty line.
+ */
+export function currentCwdArgs(target: TmuxTarget, id: SessionId): string[] {
+  const name = sessionName(id);
+  return tmux(target, "~", [
+    "has-session",
+    "-t",
+    sessionTarget(name),
+    ";",
+    "display-message",
+    "-p",
+    "-t",
+    paneTarget(name),
+    "#{pane_current_path}",
+  ]);
+}
+
+/** What Linux appends to the target of `/proc/<pid>/cwd` once the directory is removed; tmux 3.6 passes it on. */
+const DELETED_SUFFIX = " (deleted)";
+
+/**
+ * The path from `currentCwdArgs` without its line end, or undefined for a failed call and for anything a client would
+ * reject (`isValidCurrentCwd`) or that is no absolute Linux path. A path with a newline never gets through. A removed
+ * directory (`… (deleted)`, measured with tmux 3.6) is no directory to show: undefined as well.
+ */
+export function parseCurrentCwd(result: RunResult): string | undefined {
+  if (result.code !== 0 || result.timedOut) return undefined;
+  const path = result.stdout.replace(/\r?\n$/, "");
+  if (path.endsWith(DELETED_SUFFIX)) return undefined;
+  return path.startsWith("/") && isValidCurrentCwd(path) ? path : undefined;
 }
 
 /** tty of each tmux client of the session, one per line (issue #34). */

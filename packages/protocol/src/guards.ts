@@ -185,6 +185,29 @@ const checkSessionInfo: Check = (value, path) => {
   for (const key of ["workspaceId", "profileId", "writerViewId"]) optional(obj, key, path, isId);
   optional(obj, "lastExitCode", path, isInteger);
   optional(obj, "warnings", path, checkWarnings);
+  optional(obj, "currentCwd", path, checkCurrentCwd);
+};
+
+/**
+ * C0 controls, DEL and C1 controls (U+0080 to U+009F, e.g. the 8-bit CSI U+009B); a path with them never reaches a
+ * client (newline, escape sequences). The same set as the OSC 9;9 check of Windows paths in the renderer (#200).
+ */
+// eslint-disable-next-line no-control-regex -- the control characters are what this pattern finds
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Whether `value` may travel as a session's current directory (since 1.8, #199): 1 to MAX_PATH_LENGTH characters
+ * and no control characters (C0, DEL, C1). The core checks with the same rule before it sends, so no client rejects
+ * a list.
+ */
+export function isValidCurrentCwd(value: string): boolean {
+  return value.length > 0 && value.length <= MAX_PATH_LENGTH && !CONTROL_CHARACTER.test(value);
+}
+
+const checkCurrentCwd: Check = (value, path) => {
+  if (typeof value !== "string" || !isValidCurrentCwd(value)) {
+    fail(`${path} must be a string of 1 to ${MAX_PATH_LENGTH} characters without control characters`);
+  }
 };
 
 /** Any code of this shape passes, so a client keeps a session whose warning came from a newer core (since 1.5). */
@@ -855,6 +878,11 @@ const EVENT_CHECK: Record<EventName, Check> = {
   "workspace.changed": wrapped("workspaces", listOf(checkWorkspace, MAX_WORKSPACES)),
   "profile.changed": wrapped("profiles", listOf(checkProfile, MAX_PROFILES)),
   "settings.changed": wrapped("settings", checkSettings),
+  "session.cwdChanged": (value, path) => {
+    const obj = record(value, path);
+    string(obj, "sessionId", path);
+    optional(obj, "currentCwd", path, checkCurrentCwd);
+  },
 };
 
 function checkPayload(rule: PayloadRule, payload: Uint8Array, what: string): void {

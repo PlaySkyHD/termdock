@@ -3,6 +3,7 @@ import type { LaunchSpec } from "@termdock/protocol";
 import {
   attachArgs,
   checksCwd,
+  currentCwdArgs,
   cwdCheckArgs,
   endKeepalivesArgs,
   hasSessionArgs,
@@ -12,6 +13,7 @@ import {
   listClientsArgs,
   listSessionsArgs,
   parseClientTtys,
+  parseCurrentCwd,
   parseCwdCheck,
   parseDistroList,
   parseLiveSessions,
@@ -410,3 +412,56 @@ describe("check of the working directory", () => {
     expect(parseCwdCheck({ code: 1, stdout: "", stderr: "", timedOut: true })).toBeUndefined();
   });
 });
+
+// Issue #199 (openspec change session-current-cwd): the directory of the pane, from tmux.
+describe("current directory", () => {
+  it("builds the current-directory query as one argument array, has-session first", () => {
+    expect(currentCwdArgs(target, "abc")).toEqual([
+      "-d",
+      "Ubuntu",
+      "--cd",
+      "~",
+      "--exec",
+      "tmux",
+      "-L",
+      "termdock-test",
+      "has-session",
+      "-t",
+      "=td-abc",
+      ";",
+      "display-message",
+      "-p",
+      "-t",
+      "=td-abc:",
+      "#{pane_current_path}",
+    ]);
+    expect(() => currentCwdArgs(target, "a;b")).toThrow(/session id/i);
+  });
+
+  it("parses the current directory and drops what a client would reject", () => {
+    expect(parseCurrentCwd(ok("/home/nic/Projekt Ä\n"))).toBe("/home/nic/Projekt Ä");
+    expect(parseCurrentCwd(ok("/tmp\r\n"))).toBe("/tmp");
+    expect(parseCurrentCwd(ok("/"))).toBe("/");
+    for (const stdout of [
+      "",
+      "\n",
+      "tmp\n",
+      "~/x\n",
+      `/${"a".repeat(512)}\n`,
+      "/a\tb\n",
+      "/a\nb\n",
+      "/a\u001bb",
+    ]) {
+      expect(parseCurrentCwd(ok(stdout)), JSON.stringify(stdout)).toBeUndefined();
+    }
+    // tmux 3.6 reports a removed directory with the suffix of /proc/<pid>/cwd.
+    expect(parseCurrentCwd(ok("/tmp/build (deleted)\n"))).toBeUndefined();
+    expect(parseCurrentCwd(ok("/tmp/a\u009bb\n"))).toBeUndefined();
+    expect(parseCurrentCwd({ code: 1, stdout: "", stderr: "can't find session: td-abc\n" })).toBeUndefined();
+    expect(parseCurrentCwd({ code: null, stdout: "/tmp\n", stderr: "", timedOut: true })).toBeUndefined();
+  });
+});
+
+function ok(stdout: string): { code: number; stdout: string; stderr: string } {
+  return { code: 0, stdout, stderr: "" };
+}

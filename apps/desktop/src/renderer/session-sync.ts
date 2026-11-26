@@ -1,5 +1,5 @@
 // Connects the bridge to the UI store of a window (ADR 0006): lists the sessions, asks for the core status and
-// keeps the store current from `stateChanged` and `sessionCreated` events. Free of React and Electron.
+// keeps the store current from `stateChanged`, `cwdChanged` and `sessionCreated` events. Free of React and Electron.
 import type { SessionId, SessionInfo, SessionState, SessionWarning } from "@termdock/protocol";
 import type { BridgeEvent, TermdockApi } from "../shared/bridge.js";
 import type { UiStore } from "./ui-store.js";
@@ -12,6 +12,14 @@ interface StateChange {
   lastExitCode?: number;
   warnings?: SessionWarning[];
 }
+
+/** `cwdChanged` (#199); held in one queue with the state changes, so their order stays. */
+interface CwdChange {
+  sessionId: SessionId;
+  currentCwd?: string;
+}
+
+type HeldChange = { state: StateChange } | { cwd: CwdChange };
 
 export interface StoreConnection {
   /** Settles when the list and the status are in the store (or have failed); never rejects. */
@@ -43,7 +51,7 @@ export function connectStore(
   let listed = false;
   let disposed = false;
   const created: SessionInfo[] = [];
-  const changes: StateChange[] = [];
+  const changes: HeldChange[] = [];
   /** Updates and removals that arrived before the list, in order; applied after the created sessions. */
   const edits: Array<{ update: SessionInfo } | { removed: SessionId }> = [];
   /**
@@ -60,6 +68,10 @@ export function connectStore(
   let connectionEpoch = 0;
   const applyChange = (change: StateChange): void =>
     store.sessionStateChanged(change.sessionId, change.state, change.lastExitCode, change.warnings);
+  const applyHeldChange = (change: HeldChange): void => {
+    if ("state" in change) applyChange(change.state);
+    else store.sessionCwdChanged(change.cwd.sessionId, change.cwd.currentCwd);
+  };
 
   const off = api.onEvent((event: BridgeEvent) => {
     switch (event.kind) {
@@ -82,7 +94,13 @@ export function connectStore(
       case "stateChanged": {
         const { kind: _kind, ...change } = event;
         if (listed) applyChange(change);
-        else changes.push(change);
+        else changes.push({ state: change });
+        return;
+      }
+      case "cwdChanged": {
+        const { kind: _kind, ...change } = event;
+        if (listed) store.sessionCwdChanged(change.sessionId, change.currentCwd);
+        else changes.push({ cwd: change });
         return;
       }
       case "coreClosed":
@@ -148,7 +166,7 @@ export function connectStore(
   const applyHeld = (sessions: readonly SessionInfo[]): void => {
     const known = new Set(sessions.map((session) => session.id));
     for (const session of created) if (!known.has(session.id)) store.sessionCreated(session);
-    for (const change of changes) applyChange(change);
+    for (const change of changes) applyHeldChange(change);
     for (const edit of edits) {
       if ("update" in edit) store.sessionUpdated(edit.update);
       else store.sessionRemoved(edit.removed);

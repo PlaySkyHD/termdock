@@ -5,6 +5,7 @@ import type { Backend, PtyHandle, TerminalSnapshot } from "../types.js";
 import {
   attachArgs,
   checksCwd,
+  currentCwdArgs,
   cwdCheckArgs,
   endKeepalivesArgs,
   hasSessionArgs,
@@ -14,6 +15,7 @@ import {
   listDistrosArgs,
   listSessionsArgs,
   parseClientTtys,
+  parseCurrentCwd,
   parseCwdCheck,
   parseDistroList,
   parseLiveSessions,
@@ -55,6 +57,8 @@ export interface WslBackendOptions {
   cwdCheckTimeoutMs?: number;
   /** How long the start still waits for that check once its status call is done (issue #113); then no warning. */
   cwdCheckGraceMs?: number;
+  /** Longest wait for `currentCwd` (issue #199); a slower answer counts as unknown. Defaults to 5 s. */
+  cwdQueryTimeoutMs?: number;
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
@@ -82,6 +86,7 @@ export class WslBackend implements Backend {
   private readonly killTimeoutMs: number;
   private readonly cwdCheckTimeoutMs: number;
   private readonly cwdCheckGraceMs: number;
+  private readonly cwdQueryTimeoutMs: number;
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
@@ -98,6 +103,7 @@ export class WslBackend implements Backend {
     this.killTimeoutMs = options.killTimeoutMs ?? 5_000;
     this.cwdCheckTimeoutMs = options.cwdCheckTimeoutMs ?? 5_000;
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
+    this.cwdQueryTimeoutMs = options.cwdQueryTimeoutMs ?? 5_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
     this.ptysClosed = options.ptysClosed ?? (() => ptysClosed());
@@ -277,6 +283,21 @@ export class WslBackend implements Backend {
     );
     const failed = results.find((result) => result.code !== 0);
     if (failed && results.every((result) => result.code !== 0)) throw wslError("tmux refresh-client", failed);
+  }
+
+  /**
+   * The directory of the session's pane from tmux (issue #199), at most `cwdQueryTimeoutMs`. Never rejects: a failed
+   * or slow call, a missing session and an unusable answer give undefined (`parseCurrentCwd`).
+   */
+  async currentCwd(id: SessionId, spec: LaunchSpec): Promise<string | undefined> {
+    try {
+      const target = await this.target(spec);
+      return parseCurrentCwd(
+        await this.run(currentCwdArgs(target, id), { timeoutMs: this.cwdQueryTimeoutMs }),
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   /**

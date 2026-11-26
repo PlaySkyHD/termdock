@@ -200,7 +200,14 @@ export class TerminalController {
     if (parsed.kind === "other") return false;
     if (parsed.kind === "cwd" && parsed.path !== this.cwd) {
       this.cwd = parsed.path;
-      for (const listener of [...this.cwdListeners]) listener(parsed.path);
+      // A throwing listener must reach neither the other listeners nor the parser of xterm.js.
+      for (const listener of [...this.cwdListeners]) {
+        try {
+          listener(parsed.path);
+        } catch {
+          // Not ours to report; the listener's owner handles its own errors.
+        }
+      }
     }
     return true;
   }
@@ -208,7 +215,8 @@ export class TerminalController {
   /** Attaches a new view to the session and shows it. Subscribes first, so no output is lost. */
   async open(sessionId: SessionId): Promise<void> {
     this.sessionId = sessionId;
-    this.unsubscribe.push(this.surface.onOsc9((data) => this.handleOsc9(data)));
+    // Only a Windows session reports its directory this way; in WSL the output is the program's, not the hook's.
+    if (this.rawSnapshot) this.unsubscribe.push(this.surface.onOsc9((data) => this.handleOsc9(data)));
     this.unsubscribe.push(this.api.onEvent((event) => this.onEvent(event)));
     this.unsubscribe.push(
       this.surface.onData((data) => {

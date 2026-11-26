@@ -2099,7 +2099,7 @@ Der Screenshot-Modus SHALL in der Gruppe `drag` mit zwei Fenstern und echten Mau
 
 ### Requirement: Aktuelles Verzeichnis einer Windows-Session aus OSC 9;9
 
-Der Terminal-Controller SHALL über den OSC-Parser von xterm.js (`registerOscHandler(9, …)`) das Verzeichnis lesen, das der Prompt-Hook der Windows-Shell sendet (`9;"<pfad>"` oder `9;<pfad>`), und es als `currentCwd()` anbieten. `onCwd(listener)` MUST bei jeder Änderung des Pfades melden und eine Funktion zum Abmelden liefern. Ein anderer OSC 9 (Benachrichtigung, Fortschritt) MUST der Handler mit `false` weitergeben. Beim Anhängen läuft der Snapshot durch denselben Parser.
+Der Terminal-Controller einer Windows-Session SHALL über den OSC-Parser von xterm.js (`registerOscHandler(9, …)`) das Verzeichnis lesen, das der Prompt-Hook der Windows-Shell sendet (`9;"<pfad>"` oder `9;<pfad>`), und es als `currentCwd()` anbieten. `onCwd(listener)` MUST bei jeder Änderung melden und eine Funktion zum Abmelden liefern; ein werfender Listener stört die anderen nicht. Ein anderer OSC 9 MUST der Handler mit `false` weitergeben. Der Snapshot läuft durch denselben Parser.
 
 #### Scenario: Pfad aus der Ausgabe
 
@@ -2112,6 +2112,24 @@ Der Terminal-Controller SHALL über den OSC-Parser von xterm.js (`registerOscHan
 - **GIVEN** ein Snapshot mit zwei Meldungen, zuletzt `\\server\share\dir`
 - **WHEN** die View anhängt
 - **THEN** ist `currentCwd()` `\\server\share\dir`
+
+#### Scenario: Snapshot ohne Meldung (bekannte Grenze)
+
+- **GIVEN** eine Windows-Session, deren letzte Meldung nicht mehr im Rohpuffer von 256 KiB liegt
+- **WHEN** eine View anhängt
+- **THEN** ist `currentCwd()` `undefined`, bis der nächste Prompt den Pfad meldet
+
+#### Scenario: Keine Windows-Session
+
+- **GIVEN** eine WSL-Session, deren Programm `ESC ] 9 ; 9 ; "C:\Windows" ESC \` ausgibt
+- **WHEN** die Ausgabe in der View eintrifft
+- **THEN** ist kein OSC-9-Handler installiert, xterm.js verarbeitet die Sequenz wie sonst, und `currentCwd()` bleibt `undefined`
+
+#### Scenario: Werfender Listener
+
+- **GIVEN** ein Listener, der wirft, und ein zweiter
+- **WHEN** ein neuer Pfad gemeldet wird
+- **THEN** erhält der zweite Listener den Pfad, und die Ausgabe wird weiter verarbeitet
 
 #### Scenario: Benachrichtigung bleibt
 

@@ -2,8 +2,10 @@
 // (ConEmu / Windows Terminal, OSC 9;9). Pure: xterm.js hands the data of the OSC to `parseCwdOsc`; the terminal
 // output is data, so a path with control characters or an odd form is dropped and never used.
 
-/** Longest path accepted; the same limit as every other path of the protocol (`MAX_PATH_LENGTH`). */
-export const MAX_CWD_LENGTH = 512;
+import { MAX_PATH_LENGTH } from "@termdock/protocol";
+
+/** Longest path accepted; the same limit as every other path of the protocol. */
+export const MAX_CWD_LENGTH = MAX_PATH_LENGTH;
 
 /** `C:\dir`, `C:/dir` or `\\server\share`, the forms of `isWindowsPath` in the core. */
 const ABSOLUTE_WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/;

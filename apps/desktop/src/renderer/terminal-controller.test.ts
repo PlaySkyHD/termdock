@@ -2,7 +2,13 @@ import type { TerminalSize } from "@termdock/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { AttachedView, BridgeEvent } from "../shared/bridge.js";
 import { TerminalController } from "./terminal-controller.js";
-import type { KeyEvent, TerminalSurface, ViewApi, ViewStatus } from "./terminal-controller.js";
+import type {
+  ControllerOptions,
+  KeyEvent,
+  TerminalSurface,
+  ViewApi,
+  ViewStatus,
+} from "./terminal-controller.js";
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (data: Uint8Array | string): string =>
@@ -175,13 +181,14 @@ class ManualDelay {
   }
 }
 
-async function opened(view: Partial<AttachedView>) {
+async function opened(view: Partial<AttachedView>, options: ControllerOptions = {}) {
   const api = new FakeApi();
   const surface = new FakeSurface();
   const statuses: ViewStatus[] = [];
   const delay = new ManualDelay();
   const controller = new TerminalController(api, surface, (status) => statuses.push(status), {
     scheduleLayout: delay.schedule,
+    ...options,
   });
   const opening = controller.open("s1");
   api.answerAttach(view);
@@ -804,9 +811,43 @@ describe("TerminalController", () => {
 
   describe("current directory of a Windows shell (OSC 9;9, #200)", () => {
     const report = (path: string): string => `\x1b]9;9;"${path}"\x1b\\`;
+    // A Windows session: its snapshot is the raw output (`rawSnapshot` of session-display).
+    const windows: ControllerOptions = { rawSnapshot: true };
+
+    it("ignores OSC 9;9 of a session that is not a Windows session (WSL prints it too)", async () => {
+      const { api, surface, controller } = await opened({});
+      const seen: string[] = [];
+      controller.onCwd((path) => seen.push(path));
+      expect(surface.osc9).toEqual([]);
+      api.output("s1", 1, report("C:\\Windows"));
+      expect(seen).toEqual([]);
+      expect(controller.currentCwd()).toBeUndefined();
+    });
+
+    it("learns nothing from a snapshot without OSC 9;9 (the report left the raw buffer)", async () => {
+      const api = new FakeApi();
+      const controller = new TerminalController(api, new FakeSurface(), () => {}, windows);
+      const opening = controller.open("s1");
+      api.answerAttach({ snapshot: bytes("C:\\old>"), outputSeq: 4 });
+      await opening;
+      expect(controller.currentCwd()).toBeUndefined();
+    });
+
+    it("keeps the other listeners and the parser running when a listener throws", async () => {
+      const { api, surface, controller } = await opened({}, windows);
+      const seen: string[] = [];
+      controller.onCwd(() => {
+        throw new Error("listener bug");
+      });
+      controller.onCwd((path) => seen.push(path));
+      expect(() => api.output("s1", 1, report("C:\\a"))).not.toThrow();
+      expect(seen).toEqual(["C:\\a"]);
+      expect(controller.currentCwd()).toBe("C:\\a");
+      expect(surface.osc9).toHaveLength(1);
+    });
 
     it("reports the directory of live output once per change and answers currentCwd", async () => {
-      const { api, controller } = await opened({});
+      const { api, controller } = await opened({}, windows);
       const seen: string[] = [];
       controller.onCwd((path) => seen.push(path));
       expect(controller.currentCwd()).toBeUndefined();
@@ -821,7 +862,7 @@ describe("TerminalController", () => {
 
     it("learns the last directory from the snapshot of a view that attaches later", async () => {
       const api = new FakeApi();
-      const controller = new TerminalController(api, new FakeSurface(), () => {});
+      const controller = new TerminalController(api, new FakeSurface(), () => {}, windows);
       const opening = controller.open("s1");
       api.answerAttach({
         snapshot: bytes(`${report("C:\\old")}x${report("\\\\server\\share\\dir")}>`),
@@ -832,7 +873,7 @@ describe("TerminalController", () => {
     });
 
     it("drops a path with control characters, a relative or a too long path and keeps the last good one", async () => {
-      const { api, controller } = await opened({});
+      const { api, controller } = await opened({}, windows);
       const seen: string[] = [];
       controller.onCwd((path) => seen.push(path));
       api.output("s1", 1, report("C:\\good"));
@@ -844,7 +885,7 @@ describe("TerminalController", () => {
     });
 
     it("leaves other OSC 9 sequences (notifications) to the next handler", async () => {
-      const { api, surface, controller } = await opened({});
+      const { api, surface, controller } = await opened({}, windows);
       const fallthrough: boolean[] = [];
       const inner = surface.osc9[0]!;
       surface.osc9[0] = (data) => {
@@ -859,7 +900,7 @@ describe("TerminalController", () => {
     });
 
     it("stops reporting after the listener is removed and after dispose", async () => {
-      const { api, surface, controller } = await opened({});
+      const { api, surface, controller } = await opened({}, windows);
       const seen: string[] = [];
       const off = controller.onCwd((path) => seen.push(path));
       off();

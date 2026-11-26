@@ -119,13 +119,19 @@ Die PTY der Session SHALL Eingaben an das Programm weitergeben, seine Ausgabe li
 
 ### Requirement: Beenden
 
-`kill` SHALL die tmux-Session beenden und erst auflösen, wenn `has-session` sie nicht mehr findet; bleibt sie länger als die Frist bestehen, MUST `kill` mit einem Fehler ablehnen. Danach MUST `exists` `false` liefern.
+`kill` SHALL die tmux-Session beenden und erst auflösen, wenn `has-session` sie nicht mehr findet; bleibt sie länger als die Frist bestehen, MUST `kill` mit einem Fehler ablehnen. Danach MUST `exists` `false` liefern. Als „nicht gefunden“ zählen `can't find session`, `no server running`, `error connecting to` und `no current target` (Server ohne Session, der auf verbundene Clients wartet).
 
 #### Scenario: Kill
 
 - **GIVEN** eine laufende Session
 - **WHEN** `kill` aufgelöst hat
 - **THEN** liefert `exists` `false`
+
+#### Scenario: Letzte Session, Server noch nicht beendet
+
+- **GIVEN** die letzte Session des Sockets ist beendet, der Server wartet noch auf verbundene Clients
+- **WHEN** `has-session` mit `no current target` antwortet
+- **THEN** gilt die Session als beendet, und `kill` löst auf
 
 ### Requirement: PTY-Ende und Exit-Code
 

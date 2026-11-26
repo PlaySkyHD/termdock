@@ -306,10 +306,14 @@ export function listDistrosArgs(): string[] {
   return ["-l", "-v"];
 }
 
-/** tmux reported that the session or its server does not exist (as opposed to WSL failing). */
+/**
+ * tmux reported that the session or its server does not exist (as opposed to WSL failing). `no current target`: the
+ * server has no session left but has not exited yet, because clients are still connected (tmux 3.6 waits for them,
+ * e.g. parallel `has-session` calls of a shutdown or a directory query, issue #199).
+ */
 export function isMissingSession(result: RunResult): boolean {
   if (result.timedOut || result.code !== 1) return false;
-  return /can't find session|no server running|error connecting to/.test(result.stderr);
+  return /can't find session|no server running|error connecting to|no current target/.test(result.stderr);
 }
 
 /** Parses `#{pane_dead} #{pane_dead_status} #{pane_dead_signal}`; a signal maps to 128 + n like a shell. */

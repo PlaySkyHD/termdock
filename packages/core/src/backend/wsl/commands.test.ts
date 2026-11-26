@@ -316,6 +316,8 @@ describe("parsers", () => {
         stderr: "error connecting to /tmp/tmux-1000/x (No such file)",
       }),
     ).toBe(true);
+    // A server whose last session just ended lives on while clients are connected (measured with tmux 3.6).
+    expect(isMissingSession({ code: 1, stdout: "", stderr: "no current target\n" })).toBe(true);
     expect(isMissingSession({ code: 127, stdout: "", stderr: "Wsl/Service/WSL_E_DISTRO_NOT_FOUND" })).toBe(
       false,
     );

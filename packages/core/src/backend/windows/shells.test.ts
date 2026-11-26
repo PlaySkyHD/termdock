@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  POWERSHELL_CWD_HOOK,
   defaultShell,
+  promptHookEnvironment,
   envValue,
   findProgram,
   findShell,
@@ -130,12 +132,13 @@ describe("launchProgram", () => {
     "D:\\bin\\git.exe",
   ]);
 
-  it("runs the shell with its own arguments", async () => {
+  it("runs the shell with its own arguments and the prompt hook of PowerShell (#200)", async () => {
+    const hooked = ["-NoLogo", "-NoExit", "-Command", POWERSHELL_CWD_HOOK];
     expect(await launchProgram({}, "pwsh", shells)).toEqual({
       file: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-      args: ["-NoLogo"],
+      args: hooked,
     });
-    expect(await launchProgram({}, "powershell", shells)).toMatchObject({ args: ["-NoLogo"] });
+    expect(await launchProgram({}, "powershell", shells)).toMatchObject({ args: hooked });
     expect(await launchProgram({ command: [] }, "cmd", shells)).toEqual({
       file: "C:\\Windows\\System32\\cmd.exe",
       args: [],
@@ -149,6 +152,15 @@ describe("launchProgram", () => {
       lookup(["D:\\bin\\git.exe"]),
     );
     expect(program).toEqual({ file: "D:\\bin\\git.exe", args: ["log", "--format=%H; rm -rf /"] });
+  });
+
+  it("sets no hook arguments when the spec has its own command (#200)", async () => {
+    const program = await launchProgram(
+      { command: ["pwsh", "-Command", "echo x"] },
+      "pwsh",
+      lookup(["D:\\bin\\pwsh.exe"]),
+    );
+    expect(program).toEqual({ file: "D:\\bin\\pwsh.exe", args: ["-Command", "echo x"] });
   });
 
   it("names a missing shell and the other shells", async () => {
@@ -174,6 +186,38 @@ describe("windowsCwd", () => {
     expect(windowsCwd("src", home)).toBeUndefined();
     expect(windowsCwd("C:dev", home)).toBeUndefined();
     expect(windowsCwd("~dev", home)).toBeUndefined();
+  });
+});
+
+describe("prompt hook (#200)", () => {
+  it("is a constant PowerShell script without double quotes, that only wraps prompt and reads the FileSystem path", () => {
+    expect(POWERSHELL_CWD_HOOK).not.toContain('"');
+    expect(POWERSHELL_CWD_HOOK).not.toContain("\n");
+    expect(POWERSHELL_CWD_HOOK).toContain("$function:prompt");
+    expect(POWERSHELL_CWD_HOOK).toContain("$PWD.ProviderPath");
+    expect(POWERSHELL_CWD_HOOK).toContain("'FileSystem'");
+    // A failing hook must leave the prompt as it was: the call of the old prompt and the hook each sit in try.
+    expect(POWERSHELL_CWD_HOOK.match(/try \{/g)).toHaveLength(2);
+    // The old prompt still sees `$?` of the user's command: caught first, before any statement of the hook.
+    expect(POWERSHELL_CWD_HOOK).toContain("function global:prompt { $ok = $?;");
+  });
+
+  it("puts the hook in front of PROMPT of cmd, the user's own value or $P$G", () => {
+    expect(promptHookEnvironment("cmd", {}, { A: "a" })).toEqual({ A: "a", PROMPT: "$e]9;9;$P$e\\$P$G" });
+    expect(promptHookEnvironment("cmd", {}, { Prompt: "$T$G", A: "a" })).toEqual({
+      A: "a",
+      PROMPT: "$e]9;9;$P$e\\$T$G",
+    });
+  });
+
+  it("leaves PowerShell and every session with its own command alone, and never changes its input", () => {
+    const env = { PROMPT: "x" };
+    expect(promptHookEnvironment("pwsh", {}, env)).toEqual({ PROMPT: "x" });
+    expect(promptHookEnvironment("cmd", { command: ["cmd.exe", "/c", "echo"] }, env)).toEqual({
+      PROMPT: "x",
+    });
+    promptHookEnvironment("cmd", {}, env);
+    expect(env).toEqual({ PROMPT: "x" });
   });
 });
 

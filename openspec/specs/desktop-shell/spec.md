@@ -1798,7 +1798,7 @@ Vor dem Start seines Cores SHALL ein Screenshot-Lauf `termdock-screenshot.lock` 
 
 ### Requirement: Escape-Sequenzen nur im Terminal-Emulator
 
-Der Main-Prozess SHALL Terminal-Ausgabe unverändert als `output`-Event an die Fenster der Session geben und MUST auf keine Sequenz reagieren. Die App MUST keinen eigenen OSC-Handler, kein Clipboard-Addon (OSC 52 ist nicht umgesetzt), keinen Link-Öffner, kein `openExternal` und keinen Fenstertitel aus der Ausgabe haben. Ein OSC-8-Link aus xterm.js MUST kein Fenster öffnen und nicht navigieren (`setWindowOpenHandler` verweigert, `will-navigate` verhindert).
+Der Main-Prozess SHALL Terminal-Ausgabe unverändert als `output`-Event an die Fenster der Session geben und MUST auf keine Sequenz reagieren. Die App MUST keinen eigenen OSC-Handler außer dem für OSC 9 (Verzeichnis der Windows-Shell), kein Clipboard-Addon (OSC 52 ist nicht umgesetzt), keinen Link-Öffner, kein `openExternal` und keinen Fenstertitel aus der Ausgabe haben. Ein OSC-8-Link aus xterm.js MUST kein Fenster öffnen und nicht navigieren (`setWindowOpenHandler`, `will-navigate` verweigern).
 
 #### Scenario: Sequenzen durch die Brücke
 
@@ -1810,7 +1810,7 @@ Der Main-Prozess SHALL Terminal-Ausgabe unverändert als `output`-Event an die F
 
 - **GIVEN** die Quellen von Main, Preload, Shared und Renderer
 - **WHEN** sie geprüft werden
-- **THEN** enthalten sie kein `registerOscHandler`, kein Clipboard- oder Web-Links-Addon, keinen `linkHandler`, kein `onTitleChange`, kein `openExternal` und keinen Import von `clipboard` aus Electron, und `main.ts` verweigert neue Fenster und Navigation
+- **THEN** enthalten sie kein `registerOscHandler` für eine andere Nummer als 9, kein Clipboard- oder Web-Links-Addon, keinen `linkHandler`, kein `onTitleChange`, kein `openExternal` und keinen Import von `clipboard` aus Electron, und `main.ts` verweigert neue Fenster und Navigation
 
 ### Requirement: Screenshot-Szenen für einen Renderer-Absturz
 
@@ -2128,3 +2128,59 @@ Der `UiStore` jedes Fensters SHALL `currentCwd` je Session aus `listSessions` un
 - **GIVEN** das Fenster wartet noch auf `listSessions`
 - **WHEN** `cwdChanged` mit `/tmp` für eine laufende Session kommt und danach die Liste ohne Verzeichnis
 - **THEN** hat die Session im Store `currentCwd: "/tmp"`
+
+### Requirement: Aktuelles Verzeichnis einer Windows-Session aus OSC 9;9
+
+Der Terminal-Controller einer Windows-Session SHALL über den OSC-Parser von xterm.js (`registerOscHandler(9, …)`) das Verzeichnis lesen, das der Prompt-Hook der Windows-Shell sendet (`9;"<pfad>"` oder `9;<pfad>`), und es als `currentCwd()` anbieten. `onCwd(listener)` MUST bei jeder Änderung melden und eine Funktion zum Abmelden liefern; ein werfender Listener stört die anderen nicht. Ein anderer OSC 9 MUST der Handler mit `false` weitergeben. Der Snapshot läuft durch denselben Parser.
+
+#### Scenario: Pfad aus der Ausgabe
+
+- **GIVEN** eine angehängte View einer Windows-Session und ein Listener über `onCwd`
+- **WHEN** die Ausgabe `ESC ] 9 ; 9 ; "C:\Windows" ESC \` zweimal und danach `ESC ] 9 ; 9 ; "D:\work dir" ESC \` bringt
+- **THEN** meldet der Listener `C:\Windows` einmal und `D:\work dir` einmal, und `currentCwd()` ist `D:\work dir`
+
+#### Scenario: Pfad aus dem Snapshot
+
+- **GIVEN** ein Snapshot mit zwei Meldungen, zuletzt `\\server\share\dir`
+- **WHEN** die View anhängt
+- **THEN** ist `currentCwd()` `\\server\share\dir`
+
+#### Scenario: Snapshot ohne Meldung (bekannte Grenze)
+
+- **GIVEN** eine Windows-Session, deren letzte Meldung nicht mehr im Rohpuffer von 256 KiB liegt
+- **WHEN** eine View anhängt
+- **THEN** ist `currentCwd()` `undefined`, bis der nächste Prompt den Pfad meldet
+
+#### Scenario: Keine Windows-Session
+
+- **GIVEN** eine WSL-Session, deren Programm `ESC ] 9 ; 9 ; "C:\Windows" ESC \` ausgibt
+- **WHEN** die Ausgabe in der View eintrifft
+- **THEN** ist kein OSC-9-Handler installiert, xterm.js verarbeitet die Sequenz wie sonst, und `currentCwd()` bleibt `undefined`
+
+#### Scenario: Werfender Listener
+
+- **GIVEN** ein Listener, der wirft, und ein zweiter
+- **WHEN** ein neuer Pfad gemeldet wird
+- **THEN** erhält der zweite Listener den Pfad, und die Ausgabe wird weiter verarbeitet
+
+#### Scenario: Benachrichtigung bleibt
+
+- **GIVEN** eine angehängte View
+- **WHEN** die Ausgabe `ESC ] 9 ; Build finished ESC \` enthält
+- **THEN** gibt der Handler `false` zurück, und `currentCwd()` ändert sich nicht
+
+#### Scenario: Abbau
+
+- **GIVEN** ein abgemeldeter Listener und ein Controller, der danach `dispose` ruft
+- **WHEN** weitere Meldungen eintreffen
+- **THEN** wird kein Listener mehr gerufen, und der OSC-Handler ist beim Terminal entfernt
+
+### Requirement: Prüfung des gemeldeten Verzeichnisses
+
+Die reine Funktion `parseCwdOsc` SHALL einen gemeldeten Pfad nur annehmen, wenn er absolut ist (`X:\`, `X:/` oder UNC), höchstens 512 Zeichen hat und kein Steuerzeichen (C0, DEL, C1) enthält. Sonst MUST die Meldung verworfen werden und der letzte gute Pfad bleiben, ohne dass ein Listener gerufen wird. Terminal-Ausgabe ist Daten: Der Pfad wird nie ausgeführt.
+
+#### Scenario: Ungültiger Pfad
+
+- **GIVEN** ein gemeldeter Pfad `C:\good`
+- **WHEN** danach Meldungen mit einem Steuerzeichen im Pfad, mit `relative\dir` und mit 600 Zeichen eintreffen
+- **THEN** bleibt `currentCwd()` `C:\good`, und kein Listener wird gerufen

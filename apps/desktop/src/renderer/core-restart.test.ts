@@ -124,6 +124,7 @@ function surface(): TerminalSurface {
     measure: () => undefined,
     onData: () => () => {},
     onKey: () => {},
+    onOsc9: () => () => {},
     getSelection: () => "",
     paste: () => {},
   };

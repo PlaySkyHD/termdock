@@ -12,8 +12,10 @@ import type {
   EVENT_CHANNEL,
   TermdockApi,
 } from "../shared/bridge.js" with { "resolution-mode": "import" };
+import type { FILES_CHANNEL, FileRequest } from "../shared/files.js" with { "resolution-mode": "import" };
 
 const { contextBridge, ipcRenderer } = electron;
+const filesChannel: typeof FILES_CHANNEL = "termdock:files";
 const callChannel: typeof CALL_CHANNEL = "termdock:call";
 const eventChannel: typeof EVENT_CHANNEL = "termdock:event";
 
@@ -24,6 +26,16 @@ async function call<M extends BridgeCall["method"]>(
   if (result.ok) return result.value;
   // Errors crossing contextBridge keep only their message; the code travels in it.
   throw new Error(`[${result.error.code}] ${result.error.message}`);
+}
+
+/** `T` is the result type of the method, inferred from the `FilesApi` entry it implements. */
+async function filesCall<T>(request: FileRequest): Promise<T> {
+  try {
+    return (await ipcRenderer.invoke(filesChannel, request)) as T;
+  } catch {
+    // The handler is gone (window closing, app quitting): the contract has no rejection.
+    return { ok: false, code: "OTHER" } as T;
+  }
 }
 
 const api: TermdockApi = {
@@ -75,6 +87,16 @@ const api: TermdockApi = {
     const handler = (_event: unknown, payload: BridgeEvent): void => listener(payload);
     ipcRenderer.on(eventChannel, handler);
     return () => void ipcRenderer.removeListener(eventChannel, handler);
+  },
+  // File access (ADR 0009): own channel, answers are results with a code and never rejections.
+  files: {
+    list: (location) => filesCall({ method: "list", location }),
+    rename: (location, newName) => filesCall({ method: "rename", location, newName }),
+    move: (location, targetDir) => filesCall({ method: "move", location, targetDir }),
+    delete: (location) => filesCall({ method: "delete", location }),
+    download: (location) => filesCall({ method: "download", location }),
+    reveal: (location) => filesCall({ method: "reveal", location }),
+    open: (location) => filesCall({ method: "open", location }),
   },
 };
 

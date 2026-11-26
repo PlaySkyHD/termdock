@@ -325,7 +325,7 @@ Eine Zeile des Baums SHALL per Rechtsklick, `Shift+F10` oder Menütaste ein Kont
 
 ### Requirement: Umbenennen in der Zeile
 
-`F2` oder der Menüeintrag „Umbenennen“ SHALL den Namen der Zeile durch ein Eingabefeld ersetzen, das den Namen vorbelegt und markiert. Enter SHALL mit `files.rename` umbenennen; Escape oder das Verlassen des Felds SHALL abbrechen. Ein leerer oder unveränderter Name MUST nichts aufrufen. Keine Taste im Feld MUST Baum, Fenster-Kürzel oder Terminal erreichen.
+`F2` oder der Menüeintrag „Umbenennen“ SHALL den Namen der Zeile durch ein Eingabefeld ersetzen, das den Namen vorbelegt und markiert. Enter SHALL mit `files.rename` umbenennen; Escape, das Verlassen des Felds oder das Verschwinden der Zeile SHALL abbrechen. Eine unveränderte (auch mit Leerzeichen am Rand) oder leere Eingabe MUST nichts aufrufen; sonst geht sie ungekürzt an den Main. Keine Taste im Feld MUST Baum, Fenster-Kürzel oder Terminal erreichen.
 
 #### Scenario: Neuer Name
 
@@ -338,6 +338,18 @@ Eine Zeile des Baums SHALL per Rechtsklick, `Shift+F10` oder Menütaste ein Kont
 - **GIVEN** das Feld zeigt `notes.txt`
 - **WHEN** der Nutzer ohne Änderung Enter drückt
 - **THEN** ruft das Panel nichts auf, und das Feld schließt
+
+#### Scenario: Name mit Leerzeichen am Ende
+
+- **GIVEN** die Datei heißt `notes.txt ` (mit Leerzeichen am Ende)
+- **WHEN** der Nutzer `F2` und gleich Enter drückt
+- **THEN** ruft das Panel `files.rename` nicht auf
+
+#### Scenario: Zeile verschwindet
+
+- **GIVEN** das Feld für `notes.txt` ist offen
+- **WHEN** eine spätere Listung `notes.txt` nicht mehr enthält
+- **THEN** schließt das Feld, und Menü und Ziehen gehen wieder
 
 ### Requirement: Löschen mit Rückfrage
 
@@ -369,13 +381,19 @@ Eine Zeile des Baums SHALL per Rechtsklick, `Shift+F10` oder Menütaste ein Kont
 
 ### Requirement: Verschieben per Ziehen
 
-Eine Zeile SHALL sich auf eine Ordnerzeile oder die Kopfzeile (das aktuelle Verzeichnis) ziehen lassen; Loslassen SHALL `files.move` aufrufen, beide Ordner neu laden und den verschobenen Eintrag im aufgeklappten Ziel wählen. Gültige Ziele MUST weder der Eintrag selbst noch ein Pfad darunter noch der Ordner sein, in dem er liegt; ein geschützter Eintrag zieht nicht. Escape SHALL das Ziehen abbrechen, ohne etwas zu verschieben.
+Eine Zeile SHALL sich auf die Zeile eines echten Ordners (kein Symlink) oder die Kopfzeile (das aktuelle Verzeichnis) ziehen lassen; Loslassen SHALL `files.move` aufrufen, beide Ordner neu laden und den verschobenen Eintrag im aufgeklappten Ziel wählen. Gültige Ziele MUST weder der Eintrag selbst noch ein Pfad darunter noch der Ordner sein, in dem er liegt; ein geschützter Eintrag zieht nicht. Escape SHALL das Ziehen abbrechen, ohne etwas zu verschieben.
 
 #### Scenario: In einen Ordner
 
 - **GIVEN** das Panel zeigt `docs` und `notes.txt`
 - **WHEN** der Nutzer `notes.txt` auf `docs` zieht und loslässt
 - **THEN** liegt `docs/notes.txt` aufgeklappt und gewählt im Baum, und `notes.txt` steht nicht mehr in der Wurzel
+
+#### Scenario: Symlink auf einen Ordner
+
+- **GIVEN** `link` ist ein Symlink auf den Ordner `src`
+- **WHEN** der Nutzer `src` über `link` zieht
+- **THEN** ist `link` kein gültiges Ziel
 
 #### Scenario: In sich selbst
 
@@ -401,13 +419,19 @@ Eine Zeile SHALL sich auf eine Ordnerzeile oder die Kopfzeile (das aktuelle Verz
 
 ### Requirement: Pfad kopieren und einfügen
 
-„Pfad kopieren“ SHALL den Pfad über die Zwischenablage der App (`navigator.clipboard`) schreiben, nicht per OSC 52. „Pfad ins Terminal einfügen“ SHALL den Pfad quotiert, ohne Zeilenumbruch und ohne Enter in die schreibende View der Session des Panels einfügen: WSL in POSIX-Single-Quotes (`'` → `'\''`), PowerShell in Single-Quotes (`'` → `''`), `cmd` in Doppelquotes. Ohne Schreiber oder bei einem Pfad mit Steuerzeichen MUST der Eintrag deaktiviert sein.
+„Pfad kopieren“ SHALL den Pfad über die Zwischenablage der App (`navigator.clipboard`) schreiben, nicht per OSC 52. „Pfad ins Terminal einfügen“ SHALL den Pfad quotiert, ohne Zeilenumbruch und ohne Enter in die schreibende View der Session des Panels einfügen: WSL in POSIX-Single-Quotes (`'` → `'\''`), PowerShell in Single-Quotes (`'` → `''`), `cmd` in Doppelquotes. Ohne Schreiber, bei Steuerzeichen oder bei `cmd` mit `%` (setzt `%NAME%` auch in Doppelquotes ein) MUST er deaktiviert sein.
 
 #### Scenario: Apostroph in WSL
 
 - **GIVEN** die Datei `/tmp/it's.txt` und eine schreibende View der Session
 - **WHEN** der Nutzer „Pfad ins Terminal einfügen“ wählt
 - **THEN** erhält die Shell `'/tmp/it'\''s.txt'` ohne Enter
+
+#### Scenario: Prozent in cmd
+
+- **GIVEN** eine `cmd`-Session mit schreibender View und die Datei `C:\Users\Public\%PATH%.txt`
+- **WHEN** der Nutzer das Menü öffnet
+- **THEN** ist „Pfad ins Terminal einfügen“ deaktiviert
 
 #### Scenario: Nur lesende View
 
@@ -417,7 +441,7 @@ Eine Zeile SHALL sich auf eine Ordnerzeile oder die Kopfzeile (das aktuelle Verz
 
 ### Requirement: Fehler der Dateiaktionen
 
-Scheitert eine Aktion, SHALL das Panel einen Hinweis mit dem Namen zeigen, nie Pfad oder Meldung des Betriebssystems: `EEXIST` (Name schon vergeben), `EACCES` (kein Zugriff), `ENOENT` (gibt es nicht mehr), `EINVAL` (ungültiger Name oder nicht erlaubt), sonst „konnte nicht …“. Danach SHALL der betroffene Ordner neu laden.
+Scheitert eine Aktion, SHALL das Panel einen Hinweis mit dem Namen zeigen, nie Pfad oder Meldung des Betriebssystems: `EEXIST` (Name schon vergeben), `EACCES` (kein Zugriff), `ENOENT` (gibt es nicht mehr), `EINVAL` (ungültiger Name oder nicht erlaubt), sonst „konnte nicht …“. Danach SHALL der betroffene Ordner neu laden, auch nach Öffnen, Zeigen und Herunterladen.
 
 #### Scenario: Name vergeben
 

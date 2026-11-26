@@ -3,7 +3,7 @@
 // of `window.termdock.files` and draws. The file service checks every location again (it is the boundary); these
 // rules only decide what the panel offers.
 import type { FileErrorCode, FileLocation } from "../shared/files.js";
-import { childPath, expand, reloadFolder, replaceEntry, selectEntry } from "./explorer-tree.js";
+import { childPath, entryRow, expand, reloadFolder, replaceEntry, selectEntry } from "./explorer-tree.js";
 import type { ExplorerRow, ExplorerTree, ListRequest } from "./explorer-tree.js";
 import { quotePath } from "./path-quote.js";
 import type { PasteShell } from "./path-quote.js";
@@ -47,7 +47,8 @@ export interface MenuContext {
 }
 
 export const PASTE_NO_WRITER = "Nur in ein schreibendes Pane der Session: zuerst „Eingabe übernehmen“";
-const PASTE_CONTROL = "Der Pfad enthält Steuerzeichen";
+/** A path `quotePath` refuses: control characters, or `%` for cmd. */
+export const PASTE_UNSAFE = "Der Pfad lässt sich in dieser Shell nicht sicher einfügen";
 /** The hint when "Pfad kopieren" could not write the clipboard. */
 export const CLIPBOARD_FAILED = "Zwischenablage nicht verfügbar";
 
@@ -62,7 +63,7 @@ export function explorerMenu(
   context: MenuContext,
 ): MenuEntry<FileAction>[] {
   const quotable = quotePath(location.path, context.shell) !== undefined;
-  const pasteHint = !context.writer ? PASTE_NO_WRITER : !quotable ? PASTE_CONTROL : undefined;
+  const pasteHint = !context.writer ? PASTE_NO_WRITER : !quotable ? PASTE_UNSAFE : undefined;
   const entries: MenuEntry<FileAction>[] = [];
   if (!row.folder) entries.push({ key: "open", label: "Öffnen", action: "open" });
   if (location.backend === "wsl")
@@ -111,8 +112,9 @@ export function offers(entries: readonly MenuEntry<FileAction>[], action: FileAc
 }
 
 /**
- * Whether the entry at `source` may be dropped on `target`: the root or a visible folder row, but never the entry
- * itself, a path below it or the folder it is in already. A protected entry (or one no longer shown) does not move.
+ * Whether the entry at `source` may be dropped on `target`: the root or a visible row of a real folder (`isDropFolder`),
+ * but never the entry itself, a path below it or the folder it is in already. A protected entry (or one no longer
+ * shown) does not move.
  */
 export function canDropEntry(
   view: { root: FileLocation; rows: readonly ExplorerRow[] },
@@ -123,15 +125,70 @@ export function canDropEntry(
   if (!entry || isProtectedPath(at(view.root, source))) return false;
   const isTarget =
     target === view.root.path ||
-    view.rows.some((row) => row.kind === "entry" && row.folder && row.path === target);
+    view.rows.some((row) => row.kind === "entry" && isDropFolder(row) && row.path === target);
   if (!isTarget || target === source || target === entry.parent) return false;
   return !target.startsWith(childPath(view.root.backend, source, ""));
 }
 
-/** The new name for a rename: `input` trimmed; undefined when it is empty or the old name. */
+/**
+ * Whether a row is a drop target: only a real folder. A symlink to one could point at the dragged entry itself or
+ * below it, which the paths cannot show, so "never into itself" would not hold.
+ */
+export function isDropFolder(row: EntryRow): boolean {
+  return row.entry.kind === "directory";
+}
+
+/**
+ * The new name for a rename: undefined when the input is the old name unchanged (also one with spaces at its ends)
+ * or blank; otherwise the input as typed. The main process checks the name (ADR 0009); trimming here would rename an
+ * untouched name with spaces at its ends.
+ */
 export function renameTarget(oldName: string, input: string): string | undefined {
-  const name = input.trim();
-  return name === "" || name === oldName ? undefined : name;
+  if (input === oldName || input.trim() === "") return undefined;
+  return input;
+}
+
+/** A rename in progress: the row whose name is a field, and whether the service is answering. */
+export interface RenameState {
+  path: string;
+  busy: boolean;
+}
+
+/**
+ * Whether a rename field stays: while the service answers (the answer ends it), or while its row is visible. A row
+ * that goes without a blur (a late listing, its folder closed) would leave the field state behind and keep the menu
+ * and dragging locked.
+ */
+export function keepsRename(rename: RenameState, rows: readonly ExplorerRow[]): boolean {
+  return rename.busy || entryRow(rows, rename.path) !== undefined;
+}
+
+/** One Delete that waits for the listing of its folder before the confirmation opens. */
+export interface DeleteRequest {
+  /** Counts up per Delete; only the latest opens. */
+  id: number;
+  /** The key of the folder the panel showed (`ExplorerTarget.key`). */
+  key: string;
+  path: string;
+}
+
+/**
+ * Whether the answer for `request` opens the confirmation: it is the latest Delete (`latest`, the id of the last one
+ * asked), the panel still shows its folder, and its entry is still selected. A slow listing of an earlier Delete must
+ * not replace the dialog of a later one, nor open one for an entry the user has left.
+ */
+export function deletePromptOpens(
+  request: DeleteRequest,
+  latest: number | undefined,
+  shownKey: string | undefined,
+  selected: string | undefined,
+): boolean {
+  return request.id === latest && request.key === shownKey && request.path === selected;
+}
+
+/** Whether a confirmed delete runs: only while the panel shows the folder the dialog was opened for. */
+export function deleteRuns(dialogKey: string, shownKey: string | undefined): boolean {
+  return dialogKey === shownKey;
 }
 
 /** What the field of a rename marks at first: the name of a file without its extension, all of a folder's name. */

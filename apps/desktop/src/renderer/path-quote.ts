@@ -17,11 +17,13 @@ export function pasteShell(session: Pick<SessionInfo, "launch">): PasteShell {
 
 /**
  * `path` as one argument of `shell`: POSIX in single quotes (`'` → `'\''`), PowerShell in single quotes (`'` → `''`),
- * cmd in double quotes (Windows names hold no `"`). Undefined for a path with a control character. Known limit: cmd
- * expands `%NAME%` also inside double quotes, and nothing escapes it there.
+ * cmd in double quotes (Windows names hold no `"`). Undefined for a path with a control character, and for cmd with a
+ * `%`: cmd expands `%NAME%` also inside double quotes, and nothing escapes it there, so the shell would get another
+ * path than the one shown.
  */
 export function quotePath(path: string, shell: PasteShell): string | undefined {
   if (CONTROL.test(path)) return undefined;
+  if (shell === "cmd" && path.includes("%")) return undefined;
   switch (shell) {
     case "posix":
       return `'${path.replaceAll("'", "'\\''")}'`;

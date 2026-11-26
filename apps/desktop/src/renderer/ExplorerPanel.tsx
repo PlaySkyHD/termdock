@@ -21,11 +21,15 @@ import {
   CLIPBOARD_FAILED,
   countsEntries,
   deleteConfirmation,
+  deletePromptOpens,
+  deleteRuns,
   dropTargetPath,
   ENTRY_KIND,
   explorerDropTarget,
   explorerMenu,
+  isDropFolder,
   isProtectedPath,
+  keepsRename,
   menuPath,
   menuPoint,
   offers,
@@ -34,7 +38,13 @@ import {
   renameTarget,
   skippedText,
 } from "./explorer-actions.js";
-import type { ActionOutcome, FileAction, MenuContext } from "./explorer-actions.js";
+import type {
+  ActionOutcome,
+  DeleteRequest,
+  FileAction,
+  MenuContext,
+  RenameState,
+} from "./explorer-actions.js";
 import { explorerClick, explorerDoubleClick, explorerKey } from "./explorer-keys.js";
 import type { ExplorerKeyAction } from "./explorer-keys.js";
 import { shortPath } from "./explorer-source.js";
@@ -105,15 +115,16 @@ export function ExplorerPanel({
   const [, setVersion] = useState(0);
   const [notice, setNotice] = useState<string>();
   const [menu, setMenu] = useState<{ x: number; y: number; path: string }>();
-  const [renaming, setRenaming] = useState<{ path: string; busy: boolean }>();
+  const [renaming, setRenaming] = useState<RenameState>();
   const [confirm, setConfirm] = useState<{
     row: EntryRow;
     location: FileLocation;
     confirmation: Confirmation;
     key: string;
   }>();
-  /** The latest Delete that waits for the listing of its folder (`askDelete`). */
-  const pendingDelete = useRef<object>(undefined);
+  /** Id of the latest Delete that waits for the listing of its folder (`askDelete`, `deletePromptOpens`). */
+  const pendingDelete = useRef<number>(undefined);
+  const deleteCount = useRef(0);
   const panel = useRef<HTMLElement>(null);
   const treeElement = useRef<HTMLDivElement>(null);
   const drag = useDrag();
@@ -140,6 +151,11 @@ export function ExplorerPanel({
   const settle = (outcome: ActionOutcome): void => {
     update(outcome.tree);
     outcome.requests.forEach(run);
+  };
+  /** After a failed action: the folders involved list again, unless the panel shows another folder by then. */
+  const reloadAfterFailure = (own: string | undefined, folders: readonly string[]): void => {
+    const latest = tree.current;
+    if (shownKey.current === own && latest) settle(afterFailure(latest, folders));
   };
   /**
    * The tree takes the keys again after an action, once the dialog or field is gone (an effect after the render, so
@@ -216,13 +232,16 @@ export function ExplorerPanel({
         if (!row) return;
         update(selectEntry(now, action.path));
         setNotice(undefined);
-        const hint = hintFor(key);
+        const own = key;
+        const hint = hintFor(own);
         void files
           .open(locationAt(now, action.path))
           .catch(failed)
           .then((result) => {
             // A hint for a file of a folder the panel no longer shows would be misleading.
-            if (!result.ok) hint(openErrorText(row.name, result.code));
+            if (result.ok) return;
+            hint(openErrorText(row.name, result.code));
+            reloadAfterFailure(own, [row.parent]);
           });
         return;
       }
@@ -236,7 +255,8 @@ export function ExplorerPanel({
     const row = entryRow(rowsNow(now), path);
     const at = locationAt(now, path);
     if (!row || !offers(explorerMenu(row, at, context), action)) return;
-    const hint = hintFor(key);
+    const own = key;
+    const hint = hintFor(own);
     setNotice(undefined);
     switch (action) {
       case "open":
@@ -255,8 +275,12 @@ export function ExplorerPanel({
           .download(at)
           .catch(failed)
           .then((result) => {
-            if (!result.ok) hint(actionErrorText("download", row.name, result.code));
-            else if (!result.cancelled) hint(skippedText(result.skipped));
+            if (result.ok) {
+              if (!result.cancelled) hint(skippedText(result.skipped));
+              return;
+            }
+            hint(actionErrorText("download", row.name, result.code));
+            reloadAfterFailure(own, [row.parent]);
           });
         return;
       case "reveal":
@@ -264,7 +288,9 @@ export function ExplorerPanel({
           .reveal(at)
           .catch(failed)
           .then((result) => {
-            if (!result.ok) hint(actionErrorText("reveal", row.name, result.code));
+            if (result.ok) return;
+            hint(actionErrorText("reveal", row.name, result.code));
+            reloadAfterFailure(own, [row.parent]);
           });
         return;
       case "copyPath":
@@ -282,14 +308,18 @@ export function ExplorerPanel({
   const askDelete = (row: EntryRow, at: FileLocation): void => {
     const own = key;
     if (own === undefined) return;
-    // Only the latest request opens a confirmation, and only while its entry is still selected: a slow listing for
-    // an earlier Delete must not replace the dialog of a later one.
-    const request = {};
-    pendingDelete.current = request;
+    deleteCount.current += 1;
+    const request: DeleteRequest = { id: deleteCount.current, key: own, path: row.path };
+    pendingDelete.current = request.id;
     const ask = (count?: number): void => {
-      if (pendingDelete.current !== request) return;
-      pendingDelete.current = undefined;
-      if (shownKey.current === own && tree.current?.selected === row.path)
+      const opens = deletePromptOpens(
+        request,
+        pendingDelete.current,
+        shownKey.current,
+        tree.current?.selected,
+      );
+      if (pendingDelete.current === request.id) pendingDelete.current = undefined;
+      if (opens)
         setConfirm({
           row,
           location: at,
@@ -310,7 +340,7 @@ export function ExplorerPanel({
   const runDelete = async (): Promise<void> => {
     if (!confirm) return;
     const { row, location: at, key: own } = confirm;
-    if (shownKey.current !== own) {
+    if (!deleteRuns(own, shownKey.current)) {
       setConfirm(undefined);
       return;
     }
@@ -318,11 +348,11 @@ export function ExplorerPanel({
     setConfirm(undefined);
     focusTree();
     const now = tree.current;
-    if (shownKey.current !== own || !now) return;
+    if (!deleteRuns(own, shownKey.current) || !now) return;
     if (result.ok) settle(afterDelete(now, row));
     else {
       setNotice(actionErrorText("delete", row.name, result.code));
-      settle(afterFailure(now, [row.parent]));
+      reloadAfterFailure(own, [row.parent]);
     }
   };
 
@@ -371,6 +401,11 @@ export function ExplorerPanel({
         }
       });
   };
+
+  // A rename whose row went without a blur (a late listing, its folder closed) ends, so menu and dragging work again.
+  useEffect(() => {
+    if (renaming && current && !keepsRename(renaming, view.rows)) setRenaming(undefined);
+  });
 
   // Rows move onto folder rows and the header (the root); the rules are `canDropEntry`, judged on the tree shown now.
   useDropHandler({
@@ -521,7 +556,7 @@ export function ExplorerPanel({
               entry !== undefined && current !== undefined && renaming === undefined
                 ? !isProtectedPath(locationAt(current, entry.path))
                 : false;
-            const dropId = entry?.folder ? explorerDropTarget(entry.path) : undefined;
+            const dropId = entry && isDropFolder(entry) ? explorerDropTarget(entry.path) : undefined;
             return (
               <Row
                 key={`${row.kind}:${row.path}`}

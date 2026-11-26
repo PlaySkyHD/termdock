@@ -10,10 +10,14 @@ import {
   canDropEntry,
   countsEntries,
   deleteConfirmation,
+  deletePromptOpens,
+  deleteRuns,
   dropTargetPath,
   explorerDropTarget,
   explorerMenu,
+  isDropFolder,
   isProtectedPath,
+  keepsRename,
   menuPath,
   menuPoint,
   offers,
@@ -21,7 +25,7 @@ import {
   renameTarget,
   skippedText,
 } from "./explorer-actions.js";
-import type { MenuContext } from "./explorer-actions.js";
+import type { DeleteRequest, MenuContext } from "./explorer-actions.js";
 import { entryRow, expand, finishLoad, loadRoot, rowsOf, treeFor } from "./explorer-tree.js";
 import type { ExplorerRow, ExplorerTree, ListRequest } from "./explorer-tree.js";
 
@@ -125,6 +129,15 @@ describe("explorerMenu", () => {
     expect(offers(entries, "copyPath")).toBe(true);
   });
 
+  it("disables paste for a path with % in cmd, not in PowerShell", () => {
+    const windows = loaded(WIN_ROOT, file("100%.txt"));
+    const path = "C:\\Users\\Public\\100%.txt";
+    const cmd = explorerMenu(row(windows, path), locationOf(windows, path), { writer: true, shell: "cmd" });
+    expect(cmd.find((entry) => entry.key === "pastePath")).toMatchObject({ disabled: true });
+    const pwsh = explorerMenu(row(windows, path), locationOf(windows, path), { writer: true, shell: "pwsh" });
+    expect(offers(pwsh, "pastePath")).toBe(true);
+  });
+
   it("marks delete as dangerous and separates the groups", () => {
     const entries = explorerMenu(row(tree, "/tmp/p/a.txt"), locationOf(tree, "/tmp/p/a.txt"), WRITER);
     expect(entries.find((entry) => entry.key === "delete")).toMatchObject({ danger: true });
@@ -178,6 +191,18 @@ describe("canDropEntry", () => {
     expect(canDropEntry({ root: top.root, rows: rowsOf(top) }, "/home", "/tmp")).toBe(false);
   });
 
+  it("takes no symlink to a folder as a target: it could point at the source or below it", () => {
+    const link: FileEntry = { name: "link", kind: "symlink", size: 0, modified: 1, targetKind: "directory" };
+    const linked = loaded(ROOT, dir("docs"), link, file("a.txt"));
+    const linkedView = { root: linked.root, rows: rowsOf(linked) };
+    expect(row(linked, "/tmp/p/link").folder).toBe(true);
+    expect(isDropFolder(row(linked, "/tmp/p/link"))).toBe(false);
+    expect(isDropFolder(row(linked, "/tmp/p/docs"))).toBe(true);
+    expect(canDropEntry(linkedView, "/tmp/p/docs", "/tmp/p/link")).toBe(false);
+    expect(canDropEntry(linkedView, "/tmp/p/a.txt", "/tmp/p/link")).toBe(false);
+    expect(canDropEntry(linkedView, "/tmp/p/a.txt", "/tmp/p/docs")).toBe(true);
+  });
+
   it("does not take a sibling whose name starts like the source for a folder below it", () => {
     const siblings = loaded(ROOT, dir("src"), dir("src2"));
     expect(canDropEntry({ root: siblings.root, rows: rowsOf(siblings) }, "/tmp/p/src", "/tmp/p/src2")).toBe(
@@ -193,11 +218,64 @@ describe("canDropEntry", () => {
 });
 
 describe("renameTarget", () => {
-  it("takes the trimmed new name and nothing for an empty or unchanged one", () => {
-    expect(renameTarget("a.txt", " b.txt ")).toBe("b.txt");
+  it("takes the input as typed and nothing for a blank or unchanged one", () => {
+    expect(renameTarget("a.txt", "b.txt")).toBe("b.txt");
     expect(renameTarget("a.txt", "a.txt")).toBeUndefined();
     expect(renameTarget("a.txt", "  ")).toBeUndefined();
     expect(renameTarget("a.txt", "A.txt")).toBe("A.txt");
+  });
+
+  it("does not rename an untouched name with spaces at its ends, and does not trim a changed one", () => {
+    // F2 and Enter on "notes.txt " (or " a ") change nothing.
+    expect(renameTarget("notes.txt ", "notes.txt ")).toBeUndefined();
+    expect(renameTarget(" a ", " a ")).toBeUndefined();
+    expect(renameTarget("a ", "a ")).toBeUndefined();
+    // A changed input goes as typed; the main process checks the name.
+    expect(renameTarget("a", " a ")).toBe(" a ");
+    expect(renameTarget(" a ", "a ")).toBe("a ");
+  });
+});
+
+describe("keepsRename", () => {
+  const tree = loaded(ROOT, file("a.txt"));
+  const rows = rowsOf(tree);
+
+  it("keeps the field while its row is visible or the service answers", () => {
+    expect(keepsRename({ path: "/tmp/p/a.txt", busy: false }, rows)).toBe(true);
+    expect(keepsRename({ path: "/tmp/p/gone.txt", busy: true }, rows)).toBe(true);
+  });
+
+  it("drops it when its row went without a blur (a late listing)", () => {
+    expect(keepsRename({ path: "/tmp/p/gone.txt", busy: false }, rows)).toBe(false);
+    expect(keepsRename({ path: "/tmp/p/a.txt", busy: false }, [])).toBe(false);
+  });
+});
+
+describe("deletePromptOpens and deleteRuns", () => {
+  const request = (id: number, path = "/tmp/p/a"): DeleteRequest => ({ id, key: "k1", path });
+
+  it("opens the latest Delete while its folder shows and its entry is selected", () => {
+    expect(deletePromptOpens(request(2), 2, "k1", "/tmp/p/a")).toBe(true);
+  });
+
+  it("drops an earlier Delete whose slow listing answers after a later one", () => {
+    // Delete on a (id 1), then on b (id 2); a's listing answers last.
+    expect(deletePromptOpens(request(1, "/tmp/p/a"), 2, "k1", "/tmp/p/b")).toBe(false);
+    expect(deletePromptOpens(request(2, "/tmp/p/b"), 2, "k1", "/tmp/p/b")).toBe(true);
+    // After b's dialog the pending id is cleared; a late answer of a still opens nothing.
+    expect(deletePromptOpens(request(1, "/tmp/p/a"), undefined, "k1", "/tmp/p/a")).toBe(false);
+  });
+
+  it("drops it when the selection or the folder changed meanwhile", () => {
+    expect(deletePromptOpens(request(3), 3, "k1", "/tmp/p/other")).toBe(false);
+    expect(deletePromptOpens(request(3), 3, "k1", undefined)).toBe(false);
+    expect(deletePromptOpens(request(3), 3, "k2", "/tmp/p/a")).toBe(false);
+  });
+
+  it("runs a confirmed delete only in the folder the dialog was opened for", () => {
+    expect(deleteRuns("k1", "k1")).toBe(true);
+    expect(deleteRuns("k1", "k2")).toBe(false);
+    expect(deleteRuns("k1", undefined)).toBe(false);
   });
 });
 

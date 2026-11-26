@@ -25,6 +25,13 @@ describe("quotePath", () => {
     expect(quotePath("C:\\Users\\Public\\a & b.txt", "cmd")).toBe('"C:\\Users\\Public\\a & b.txt"');
   });
 
+  it("refuses a % for cmd, which expands %NAME% also inside double quotes; other shells keep it", () => {
+    expect(quotePath("C:\\Users\\Public\\%PATH%.txt", "cmd")).toBeUndefined();
+    expect(quotePath("C:\\Users\\Public\\100%", "cmd")).toBeUndefined();
+    expect(quotePath("C:\\Users\\Public\\100%", "pwsh")).toBe("'C:\\Users\\Public\\100%'");
+    expect(quotePath("/tmp/100%", "posix")).toBe("'/tmp/100%'");
+  });
+
   it("refuses a path with a control character: a line break would be an Enter in the shell", () => {
     expect(quotePath("/tmp/a\nb", "posix")).toBeUndefined();
     expect(quotePath("/tmp/a\rb", "posix")).toBeUndefined();

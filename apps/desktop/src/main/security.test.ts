@@ -182,7 +182,8 @@ function appSources(dir = SRC): Map<string, string> {
 describe("no code path acts on escape sequences (issue #135)", () => {
   it("has no OSC handler, clipboard addon, link handler, title listener or openExternal", () => {
     const forbidden: [RegExp, string][] = [
-      [/registerOscHandler/, "own OSC handler (OSC 52 would write the clipboard)"],
+      // OSC 9 only: the directory of a Windows shell (#200). Any other number (OSC 52 would write the clipboard) not.
+      [/registerOscHandler\(\s*(?!9\s*,)/, "own OSC handler (OSC 52 would write the clipboard)"],
       [/addon-clipboard|ClipboardAddon/, "xterm clipboard addon (OSC 52)"],
       [/addon-web-links|WebLinksAddon|linkHandler|registerLinkProvider/, "link opener for terminal output"],
       [/onTitleChange/, "title taken from terminal output"],

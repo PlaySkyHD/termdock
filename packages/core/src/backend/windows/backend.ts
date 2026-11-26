@@ -11,6 +11,7 @@ import {
   defaultShell,
   isWindowsShell,
   launchProgram,
+  promptHookEnvironment,
   shellEnvironment,
   windowsCwd,
   within,
@@ -122,7 +123,7 @@ export class WindowsBackend implements Backend {
       const found = wanted !== undefined && (await this.directoryExists(wanted));
       const warnings: SessionWarning[] = found ? [] : [{ code: "cwd_missing", path: spec.cwd }];
       const cwd = found ? wanted : this.home;
-      const env = shellEnvironment(this.env, spec.env);
+      const env = promptHookEnvironment(shell, spec, shellEnvironment(this.env, spec.env));
       const process = await this.spawnPty(program.file, program.args, size, cwd, env);
       if (this.disposed) {
         process.kill();

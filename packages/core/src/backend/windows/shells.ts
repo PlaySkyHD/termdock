@@ -4,12 +4,35 @@ import path from "node:path";
 import type { LaunchSpec, WindowsShell } from "@termdock/protocol";
 import { isWindowsPath } from "../../workspace/paths.js";
 
-/** Executable and arguments of each shell; no profile script is skipped, the shell starts as in Windows Terminal. */
+/** Executable and base arguments of each shell; no profile script is skipped, the shell starts as in Windows Terminal. */
 const SHELLS: Record<WindowsShell, { file: string; args: readonly string[]; label: string }> = {
   pwsh: { file: "pwsh.exe", args: ["-NoLogo"], label: "PowerShell 7" },
   powershell: { file: "powershell.exe", args: ["-NoLogo"], label: "Windows PowerShell" },
   cmd: { file: "cmd.exe", args: [], label: "Command Prompt" },
 };
+
+/**
+ * Script of the prompt hook for PowerShell (#200), a constant without user input. It runs after the profile
+ * (`-NoExit -Command`), wraps the `prompt` function the profile left and puts `ESC ] 9 ; 9 ; "<path>" ESC \` before
+ * its text. Only the FileSystem provider reports a path. Every step is in `try`: a failing hook leaves the prompt
+ * as it was, and the shell stays usable. No double quote appears in it (argument quoting of the process start).
+ */
+export const POWERSHELL_CWD_HOOK =
+  "$global:__TermDockPrompt = $function:prompt; " +
+  "function global:prompt { " +
+  "$ok = $?; $text = $null; " +
+  // The old prompt reads `$?` (posh-git, starship): hand it the status of the user's command, which `$ok` caught first.
+  "try { if ($ok) { $text = & $global:__TermDockPrompt } else { Write-Error 'x' -ErrorAction Ignore; $text = & $global:__TermDockPrompt } } catch { }; " +
+  "try { if ($text -and $PWD.Provider.Name -eq 'FileSystem') { " +
+  "$e = [char]27; $q = [char]34; " +
+  "$text = '' + $e + ']9;9;' + $q + $PWD.ProviderPath + $q + $e + '\\' + $text } } catch { }; " +
+  "$text }";
+
+/** `PROMPT` of `cmd` in front of the user's own (#200): `$e]9;9;$P$e\` is `ESC ] 9 ; 9 ; <current dir> ESC \`. */
+export const CMD_CWD_HOOK = "$e]9;9;$P$e\\";
+
+/** Prompt of `cmd` when `PROMPT` is not set. */
+const CMD_DEFAULT_PROMPT = "$P$G";
 
 export const WINDOWS_SHELLS = Object.keys(SHELLS) as WindowsShell[];
 
@@ -178,7 +201,28 @@ export async function launchProgram(
     return "missing" in found ? { error: found.missing } : { file: found.file, args: command.slice(1) };
   }
   const file = await findShell(shell, lookup);
-  return file === undefined ? { error: shellMissingMessage(shell) } : { file, args: [...SHELLS[shell].args] };
+  if (file === undefined) return { error: shellMissingMessage(shell) };
+  // PowerShell gets the prompt hook as arguments; `cmd` gets it through `PROMPT` (`promptHookEnvironment`).
+  const hook = shell === "cmd" ? [] : ["-NoExit", "-Command", POWERSHELL_CWD_HOOK];
+  return { file, args: [...SHELLS[shell].args, ...hook] };
+}
+
+/**
+ * Environment of a `cmd` shell with the prompt hook: `PROMPT` gets `CMD_CWD_HOOK` in front of the value in `env`
+ * (`launch.env` included), or of the default `$P$G`. Any other shell, and every session with its own `command`,
+ * keeps `env` as it is: the user's program is not touched.
+ */
+export function promptHookEnvironment(
+  shell: WindowsShell,
+  spec: Pick<LaunchSpec, "command">,
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  if (shell !== "cmd" || (spec.command ?? []).length > 0) return { ...env };
+  const current = envValue(env, "PROMPT") ?? CMD_DEFAULT_PROMPT;
+  const hooked: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (name.toUpperCase() !== "PROMPT") hooked[name] = value;
+  hooked.PROMPT = `${CMD_CWD_HOOK}${current}`;
+  return hooked;
 }
 
 /**

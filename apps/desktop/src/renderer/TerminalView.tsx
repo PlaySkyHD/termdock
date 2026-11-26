@@ -86,6 +86,10 @@ function surfaceOf(term: Terminal, fit: FitAddon, element: HTMLElement): Termina
       return () => subscription.dispose();
     },
     onKey: (handler) => term.attachCustomKeyEventHandler(handler),
+    onOsc9: (handler) => {
+      const registration = term.parser.registerOscHandler(9, handler);
+      return () => registration.dispose();
+    },
     getSelection: () => term.getSelection(),
     paste: (text) => term.paste(text),
   };

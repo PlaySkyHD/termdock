@@ -26,6 +26,7 @@ import type {
   WorkspaceId,
   WslDistrosResult,
 } from "@termdock/protocol";
+import type { FilesApi } from "./files.js";
 import type { LayoutWindowPart } from "./layout-mapping.js";
 import type { QuitAnswer, QuitChoice } from "./quit-decision.js";
 
@@ -325,4 +326,6 @@ export interface TermdockApi {
   transferAttached(transferId: string, views: TransferPane[] | undefined): Promise<void>;
   /** Subscribes to all bridge events of this window; the returned function unsubscribes. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
+  /** File access of the explorer (ADR 0009); its calls never reject, failures are results with a code. */
+  files: FilesApi;
 }

@@ -23,6 +23,7 @@ import {
   explorerTarget,
   knownDistro,
   needsDefaultDistro,
+  pastePaneId,
 } from "./explorer-source.js";
 import type { DistroLookup } from "./explorer-source.js";
 import { explorerVisible, explorerWidth } from "./explorer-view.js";
@@ -275,6 +276,17 @@ export function App({ api }: { api: TermdockApi }) {
     (paneId) => statuses[paneId]?.role,
     knownDistro(distroLookup, generation),
   );
+  // "Pfad ins Terminal einfügen" (#203) writes only into the writing view the panel follows (input lock); the pane
+  // takes the focus, so the user goes on typing there.
+  const pastePane =
+    tab && target.kind === "folder" ? pastePaneId(tab, (paneId) => statuses[paneId]?.role) : undefined;
+  const pastePath = (text: string): boolean => {
+    const controller = pastePane === undefined ? undefined : controllers.current.get(pastePane);
+    if (!tab || pastePane === undefined || !controller?.paste(text)) return false;
+    store.focusPane(tab.id, pastePane);
+    refocus();
+    return true;
+  };
   const askDistro = asksDistro(
     distroLookup,
     generation,
@@ -595,6 +607,8 @@ export function App({ api }: { api: TermdockApi }) {
                 onLeave={refocus}
                 onResize={(width, available) => store.setExplorerWidth(width, available)}
                 onHide={() => void runCommand("toggleExplorer", commandRef.current)}
+                clipboard={navigator.clipboard}
+                {...(pastePane === undefined ? {} : { paste: pastePath })}
               />
             )}
           </div>

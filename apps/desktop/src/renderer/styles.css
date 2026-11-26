@@ -200,6 +200,31 @@ input {
   text-overflow: ellipsis;
 }
 
+/* Rename in the row (#203). */
+.explorer__rename {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--td-accent);
+  color: var(--td-foreground);
+  background: var(--td-background);
+  font: inherit;
+  outline: none;
+}
+
+/* Rows and the header while an entry is dragged (#203): valid folders dashed, the one under the pointer solid. */
+.explorer__row.drop-target--valid,
+.explorer__path.drop-target--valid {
+  outline: 1px dashed var(--td-accent);
+  outline-offset: -1px;
+}
+
+.explorer__row.drop-target--over,
+.explorer__path.drop-target--over {
+  outline-style: solid;
+}
+
 .explorer__hint {
   height: 22px;
   line-height: 22px;

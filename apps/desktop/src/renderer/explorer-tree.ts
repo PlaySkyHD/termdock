@@ -48,6 +48,8 @@ export type ExplorerRow =
       kind: "entry";
       path: string;
       name: string;
+      /** The folder the entry is in: its key in `folders` (#203: the folder to list again after an action). */
+      parent: string;
       depth: number;
       entry: FileEntry;
       /** A folder or a symlink to one: it opens in the tree. */
@@ -220,7 +222,16 @@ export function rowsOf(tree: ExplorerTree): ExplorerRow[] {
       const entryPath = childPath(tree.root.backend, path, entry.name);
       const opens = isFolder(entry);
       const expanded = opens && tree.expanded.has(entryPath);
-      rows.push({ kind: "entry", path: entryPath, name: entry.name, depth, entry, folder: opens, expanded });
+      rows.push({
+        kind: "entry",
+        path: entryPath,
+        name: entry.name,
+        parent: path,
+        depth,
+        entry,
+        folder: opens,
+        expanded,
+      });
       if (expanded) walk(entryPath, depth + 1);
     }
     if (folder.truncated)

@@ -19,6 +19,7 @@ Der Explorer zeigt das aktuelle Verzeichnis einer Session und erlaubt Umbenennen
 - **Brücke:** eigener Kanal `termdock:files` (`FILES_CHANNEL`, `shared/files.ts`) neben `termdock:call`, im Main `FileBridge` (`file-bridge.ts`): Es parst die Anfrage des Renderers (Form von Methode und Orten, unbekannte Felder fallen weg) und ruft den Dienst. Eine Anfrage außerhalb des Vertrags antwortet `{ ok: false, code: "EINVAL" }`. Der Preload stellt sie als `window.termdock.files` bereit (`list`, `rename`, `move`, `delete`, `download`, `reveal`, `open`) und macht aus einem verlorenen Handler ein Ergebnis `OTHER`. Dialoge und `shell` kommen als Abhängigkeiten in den Dienst, damit Tests ohne Electron laufen.
 
 - **Panel (#202):** Der Renderer ruft `list` beim Anzeigen eines Ordners, beim Aufklappen, auf „Aktualisieren“ und nach einem `cd`, `open` per Doppelklick oder Enter; Fehlercodes zeigt er als Text (ADR 0006, „Explorer-Panel“).
+- **Dateiaktionen (#203):** Kontextmenü, `F2` und `Entf` rufen `rename`, `delete` (immer nach Rückfrage mit Name und, bei echten Ordnern, Anzahl der direkten Einträge aus `list`), `download`, `reveal` und `open`; Ziehen einer Zeile auf einen Ordner ruft `move`. Geschützte Orte bietet das Menü nicht zum Umbenennen und Löschen an (eine eigene Fassung von `isProtected` im Renderer, weil er `file-paths.ts` nicht laden kann; die Grenze bleibt der Dienst). Nach jeder Aktion lädt der betroffene Ordner neu.
 
 ## Erwogen und verworfen
 

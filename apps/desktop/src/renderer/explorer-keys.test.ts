@@ -7,7 +7,8 @@ import type { ExplorerRow } from "./explorer-tree.js";
 const entry = (path: string, depth: number, folder: boolean, expanded = false): ExplorerRow => {
   const name = path.split("/").at(-1)!;
   const info: FileEntry = { name, kind: folder ? "directory" : "file", size: 0, modified: 0 };
-  return { kind: "entry", path, name, depth, entry: info, folder, expanded };
+  const parent = path.slice(0, path.lastIndexOf("/"));
+  return { kind: "entry", path, name, parent, depth, entry: info, folder, expanded };
 };
 
 // src (open) / main.ts, docs (closed), a.txt
@@ -61,6 +62,14 @@ describe("explorerKey", () => {
     expect(explorerClick(main!)).toEqual({ kind: "select", path: "/r/src/main.ts" });
     expect(explorerDoubleClick(main!)).toEqual({ kind: "open", path: "/r/src/main.ts" });
     expect(explorerDoubleClick(docs!)).toBeUndefined();
+  });
+
+  // Issue #203 (openspec change explorer-actions): F2 renames, Delete asks to delete the selected entry.
+  it("renames the selected entry with F2 and deletes it with Delete; nothing without a selection", () => {
+    expect(explorerKey("F2", ROWS, "/r/a.txt")).toEqual({ kind: "rename", path: "/r/a.txt" });
+    expect(explorerKey("Delete", ROWS, "/r/src")).toEqual({ kind: "delete", path: "/r/src" });
+    expect(explorerKey("F2", ROWS, undefined)).toBeUndefined();
+    expect(explorerKey("Delete", ROWS, "/r/gone")).toBeUndefined();
   });
 
   it("treats a selection that is no longer visible like none", () => {

@@ -9,6 +9,7 @@ import {
   explorerTarget,
   knownDistro,
   needsDefaultDistro,
+  pastePaneId,
   sessionLocation,
   shortPath,
 } from "./explorer-source.js";
@@ -60,6 +61,19 @@ describe("explorerPaneId", () => {
 
   it("follows the active pane when no pane writes", () => {
     expect(explorerPaneId(TAB, roles({ p1: "reader" }))).toBe("p2");
+  });
+});
+
+// Issue #203 (openspec change explorer-actions): a pasted path goes only to the writer the panel follows.
+describe("pastePaneId", () => {
+  it("is the followed pane when it writes", () => {
+    expect(pastePaneId(TAB, roles({ p1: "writer", p2: "writer" }))).toBe("p2");
+    expect(pastePaneId(TAB, roles({ p1: "writer", p2: "reader" }))).toBe("p1");
+  });
+
+  it("is none when no pane of the tab writes", () => {
+    expect(pastePaneId(TAB, roles({ p1: "reader", p2: "reader" }))).toBeUndefined();
+    expect(pastePaneId(TAB, roles({ p2: "connecting" }))).toBeUndefined();
   });
 });
 

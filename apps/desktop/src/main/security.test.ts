@@ -203,6 +203,22 @@ describe("no code path acts on escape sequences (issue #135)", () => {
     ]);
   });
 
+  it("gives the file access no shell string and no network path (issue #201)", () => {
+    const sources = appSources();
+    for (const file of ["main/file-service.ts", "main/file-paths.ts", "main/file-bridge.ts"]) {
+      const text = sources.get(file) ?? "";
+      expect(text, file).not.toBe("");
+      expect(text, file).not.toMatch(/child_process|execFile|spawn|\bexec\(|shell\.openExternal/);
+    }
+    // The renderer never names the channel (it only has `window.termdock.files`); main registers it once.
+    const users = [...sources]
+      .filter(([, text]) => /FILES_CHANNEL|termdock:files/.test(text))
+      .map(([file]) => file);
+    expect(users.sort()).toEqual(["main/main.ts", "shared/files.ts"]);
+    const main = sources.get("main/main.ts") ?? "";
+    expect(main.match(/ipcMain\.handle\(FILES_CHANNEL/g)).toHaveLength(1);
+  });
+
   it("denies new windows and navigation, so an OSC 8 link xterm offers cannot open a page", () => {
     const main = readFileSync(path.join(SRC, "main", "main.ts"), "utf8");
     expect(main).toContain(`contents.setWindowOpenHandler(() => ({ action: "deny" }));`);

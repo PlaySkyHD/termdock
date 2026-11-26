@@ -12,6 +12,9 @@ import { MAX_LAYOUT_WINDOWS } from "@termdock/protocol";
 import type { LayoutWindow } from "@termdock/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { CALL_CHANNEL, EVENT_CHANNEL } from "../shared/bridge.js";
+import { FILES_CHANNEL } from "../shared/files.js";
+import { FileBridge } from "./file-bridge.js";
+import { FileService } from "./file-service.js";
 import { DesktopBridge } from "./bridge.js";
 import type { WindowLayouts, WindowMoves } from "./bridge.js";
 import { WindowTransfers } from "./window-transfer.js";
@@ -392,6 +395,32 @@ async function main(): Promise<void> {
     log,
   });
   ipcMain.handle(CALL_CHANNEL, (event, raw: unknown) => bridge.call(event.sender.id, raw));
+  // File access of the explorer (ADR 0009): own channel, the service answers with results and never throws.
+  const files = new FileBridge(
+    new FileService({
+      distros: async () => (await port.request("wsl.distros", {})).result.distros,
+      dialogs: {
+        saveFile: async (windowId, defaultName) => {
+          const win = liveWindow(windowId);
+          const options = { defaultPath: defaultName };
+          const result = await (win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options));
+          return result.canceled ? undefined : result.filePath;
+        },
+        chooseFolder: async (windowId) => {
+          const win = liveWindow(windowId);
+          const options = { properties: ["openDirectory" as const, "createDirectory" as const] };
+          const result = await (win ? dialog.showOpenDialog(win, options) : dialog.showOpenDialog(options));
+          return result.canceled ? undefined : result.filePaths[0];
+        },
+      },
+      shell: {
+        showItemInFolder: (target) => shell.showItemInFolder(target),
+        openPath: (target) => shell.openPath(target),
+      },
+      log,
+    }),
+  );
+  ipcMain.handle(FILES_CHANNEL, (event, raw: unknown) => files.call(event.sender.id, raw));
 
   // Windows that close while the app quits stay in the layout; so does the last one. In the screenshot run the
   // scenario can ask to forget them.

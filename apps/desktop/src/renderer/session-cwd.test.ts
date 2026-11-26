@@ -179,6 +179,23 @@ describe("relayCwd", () => {
     expect(currentCwdOf(store.getState(), "w")).toBeUndefined();
   });
 
+  it("keeps a report made during Starting when the store changes for another reason before Running", () => {
+    const store = newStore([session("w"), session("x")]);
+    store.openSession("w");
+    const paneId = store.getState().window.tabs[0]!.activePaneId;
+    const source = new FakeSource();
+    relayCwd(store, paneId, source);
+    source.report("C:\\proj\\sub");
+
+    store.sessionStateChanged("w", "Exited", 0);
+    store.sessionStateChanged("w", "Starting");
+    source.report("C:\\proj");
+    // Another session changes while this one is still starting: the new shell's report must stay.
+    store.sessionStateChanged("x", "Exited", 0);
+    store.sessionStateChanged("w", "Running");
+    expect(currentCwdOf(store.getState(), "w")).toBe("C:\\proj");
+  });
+
   it("relays nothing for a pane that is not in the window", () => {
     const store = newStore([session("w")]);
     const source = new FakeSource();

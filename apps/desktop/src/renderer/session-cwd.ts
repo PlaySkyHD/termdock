@@ -50,14 +50,20 @@ export function relayCwd(
     .find((pane) => pane !== undefined)?.sessionId;
   if (sessionId === undefined) return () => {};
   const report = (path: string): void => store.sessionCwdChanged(sessionId, path);
+  // Whether the store last saw the run live: the view forgets only when a run ends, not on every change while the next
+  // one starts (a report of the new shell during Starting would be lost). Starts true: a view mounted on an ended run
+  // forgets once what its snapshot may have replayed.
+  let live = true;
   const refill = (): void => {
     const session = store.getState().sessions.find((each) => each.id === sessionId);
     if (!session) return;
     // The run ended: its path is not the next run's. The view forgets it, so whatever it knows later is the new run's.
     if (!RUN_STATES.has(session.state)) {
-      source.forgetCwd();
+      if (live) source.forgetCwd();
+      live = false;
       return;
     }
+    live = true;
     // A report of the new shell that came while the store still said Starting was dropped there; take it now. This
     // settles after one report: the session then has a directory.
     const known = source.currentCwd();

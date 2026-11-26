@@ -750,6 +750,18 @@ describe("DesktopBridge layout calls (#29)", () => {
     expect(reports).toEqual([[a.id, part]]);
   });
 
+  // Issue #202 (openspec change explorer-panel).
+  it("takes the explorer panel of the window in a reported part", async () => {
+    const { bridge, a, reports } = withLayouts();
+    const withExplorer = { ...part, explorerVisible: false, explorerWidth: 300 };
+
+    expect(await bridge.call(a.id, { method: "reportLayout", window: withExplorer })).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(reports).toEqual([[a.id, withExplorer]]);
+  });
+
   it("passes the rejection of an invalid layout on as bad_request", async () => {
     const { bridge, a, reports } = withLayouts();
 

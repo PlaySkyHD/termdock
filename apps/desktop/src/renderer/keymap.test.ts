@@ -41,6 +41,9 @@ describe("resolveKey", () => {
     ["Alt+Up", press("ArrowUp", { altKey: true }), "focusUp"],
     ["Alt+Down", press("ArrowDown", { altKey: true }), "focusDown"],
     ["Ctrl+Shift+B", press("KeyB", ctrlShift), "toggleSidebar"],
+    // Issue #202 (openspec change explorer-panel).
+    ["Ctrl+Shift+X", press("KeyX", ctrlShift), "toggleExplorer"],
+    ["Ctrl+Shift+O", press("KeyO", ctrlShift), "focusExplorer"],
     ["Ctrl+Shift+N", press("KeyN", ctrlShift), "newWindow"],
     ["Ctrl+Shift+C", press("KeyC", ctrlShift), "copy"],
     ["Ctrl+Shift+V", press("KeyV", ctrlShift), "paste"],

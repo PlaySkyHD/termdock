@@ -45,6 +45,8 @@ function valid(): Json {
       maximized: false,
       sidebarVisible: true,
       sidebarWidth: 260,
+      explorerVisible: false,
+      explorerWidth: 320,
     },
     window("w2", [tab("t3", pane("p4"), "p4")]),
   ]);
@@ -214,6 +216,10 @@ describe("validateLayoutDocument", () => {
       { maximized: "yes" },
       { sidebarVisible: 1 },
       { sidebarWidth: -5 },
+      // Issue #202 (openspec change explorer-panel): the explorer panel of the window, protocol 1.9.
+      { explorerVisible: "no" },
+      { explorerWidth: 0 },
+      { explorerWidth: Number.NaN },
     ]) {
       expect(validateLayoutDocument(document([{ ...base, ...patch }])).ok).toBe(false);
     }

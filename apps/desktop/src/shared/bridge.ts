@@ -253,6 +253,8 @@ export type BridgeEvent =
   | { kind: "profilesChanged"; profiles: LaunchProfile[] }
   /** The menu entry "Einstellungen …" asks the focused window to open the settings dialog (#64). */
   | { kind: "openSettings" }
+  /** The menu entry "Explorer ein-/ausblenden" asks the focused window to show or hide its explorer panel (#202). */
+  | { kind: "toggleExplorer" }
   /**
    * The connection to the core ended; every view of the window is gone with it. `restarting`: the main process
    * starts the core again (#130), otherwise it stays disconnected until `restartCore`.

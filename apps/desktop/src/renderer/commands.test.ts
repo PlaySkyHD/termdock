@@ -87,6 +87,7 @@ function setup(sessions: Array<string | SessionInfo> = []) {
     searchOpen: false,
     toggleSearch: () => calls.push("toggleSearch"),
     openSettings: () => calls.push("openSettings"),
+    focusExplorer: () => calls.push("focusExplorer"),
     notify: (text) => notices.push(text),
     refocus: () => calls.push("refocus"),
   };
@@ -547,6 +548,29 @@ describe("runCommand: panes, sidebar and dialogs", () => {
     expect(store.getState().window.sidebarVisible).toBe(false);
     await run("toggleSidebar");
     expect(store.getState().window.sidebarVisible).toBe(true);
+  });
+
+  // Issue #202 (openspec change explorer-panel).
+  it("toggles the explorer panel and gives the terminal the focus", async () => {
+    const { run, store, calls } = setup(["a"]);
+
+    expect(canRun("toggleExplorer", { ...setup().deps })).toBe(true);
+    await run("toggleExplorer");
+    expect(store.getState().window.explorerVisible).toBe(false);
+    await run("toggleExplorer");
+    expect(store.getState().window.explorerVisible).toBe(true);
+    expect(calls).toEqual(["refocus", "refocus"]);
+  });
+
+  it("shows a hidden explorer panel before its tree takes the focus", async () => {
+    const { run, store, calls } = setup(["a"]);
+    store.toggleExplorer();
+
+    await run("focusExplorer");
+    await run("focusExplorer");
+
+    expect(store.getState().window.explorerVisible).toBe(true);
+    expect(calls).toEqual(["focusExplorer", "focusExplorer"]);
   });
 
   it("opens the form for a new session and the overview of the shortcuts", async () => {

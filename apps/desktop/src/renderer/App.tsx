@@ -16,6 +16,10 @@ import {
   startProjectSession,
 } from "./commands.js";
 import { ContextMenu } from "./ContextMenu.js";
+import { ExplorerPanel } from "./ExplorerPanel.js";
+import { explorerTarget, needsDefaultDistro } from "./explorer-source.js";
+import { explorerVisible, explorerWidth } from "./explorer-view.js";
+import { relayCwd } from "./session-cwd.js";
 import { DragProvider, useDrag, useDropHandler } from "./drag/DragProvider.js";
 import type { DragPayload } from "./drag/drag-model.js";
 import { dropSource, dropTarget } from "./layout-drop.js";
@@ -216,9 +220,28 @@ export function App({ api }: { api: TermdockApi }) {
     });
   }, []);
 
-  const setController = useCallback((paneId: string, controller: TerminalController | undefined) => {
-    if (controller) controllers.current.set(paneId, controller);
-    else controllers.current.delete(paneId);
+  // The directory a Windows shell reports (OSC 9;9, #200) goes into the store next to the one of WSL sessions from
+  // the core (#199), so the explorer (#202) reads one source (`relayCwd`).
+  const cwdReports = useRef(new Map<string, () => void>());
+  const setController = useCallback(
+    (paneId: string, controller: TerminalController | undefined) => {
+      cwdReports.current.get(paneId)?.();
+      cwdReports.current.delete(paneId);
+      if (!controller) {
+        controllers.current.delete(paneId);
+        return;
+      }
+      controllers.current.set(paneId, controller);
+      cwdReports.current.set(paneId, relayCwd(store, paneId, controller));
+    },
+    [store],
+  );
+  useEffect(() => {
+    const reports = cwdReports.current;
+    return () => {
+      for (const stop of reports.values()) stop();
+      reports.clear();
+    };
   }, []);
 
   const tab = activeTab(state);
@@ -226,6 +249,42 @@ export function App({ api }: { api: TermdockApi }) {
   const activeSession = state.sessions.find((session) => session.id === activeSessionId);
   const activeView = tab ? statuses[tab.activePaneId] : undefined;
   const { sidebarVisible = true, tabs } = state.window;
+  // The explorer panel (#202) follows the session of the active, writing pane of the active tab.
+  const explorerShown = explorerVisible(state.window);
+  // The default distro of WSL, for a WSL session that names none (`sessionLocation`): asked once per core
+  // generation, and only when the panel needs it (`wsl.distros` runs wsl.exe in the core). A failure leaves such a
+  // session at "Verzeichnis unbekannt".
+  const [defaultDistro, setDefaultDistro] = useState<{ generation: number; name?: string }>();
+  const knownDistro = defaultDistro?.generation === state.coreGeneration ? defaultDistro : undefined;
+  const target = explorerTarget(
+    state.window,
+    state.sessions,
+    (paneId) => statuses[paneId]?.role,
+    knownDistro?.name,
+  );
+  const asksDistro = explorerShown && knownDistro === undefined && needsDefaultDistro(target);
+  useEffect(() => {
+    if (!asksDistro) return;
+    let current = true;
+    const generation = state.coreGeneration;
+    api.listDistros().then(
+      (result) =>
+        current &&
+        setDefaultDistro({
+          generation,
+          ...(result.defaultDistro === undefined ? {} : { name: result.defaultDistro }),
+        }),
+      (error: unknown) => {
+        console.error(error);
+        if (current) setDefaultDistro({ generation });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, asksDistro, state.coreGeneration]);
+  // Set by the key that focuses the panel; the panel takes the focus once it shows, then clears it.
+  const [explorerFocus, setExplorerFocus] = useState(false);
 
   const showForm = (): void => {
     if (!sidebarVisible) store.toggleSidebar();
@@ -272,6 +331,9 @@ export function App({ api }: { api: TermdockApi }) {
         // Like the keys, which never reach a command while a modal dialog has the focus: no second dialog.
         else if (event.kind === "openSettings" && !quitOpenRef.current && !modalOpen(document))
           openSettings();
+        // The menu entry "Explorer ein-/ausblenden" (#202), like its key.
+        else if (event.kind === "toggleExplorer" && !quitOpenRef.current && !modalOpen(document))
+          void runCommand("toggleExplorer", commandRef.current);
       }),
     [api, openSettings],
   );
@@ -303,6 +365,7 @@ export function App({ api }: { api: TermdockApi }) {
       if (searchOpen) refocus();
     },
     openSettings,
+    focusExplorer: () => setExplorerFocus(true),
     notify: setNotice,
     refocus,
   };
@@ -456,50 +519,67 @@ export function App({ api }: { api: TermdockApi }) {
               refocus();
             }}
           />
-          <div className="tab-panels" ref={tabPanels}>
-            {tabs.length === 0 && (
-              <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
-            )}
-            {/* Layout patterns at the top edge while a tab or pane is dragged (#78). */}
-            {tabs.length > 0 && <SnapBar window={state.window} sessions={state.sessions} area={tabPanels} />}
-            {/* One flat list for the panes of all tabs (#67): a pane that moves keeps its element and view. */}
-            <PaneTree
-              api={api}
-              tabs={tabs}
-              activeTabId={state.window.activeTabId}
-              sessions={state.sessions}
-              sessionsLoaded={state.sessionsLoaded}
-              focusSignal={focusSignal}
-              onStatus={setStatus}
-              onController={setController}
-              // A press only makes the pane active; taking the input is the pane's button or a double
-              // click (TerminalView, #66), so neither the writer nor the size jump on a click.
-              onPanePress={(tabId, paneId) => store.focusPane(tabId, paneId)}
-              onClosePane={(tabId, paneId) => store.closePane(tabId, paneId)}
-              commands={keyCommands}
-              onPanePaste={(paneId) => {
-                const controller = controllers.current.get(paneId);
-                if (controller) void pasteInto(controller, navigator.clipboard, setNotice);
-              }}
-              onMoveDivider={(tabId, splitId, index, delta, minShare) =>
-                store.moveDivider(tabId, splitId, index, delta, minShare)
-              }
-              onPaneMenu={(paneId, event) =>
-                openLayoutMenu(event, "Aktionen für das Pane", paneMenu(store.getState().window, paneId))
-              }
-              dismissedWarnings={state.dismissedWarnings}
-              onDismissWarnings={(sessionId) => {
-                store.dismissWarnings(sessionId);
-                refocus();
-              }}
-              coreGeneration={state.coreGeneration}
-              onRestartCore={restartCore}
-              onPaneSettled={(paneId, outcome) => incoming.settle(paneId, outcome)}
-            />
-            {coreRestartedShown && (
-              <div className="core-toast" role="status" data-hint="core-restarted">
-                Core neu gestartet
-              </div>
+          <div className="main__body">
+            <div className="tab-panels" ref={tabPanels}>
+              {tabs.length === 0 && (
+                <EmptyState error={loadError} loaded={state.sessions.length > 0} onNewSession={showForm} />
+              )}
+              {/* Layout patterns at the top edge while a tab or pane is dragged (#78). */}
+              {tabs.length > 0 && (
+                <SnapBar window={state.window} sessions={state.sessions} area={tabPanels} />
+              )}
+              {/* One flat list for the panes of all tabs (#67): a pane that moves keeps its element and view. */}
+              <PaneTree
+                api={api}
+                tabs={tabs}
+                activeTabId={state.window.activeTabId}
+                sessions={state.sessions}
+                sessionsLoaded={state.sessionsLoaded}
+                focusSignal={focusSignal}
+                onStatus={setStatus}
+                onController={setController}
+                // A press only makes the pane active; taking the input is the pane's button or a double
+                // click (TerminalView, #66), so neither the writer nor the size jump on a click.
+                onPanePress={(tabId, paneId) => store.focusPane(tabId, paneId)}
+                onClosePane={(tabId, paneId) => store.closePane(tabId, paneId)}
+                commands={keyCommands}
+                onPanePaste={(paneId) => {
+                  const controller = controllers.current.get(paneId);
+                  if (controller) void pasteInto(controller, navigator.clipboard, setNotice);
+                }}
+                onMoveDivider={(tabId, splitId, index, delta, minShare) =>
+                  store.moveDivider(tabId, splitId, index, delta, minShare)
+                }
+                onPaneMenu={(paneId, event) =>
+                  openLayoutMenu(event, "Aktionen für das Pane", paneMenu(store.getState().window, paneId))
+                }
+                dismissedWarnings={state.dismissedWarnings}
+                onDismissWarnings={(sessionId) => {
+                  store.dismissWarnings(sessionId);
+                  refocus();
+                }}
+                coreGeneration={state.coreGeneration}
+                onRestartCore={restartCore}
+                onPaneSettled={(paneId, outcome) => incoming.settle(paneId, outcome)}
+              />
+              {coreRestartedShown && (
+                <div className="core-toast" role="status" data-hint="core-restarted">
+                  Core neu gestartet
+                </div>
+              )}
+            </div>
+            {explorerShown && (
+              <ExplorerPanel
+                files={api.files}
+                target={target}
+                // The panes keep their minimum in a narrow window by CSS (`max-width` of `.explorer`).
+                width={explorerWidth(state.window.explorerWidth)}
+                focusWanted={explorerFocus}
+                onFocused={() => setExplorerFocus(false)}
+                onLeave={refocus}
+                onResize={(width, available) => store.setExplorerWidth(width, available)}
+                onHide={() => void runCommand("toggleExplorer", commandRef.current)}
+              />
             )}
           </div>
         </main>

@@ -323,6 +323,66 @@ describe("LayoutCoordinator revision conflict", () => {
     expect(core.stored?.windows[0]?.id).toBe("w1");
   });
 
+  // Issue #202 (openspec change explorer-panel): a core 1.8 refuses the explorer fields of protocol 1.9.
+  it("saves without the explorer fields when an older core refuses them", async () => {
+    const { core, coordinator } = setup();
+    await coordinator.load();
+    core.saveErrors = [
+      new IpcError("bad_request", 'layout.windows[0]."explorerVisible" is not a known field'),
+    ];
+    coordinator.addWindow(1, windowWith("w1"));
+    coordinator.report(1, { tabs: [tab("t1", pane("p1"))], activeTabId: "t1", explorerVisible: false });
+
+    await coordinator.flush();
+
+    expect(core.saves).toHaveLength(2);
+    expect(core.saves[0]?.layout.windows[0]?.explorerVisible).toBe(false);
+    expect(core.stored?.windows[0]).toEqual({ id: "w1", tabs: [tab("t1", pane("p1"))], activeTabId: "t1" });
+  });
+
+  it("does not strip the explorer fields for another refusal", async () => {
+    const { core, coordinator, log } = setup();
+    await coordinator.load();
+    core.saveErrors = [new IpcError("bad_request", "layout.windows[0].sidebarWidth must be a number")];
+    coordinator.addWindow(1, windowWith("w1"));
+    coordinator.report(1, { tabs: [], explorerWidth: 300 });
+
+    await coordinator.flush();
+
+    expect(core.saves).toHaveLength(1);
+    expect(log.join("\n")).toContain("sidebarWidth");
+  });
+
+  it("keeps all tries for conflicts after saving without the explorer fields", async () => {
+    const { core, coordinator } = setup();
+    await coordinator.load();
+    const conflict = (): IpcError => new IpcError("invalid_state", "stale base revision");
+    core.saveErrors = [
+      new IpcError("bad_request", '"explorerWidth" is not a known field'),
+      conflict(),
+      conflict(),
+    ];
+    coordinator.addWindow(1, windowWith("w1"));
+    coordinator.report(1, { tabs: [], explorerWidth: 300 });
+
+    await coordinator.flush();
+
+    expect(core.saves).toHaveLength(4);
+    expect(core.stored?.windows[0]).toEqual({ id: "w1", tabs: [] });
+  });
+
+  it("does not retry a refused layout without explorer fields", async () => {
+    const { core, coordinator, log } = setup();
+    await coordinator.load();
+    core.saveErrors = [new IpcError("bad_request", "broken")];
+    coordinator.addWindow(1, windowWith("w1"));
+
+    await coordinator.flush();
+
+    expect(core.saves).toHaveLength(1);
+    expect(log.join("\n")).toContain("broken");
+  });
+
   it("keeps the state for another try after a failure that is not a conflict", async () => {
     const { core, coordinator, log } = setup();
     core.saveErrors = [new IpcError("timeout", "layout.save timed out")];

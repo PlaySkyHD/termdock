@@ -36,7 +36,12 @@ const LEAK_PATTERNS: readonly RegExp[] = [
   /^\s*(\([^)]*\)\s*)?[^\s@]+@[^\s:]+:/,
   /[A-Za-z]:\\Users\\(?!Public\b)[^\\\s>]+/i,
   /\/mnt\/[a-z]\/Users\/(?!Public\b)[^/\s]+/i,
+  // A path of the explorer panel (#202) in a home folder names the user; a prompt shows it as `~`.
+  /^explorer: \/home\/[^/\s]+/,
 ];
+
+/** Prefix of the rows `READ_VISIBLE_ROWS` reads from the explorer panel (#202), so only they meet its pattern. */
+export const EXPLORER_ROW = "explorer: ";
 
 /** The first row that names a user or host, or `undefined`. */
 export function findPromptLeak(rows: readonly string[]): string | undefined {
@@ -79,13 +84,20 @@ export async function waitNoPromptLeak(
 
 /**
  * JavaScript expression for the page: the text of every row of the terminals that are visible (a terminal of an
- * inactive tab is hidden and not in the picture).
+ * inactive tab is hidden and not in the picture), then the full path in the header of the explorer panel and its
+ * rows (#202): the header shows the current directory of the shell, which can be a user profile.
  */
 export const READ_VISIBLE_ROWS = `(() => {
   const rows = [];
   for (const area of document.querySelectorAll('.xterm-rows')) {
     if (!area.checkVisibility({ checkVisibilityCSS: true })) continue;
     for (const row of area.children) rows.push(row.textContent ?? '');
+  }
+  for (const panel of document.querySelectorAll('.explorer')) {
+    if (!panel.checkVisibility({ checkVisibilityCSS: true })) continue;
+    for (const path of panel.querySelectorAll('[data-explorer-path]'))
+      rows.push('${EXPLORER_ROW}' + (path.dataset.explorerPath ?? ''));
+    for (const row of panel.querySelectorAll('[data-path]')) rows.push('${EXPLORER_ROW}' + (row.dataset.path ?? ''));
   }
   return rows;
 })()`;

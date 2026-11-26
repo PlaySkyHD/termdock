@@ -64,10 +64,152 @@ input {
   min-height: 0;
 }
 
+/* Panes and the explorer panel side by side (#202). */
+.main__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .tab-panels {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
+}
+
+/* --- Explorer panel right of the panes (#202) ----------------------------------------------- */
+
+.explorer {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  /* The panes keep PANES_MIN_WIDTH (explorer-view.ts) also when the window gets narrower; the panel keeps its own. */
+  min-width: 180px;
+  max-width: calc(100% - 240px);
+  min-height: 0;
+  background: var(--td-sidebar);
+  border-left: 1px solid var(--td-border);
+  user-select: none;
+  outline: none;
+}
+
+.explorer__divider {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.explorer__divider:hover,
+.explorer__divider--dragging {
+  background: linear-gradient(
+    to right,
+    transparent 3px,
+    var(--td-accent) 3px,
+    var(--td-accent) 4px,
+    transparent 4px
+  );
+}
+
+.explorer__header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 35px;
+  padding: 0 4px 0 12px;
+  flex: none;
+}
+
+.explorer__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+
+.explorer__button {
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
+}
+
+.explorer__notice {
+  margin: 0 8px 6px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--td-status-warning);
+  background: var(--td-background);
+  font-size: 12px;
+}
+
+.explorer__message {
+  padding: 8px 12px;
+  color: var(--td-muted);
+  font-style: italic;
+}
+
+.explorer__tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.explorer__row {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding-right: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.explorer__row:hover {
+  background: var(--td-hover);
+}
+
+.explorer__row--selected {
+  background: var(--td-selected);
+}
+
+.explorer__tree:focus .explorer__row--selected {
+  outline: 1px solid var(--td-accent);
+  outline-offset: -1px;
+}
+
+.explorer__twisty {
+  flex: none;
+  width: 16px;
+  color: var(--td-muted);
+  text-align: center;
+}
+
+.explorer__row[data-kind="folder"] .explorer__name {
+  font-weight: 600;
+}
+
+.explorer__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer__hint {
+  height: 22px;
+  line-height: 22px;
+  color: var(--td-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.explorer__hint--error {
+  color: var(--td-state-interrupted);
 }
 
 /* --- Panes of all tabs (#27, #67): one flat list, positioned by shares of the tab, dividers above them --- */

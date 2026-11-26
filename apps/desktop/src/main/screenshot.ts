@@ -31,6 +31,7 @@ export const SCENE_GROUPS = [
   "drag",
   "crash",
   "update",
+  "explorer",
   "restart",
 ] as const;
 

@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.8" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.9" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.8" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.9" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -1074,16 +1074,16 @@ describe("phase 3 (issue #55)", () => {
     expect(seen.get(stranger)).toEqual([]);
   });
 
-  it("accepts clients with protocol 1.2 to 1.7 and answers 1.8 (issues #64, #113, #156, #136, #199)", async () => {
+  it("accepts clients with protocol 1.2 to 1.8 and answers 1.9 (issues #64, #113, #156, #136, #199, #202)", async () => {
     const { pipePath } = await startCore();
-    for (const version of ["1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]) {
+    for (const version of ["1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"]) {
       const raw = await rawConnect(pipePath);
       raw.send({ ...hello, params: helloParams(version) });
       await waitFor(() => raw.frames.length === 1, "hello response");
       expect(raw.frames[0]?.header).toEqual({
         kind: "response",
         id: "h",
-        result: { protocolVersion: "1.8" },
+        result: { protocolVersion: "1.9" },
       });
     }
   });
@@ -1113,6 +1113,18 @@ describe("layout", () => {
       revision: 2,
     });
     expect((await client.request("layout.get", {})).result).toEqual({ layout: layout("two"), revision: 2 });
+  });
+
+  // Issue #202 (openspec change explorer-panel), protocol 1.9.
+  it("keeps the explorer panel of a window (visibility and width) through save and load", async () => {
+    const { pipePath } = await startCore();
+    const client = await newClient(pipePath);
+    const withExplorer: LayoutDocument = {
+      ...layout("one"),
+      windows: [{ ...layout("one").windows[0]!, explorerVisible: false, explorerWidth: 344 }],
+    };
+    await client.request("layout.save", { layout: withExplorer });
+    expect((await client.request("layout.get", {})).result.layout).toEqual(withExplorer);
   });
 
   it("answers a stale baseRevision with invalid_state and keeps the stored layout", async () => {

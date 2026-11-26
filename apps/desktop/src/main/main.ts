@@ -573,11 +573,16 @@ async function main(): Promise<void> {
       void bridge.removeWindow(id);
     });
 
-    coordinator.addWindow(
-      id,
-      restored ? { ...restored, ...(fitted ? { bounds: fitted } : {}) } : { id: randomUUID(), tabs: [] },
-      { restored: restored !== undefined },
-    );
+    // A new window of the screenshot run starts without the explorer panel (#202): the scenes of other groups show
+    // sessions in the home folder, whose path names the user; the group `explorer` shows the panel by its key.
+    const fresh: LayoutWindow = {
+      id: randomUUID(),
+      tabs: [],
+      ...(shotDir === undefined ? {} : { explorerVisible: false }),
+    };
+    coordinator.addWindow(id, restored ? { ...restored, ...(fitted ? { bounds: fitted } : {}) } : fresh, {
+      restored: restored !== undefined,
+    });
     const geometry = (): void =>
       coordinator.setGeometry(id, { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
     if (restored?.maximized) win.maximize();
@@ -646,6 +651,17 @@ async function main(): Promise<void> {
       {
         label: "Ansicht",
         submenu: [
+          // Like "Einstellungen …": the key is the renderer's (key map, #202), the menu only shows it.
+          {
+            label: "Explorer ein-/ausblenden",
+            accelerator: "CmdOrCtrl+Shift+X",
+            registerAccelerator: false,
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+              if (win) bridge.sendTo(win.webContents.id, { kind: "toggleExplorer" });
+            },
+          },
+          { type: "separator" },
           { label: "Neu laden", role: "reload" },
           { label: "Entwicklerwerkzeuge", role: "toggleDevTools" },
         ],

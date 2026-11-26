@@ -15,6 +15,7 @@ import type {
 } from "@termdock/protocol";
 import type { TransferItem, TransferSource } from "../shared/bridge.js";
 import { applyMove, canMove } from "./layout-moves.js";
+import { explorerVisible, explorerWidth } from "./explorer-view.js";
 import { withCurrentCwd } from "./session-cwd.js";
 import { applyIncoming, takeOut, withoutIncoming, withoutTab } from "./window-transfer.js";
 import type { MoveSource, MoveTarget } from "./layout-moves.js";
@@ -382,6 +383,25 @@ export class UiStore {
 
   toggleSidebar(): void {
     this.setWindow({ ...this.state.window, sidebarVisible: !(this.state.window.sidebarVisible ?? true) });
+  }
+
+  // --- Explorer panel (#202) -----------------------------------------------------------------
+
+  /** Shows or hides the explorer panel of the window; the layout keeps it (`explorerVisible`). */
+  toggleExplorer(): void {
+    this.setWindow({ ...this.state.window, explorerVisible: !explorerVisible(this.state.window) });
+  }
+
+  /** Shows the panel (the key that focuses it opens it first); changes nothing when it shows. */
+  showExplorer(): void {
+    if (!explorerVisible(this.state.window)) this.toggleExplorer();
+  }
+
+  /** The width of the panel in pixels within its limits (`explorerWidth`); the layout keeps it. */
+  setExplorerWidth(width: number, available?: number): void {
+    const next = explorerWidth(width, available);
+    if (next === this.state.window.explorerWidth) return;
+    this.setWindow({ ...this.state.window, explorerWidth: next });
   }
 
   private setTab(tab: LayoutTab): void {

@@ -4,7 +4,12 @@
 import { IpcError } from "@termdock/core";
 import { validateLayoutDocument } from "@termdock/protocol";
 import type { LayoutDocument, LayoutWindow, WindowBounds } from "@termdock/protocol";
-import { toLayoutDocument, windowsFromDocument, withPart } from "../shared/layout-mapping.js";
+import {
+  toLayoutDocument,
+  windowsFromDocument,
+  withoutExplorer,
+  withPart,
+} from "../shared/layout-mapping.js";
 import type { LayoutWindowPart } from "../shared/layout-mapping.js";
 import { messageOf } from "../shared/message-of.js";
 import type { CorePort } from "./core-connection.js";
@@ -18,6 +23,13 @@ export const SAVE_DELAY_MS = 400;
 export const SAVE_MAX_WAIT_MS = 2_000;
 /** Tries for one document when the revision is stale: reload the revision, save the same state again. */
 const MAX_ATTEMPTS = 3;
+/** A `bad_request` of a core that does not know the explorer fields of a layout window (protocol 1.8, #202). */
+function refusesExplorer(error: unknown): boolean {
+  return (
+    error instanceof IpcError && error.code === "bad_request" && /explorer(Visible|Width)/.test(error.message)
+  );
+}
+
 /** Waits between the tries to read the stored layout at start. */
 const LOAD_RETRY_DELAYS_MS: readonly number[] = [300, 1_000];
 
@@ -207,8 +219,9 @@ export class LayoutCoordinator {
     }
   }
 
-  private async write(layout: LayoutDocument): Promise<void> {
-    for (let attempt = 1; ; attempt++) {
+  private async write(document: LayoutDocument): Promise<void> {
+    let layout = document;
+    for (let attempt = 1; ;) {
       if (!this.loaded) await this.checkNothingUnloaded();
       try {
         const { result } = await this.core.request("layout.save", {
@@ -218,7 +231,15 @@ export class LayoutCoordinator {
         this.revision = result.revision;
         return;
       } catch (error) {
-        if (!(error instanceof IpcError) || error.code !== "invalid_state" || attempt >= MAX_ATTEMPTS)
+        // A core 1.8 that still runs after an update refuses the explorer fields of 1.9 as unknown (#202): the rest
+        // of the layout is saved without them (once more, not counted as a conflict), so tabs and panes are not
+        // lost until its restart. Any other refusal stays one.
+        const older = refusesExplorer(error) ? withoutExplorer(layout) : undefined;
+        if (older !== undefined) {
+          layout = older;
+          continue;
+        }
+        if (!(error instanceof IpcError) || error.code !== "invalid_state" || attempt++ >= MAX_ATTEMPTS)
           throw error;
         // Another client saved in between: the last state wins, so take its revision and save ours again.
         await this.refreshRevision();

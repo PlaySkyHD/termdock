@@ -70,4 +70,13 @@ export interface Backend {
    * output the view got twice or missed (issue #34). Optional: backends without `snapshot` need none.
    */
   redraw?(id: SessionId, spec: LaunchSpec): Promise<void>;
+  /**
+   * Directory the session's shell is in now (WSL: tmux `#{pane_current_path}`, issue #199), as the protocol accepts
+   * it (`isValidCurrentCwd`). `null` when the shell has no directory to show (WSL: it was removed); the registry then
+   * drops the known one. Undefined when the backend cannot tell (call failed or timed out, session missing, unusable
+   * answer); the known one stays. Never rejects. The registry asks it throttled, only for sessions with a PTY and a
+   * view (`CwdProbe`). Optional: without it a session has no `currentCwd` in the core (Windows: the renderer reads
+   * it, issue #200).
+   */
+  currentCwd?(id: SessionId, spec: LaunchSpec): Promise<string | null | undefined>;
 }

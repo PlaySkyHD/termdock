@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { encodeFrame, FrameDecoder, MAX_PAYLOAD_BYTES } from "./frame.js";
 import type { Frame } from "./frame.js";
-import { negotiateHello, parseEvent, parseRequest, parseResponse } from "./guards.js";
+import { isValidCurrentCwd, negotiateHello, parseEvent, parseRequest, parseResponse } from "./guards.js";
 import { PROTOCOL_VERSION } from "./model.js";
 
 /** Goes through the real codec so tests see what a peer would see. */
@@ -257,8 +257,8 @@ describe("parseResponse", () => {
     expect(failure(attach({ viewId: "v1", size, outputSeq: "7" })).code).toBe("bad_request");
   });
 
-  it("speaks protocol 1.7 (issue #136: settings.checkForUpdates)", () => {
-    expect(PROTOCOL_VERSION).toBe("1.7");
+  it("speaks protocol 1.8 (issue #199: currentCwd and session.cwdChanged)", () => {
+    expect(PROTOCOL_VERSION).toBe("1.8");
   });
 
   it("allows an empty snapshot and no writer", () => {
@@ -477,6 +477,61 @@ describe("parseEvent", () => {
     expect(failure(session).message).toContain("result.session.warnings[0].code");
   });
 
+  // Issue #199 (openspec change session-current-cwd): current directory of a session, protocol 1.8.
+  it("accepts a current directory in session.cwdChanged and a session, and an unknown one", () => {
+    const cwdChanged = (data: unknown) =>
+      parseEvent(frame({ kind: "event", event: "session.cwdChanged", data }));
+    const parsed = cwdChanged({ sessionId: "s1", currentCwd: "/tmp" });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.data).toEqual({ sessionId: "s1", currentCwd: "/tmp" });
+    expect(cwdChanged({ sessionId: "s1" }).ok).toBe(true);
+    expect(cwdChanged({ sessionId: "s1", currentCwd: "/".repeat(512) }).ok).toBe(true);
+    const listed = parseResponse(
+      frame({
+        kind: "response",
+        id: "r1",
+        result: { sessions: [{ ...sessionInfo, currentCwd: "/home/nic/Projekt Ä" }] },
+      }),
+      "session.list",
+    );
+    expect(listed.ok).toBe(true);
+  });
+
+  it("rejects a malformed current directory and a cwdChanged without session or with bytes", () => {
+    const cwdChanged = (data: unknown, payload?: Uint8Array) =>
+      parseEvent(frame({ kind: "event", event: "session.cwdChanged", data }, payload));
+    for (const bad of [
+      "",
+      "/".repeat(513),
+      "/a\u0000b",
+      "/a\nb",
+      "/a\u001b[31m",
+      "/a\u007f",
+      "/a\u009b31m",
+      7,
+    ]) {
+      const result = failure(cwdChanged({ sessionId: "s1", currentCwd: bad }));
+      expect(result.code).toBe("bad_request");
+      expect(result.message, JSON.stringify(bad)).toContain("data.currentCwd");
+    }
+    expect(failure(cwdChanged({ currentCwd: "/tmp" })).message).toContain("data.sessionId");
+    expect(failure(cwdChanged({ sessionId: "s1" }, new Uint8Array([1]))).code).toBe("bad_request");
+    const session = parseResponse(
+      frame({ kind: "response", id: "r1", result: { session: { ...sessionInfo, currentCwd: "/a\tb" } } }),
+      "session.create",
+    );
+    expect(failure(session).message).toContain("result.session.currentCwd");
+  });
+
+  it("exports the rule for a current directory (isValidCurrentCwd)", () => {
+    expect(isValidCurrentCwd("/home/nic")).toBe(true);
+    expect(isValidCurrentCwd("")).toBe(false);
+    expect(isValidCurrentCwd("/a\rb")).toBe(false);
+    expect(isValidCurrentCwd("/a\u0080b")).toBe(false);
+    expect(isValidCurrentCwd("/a b")).toBe(true);
+    expect(isValidCurrentCwd("/".repeat(513))).toBe(false);
+  });
+
   it("accepts output of the maximum size", () => {
     const parsed = parseEvent(
       frame(
@@ -499,6 +554,8 @@ describe("negotiateHello", () => {
 
   it("answers with the core version for the same major version", () => {
     const result = negotiateHello(hello("1.7"));
+    expect(result).toEqual({ ok: true, value: { protocolVersion: PROTOCOL_VERSION } });
+    expect(negotiateHello(hello("1.8")).ok).toBe(true);
     expect(result).toEqual({ ok: true, value: { protocolVersion: PROTOCOL_VERSION } });
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LaunchSpec } from "@termdock/protocol";
-import { WslBackend } from "./backend.js";
+import { MAX_CWD_QUERIES, WslBackend } from "./backend.js";
 import type { RunResult } from "./commands.js";
 import type { KeepaliveProcess } from "./keepalive.js";
 import type { PtyProcess } from "../conpty/pty.js";
@@ -250,6 +250,51 @@ describe("WslBackend", () => {
     expect(running()).toEqual([]);
   });
 
+  // Issue #199: a tmux server without sessions that still waits for its clients answers `no current target`.
+  const emptyServer: RunResult = { code: 1, stdout: "", stderr: "no current target\n" };
+
+  it("kill resolves when has-session meets a server without sessions (shutdown with parallel kills)", async () => {
+    const { backend, panes } = setup({
+      distro: "Ubuntu",
+      respond: (args) =>
+        subcommand(args) === "has-session" && !args.includes("display-message") ? emptyServer : undefined,
+    });
+    panes.set("td-s1", "0  ");
+    await expect(backend.kill("s1", spec)).resolves.toBeUndefined();
+  });
+
+  it("listLive and exists do not take `no current target` for ended sessions", async () => {
+    const { backend } = setup({ distro: "Ubuntu", respond: () => emptyServer });
+    expect(await backend.listLive([{ id: "a", spec }])).toBeUndefined();
+    await expect(backend.exists("a", spec)).rejects.toThrow(/no current target/);
+  });
+
+  it("currentCwd runs at most MAX_CWD_QUERIES wsl.exe calls at once over all sessions", async () => {
+    let running = 0;
+    let most = 0;
+    const releases: (() => void)[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      distro: "Ubuntu",
+      run: async () => {
+        running += 1;
+        most = Math.max(most, running);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        running -= 1;
+        return ok("/tmp\n");
+      },
+    });
+    const answers = Promise.all(["a", "b", "c", "d", "e", "f"].map((id) => backend.currentCwd(id, spec)));
+    await flush();
+    expect(running).toBe(MAX_CWD_QUERIES);
+    while (releases.length > 0) {
+      releases.shift()!();
+      await flush();
+    }
+    expect(await answers).toEqual(Array(6).fill("/tmp"));
+    expect(most).toBe(MAX_CWD_QUERIES);
+  });
+
   it("kill rejects when the session survives the deadline", async () => {
     const { backend, panes } = setup({
       distro: "Ubuntu",
@@ -366,6 +411,39 @@ describe("WslBackend", () => {
           : { code: 1, stdout: "", stderr: "can't find client: /dev/pts/3\n" },
     });
     await expect(refused.backend.redraw("s1", spec)).rejects.toThrow(/can't find client/);
+  });
+
+  it("currentCwd asks tmux once with --cd ~ and a 5 s limit and returns the path (issue #199)", async () => {
+    const timeouts: number[] = [];
+    const calls: (readonly string[])[] = [];
+    const backend = new WslBackend({
+      socket: "termdock-test",
+      run: async (args, options) => {
+        calls.push(args);
+        timeouts.push(options.timeoutMs);
+        return ok("/home/nic/Projekt Ä\n");
+      },
+    });
+    expect(await backend.currentCwd("s1", { ...spec, distro: "Ubuntu" })).toBe("/home/nic/Projekt Ä");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.slice(0, 5)).toEqual(["-d", "Ubuntu", "--cd", "~", "--exec"]);
+    expect(calls[0]!.at(-1)).toBe("#{pane_current_path}");
+    expect(timeouts).toEqual([5_000]);
+  });
+
+  it("currentCwd gives undefined for a missing session, a WSL failure, a timeout and a bad id", async () => {
+    expect(await setup({ distro: "Ubuntu" }).backend.currentCwd("gone", spec)).toBeUndefined();
+    expect(
+      await setup({ distro: "Ubuntu", respond: () => distroMissing }).backend.currentCwd("s1", spec),
+    ).toBe(undefined);
+    const slow = setup({
+      distro: "Ubuntu",
+      respond: () => ({ code: null, stdout: "", stderr: "", timedOut: true }),
+    });
+    expect(await slow.backend.currentCwd("s1", spec)).toBeUndefined();
+    expect(await setup({ distro: "Ubuntu" }).backend.currentCwd("a;b", spec)).toBeUndefined();
+    // No distro configured and WSL cannot list one: still no rejection.
+    expect(await setup({ respond: () => distroMissing }).backend.currentCwd("s1", spec)).toBeUndefined();
   });
 
   it("returns no snapshot for a missing session and throws when WSL fails", async () => {

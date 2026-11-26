@@ -337,6 +337,12 @@ export interface EventMap {
   /** The complete list of launch profiles after any change. */
   "profile.changed": { profiles: LaunchProfile[] };
   "settings.changed": { settings: Settings };
+  /**
+   * The current directory of a session changed (since 1.8, #199); `currentCwd` undefined means unknown, also once
+   * the session left `Running` and `Detached`. Sent like `session.stateChanged`: to the owners of a view of the
+   * session and to every client that used `session.list`.
+   */
+  "session.cwdChanged": { sessionId: SessionId; currentCwd?: string };
 }
 
 export type EventName = keyof EventMap;
@@ -352,6 +358,7 @@ export const EVENT_NAMES = [
   "workspace.changed",
   "profile.changed",
   "settings.changed",
+  "session.cwdChanged",
 ] as const satisfies readonly EventName[];
 
 /** Events that go to every connection that used `session.list` (spec core-ipc). */
@@ -438,6 +445,7 @@ export const EVENT_PAYLOAD: Record<EventName, PayloadRule> = {
   "workspace.changed": "none",
   "profile.changed": "none",
   "settings.changed": "none",
+  "session.cwdChanged": "none",
 };
 
 // --- Parsed forms ---------------------------------------------------------------------------

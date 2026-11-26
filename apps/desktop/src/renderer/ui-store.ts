@@ -15,6 +15,7 @@ import type {
 } from "@termdock/protocol";
 import type { TransferItem, TransferSource } from "../shared/bridge.js";
 import { applyMove, canMove } from "./layout-moves.js";
+import { withCurrentCwd } from "./session-cwd.js";
 import { applyIncoming, takeOut, withoutIncoming, withoutTab } from "./window-transfer.js";
 import type { MoveSource, MoveTarget } from "./layout-moves.js";
 import {
@@ -123,12 +124,16 @@ export class UiStore {
     if (!known) return;
     // A stale exit code does not belong to a session that runs again.
     const { lastExitCode: _old, warnings: _oldWarnings, ...rest } = known;
-    const next: SessionInfo = {
-      ...rest,
-      state,
-      ...(lastExitCode === undefined ? {} : { lastExitCode }),
-      ...(warnings === undefined || warnings.length === 0 ? {} : { warnings: [...warnings] }),
-    };
+    // The current directory belongs to the run as well (#199): `withCurrentCwd` drops it outside Running/Detached.
+    const next: SessionInfo = withCurrentCwd(
+      {
+        ...rest,
+        state,
+        ...(lastExitCode === undefined ? {} : { lastExitCode }),
+        ...(warnings === undefined || warnings.length === 0 ? {} : { warnings: [...warnings] }),
+      },
+      known.currentCwd,
+    );
     const restarted = state === "Starting" && this.state.dismissedWarnings.includes(sessionId);
     this.set({
       sessions: this.state.sessions.map((session) => (session === known ? next : session)),
@@ -136,6 +141,18 @@ export class UiStore {
         ? { dismissedWarnings: this.state.dismissedWarnings.filter((id) => id !== sessionId) }
         : {}),
     });
+  }
+
+  /**
+   * The current directory of a session (`cwdChanged`, protocol 1.8, #199); undefined removes it. Ignored for an
+   * unknown session and, by `withCurrentCwd`, for one outside Running and Detached. Read it with `currentCwdOf`.
+   */
+  sessionCwdChanged(sessionId: SessionId, cwd: string | undefined): void {
+    const known = this.state.sessions.find((session) => session.id === sessionId);
+    if (!known) return;
+    const next = withCurrentCwd(known, cwd);
+    if (next === known) return;
+    this.set({ sessions: this.state.sessions.map((session) => (session === known ? next : session)) });
   }
 
   /** Closes the warning hint of the session's run in this window (#113); it blocks nothing and stays closed. */

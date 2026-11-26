@@ -5,15 +5,18 @@ import type { Backend, PtyHandle, TerminalSnapshot } from "../types.js";
 import {
   attachArgs,
   checksCwd,
+  currentCwdArgs,
   cwdCheckArgs,
   endKeepalivesArgs,
   hasSessionArgs,
+  isGoneAfterKill,
   isMissingSession,
   killSessionArgs,
   listClientsArgs,
   listDistrosArgs,
   listSessionsArgs,
   parseClientTtys,
+  parseCurrentCwd,
   parseCwdCheck,
   parseDistroList,
   parseLiveSessions,
@@ -55,6 +58,8 @@ export interface WslBackendOptions {
   cwdCheckTimeoutMs?: number;
   /** How long the start still waits for that check once its status call is done (issue #113); then no warning. */
   cwdCheckGraceMs?: number;
+  /** Longest wait for `currentCwd` (issue #199); a slower answer counts as unknown. Defaults to 5 s. */
+  cwdQueryTimeoutMs?: number;
   run?: WslRunner;
   spawnPty?: PtySpawner;
   spawnKeepalive?: KeepaliveSpawner;
@@ -71,6 +76,8 @@ export interface WslBackendOptions {
 
 export const DEFAULT_TMUX_SOCKET = "termdock";
 const KILL_POLL_MS = 100;
+/** Directory queries (`wsl.exe` processes) at the same time over all sessions of a backend (issue #199). */
+export const MAX_CWD_QUERIES = 4;
 
 type SessionStatus = PaneStatus | "missing";
 
@@ -82,6 +89,7 @@ export class WslBackend implements Backend {
   private readonly killTimeoutMs: number;
   private readonly cwdCheckTimeoutMs: number;
   private readonly cwdCheckGraceMs: number;
+  private readonly cwdQueryTimeoutMs: number;
   private readonly run: WslRunner;
   private readonly spawnPty: PtySpawner;
   private readonly keepalive: DistroKeepalive;
@@ -90,6 +98,9 @@ export class WslBackend implements Backend {
   private readonly log: (line: string) => void;
   private defaultDistro: Promise<string> | undefined;
   private disposed = false;
+  /** Directory queries running now, and those waiting for a slot (`currentCwd`). */
+  private cwdQueries = 0;
+  private readonly cwdWaiting: (() => void)[] = [];
 
   constructor(options: WslBackendOptions = {}) {
     this.socket = options.socket ?? DEFAULT_TMUX_SOCKET;
@@ -98,6 +109,7 @@ export class WslBackend implements Backend {
     this.killTimeoutMs = options.killTimeoutMs ?? 5_000;
     this.cwdCheckTimeoutMs = options.cwdCheckTimeoutMs ?? 5_000;
     this.cwdCheckGraceMs = options.cwdCheckGraceMs ?? 1_000;
+    this.cwdQueryTimeoutMs = options.cwdQueryTimeoutMs ?? 5_000;
     this.run = options.run ?? runWsl;
     this.spawnPty = options.spawnPty ?? spawnPty;
     this.ptysClosed = options.ptysClosed ?? (() => ptysClosed());
@@ -242,11 +254,12 @@ export class WslBackend implements Backend {
   async kill(id: SessionId, spec: LaunchSpec): Promise<void> {
     const target = await this.target(spec);
     const result = await this.exec(killSessionArgs(target, id));
-    if (result.code !== 0 && !isMissingSession(result)) throw wslError("tmux kill-session", result);
+    // `isGoneAfterKill`: a server without sessions that still waits for connected clients counts as gone (#199).
+    if (result.code !== 0 && !isGoneAfterKill(result)) throw wslError("tmux kill-session", result);
     const deadline = Date.now() + this.killTimeoutMs;
     for (;;) {
       const check = await this.exec(hasSessionArgs(target, id));
-      if (isMissingSession(check)) break;
+      if (isGoneAfterKill(check)) break;
       if (check.code !== 0) throw wslError("tmux has-session", check);
       if (Date.now() >= deadline) throw new Error(`tmux session ${sessionName(id)} still exists after kill`);
       await delay(KILL_POLL_MS);
@@ -277,6 +290,41 @@ export class WslBackend implements Backend {
     );
     const failed = results.find((result) => result.code !== 0);
     if (failed && results.every((result) => result.code !== 0)) throw wslError("tmux refresh-client", failed);
+  }
+
+  /**
+   * The directory of the session's pane from tmux (issue #199), at most `cwdQueryTimeoutMs`. Never rejects: a failed
+   * or slow call, a missing session and an unusable answer give undefined, a removed directory `null`
+   * (`parseCurrentCwd`). At most `MAX_CWD_QUERIES` run at once over all sessions; the others wait for a slot.
+   */
+  async currentCwd(id: SessionId, spec: LaunchSpec): Promise<string | null | undefined> {
+    await this.cwdSlot();
+    try {
+      const target = await this.target(spec);
+      return parseCurrentCwd(
+        await this.run(currentCwdArgs(target, id), { timeoutMs: this.cwdQueryTimeoutMs }),
+      );
+    } catch {
+      return undefined;
+    } finally {
+      this.releaseCwdSlot();
+    }
+  }
+
+  /** Waits until fewer than `MAX_CWD_QUERIES` directory queries run, then takes a slot. */
+  private cwdSlot(): Promise<void> {
+    if (this.cwdQueries < MAX_CWD_QUERIES) {
+      this.cwdQueries += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.cwdWaiting.push(resolve));
+  }
+
+  /** Hands the slot to the next waiting query, or frees it. */
+  private releaseCwdSlot(): void {
+    const next = this.cwdWaiting.shift();
+    if (next) next();
+    else this.cwdQueries -= 1;
   }
 
   /**

@@ -226,6 +226,11 @@ export type BridgeEvent =
       lastExitCode?: number;
       warnings?: SessionWarning[];
     }
+  /**
+   * The core's `session.cwdChanged` (protocol 1.8, #199), to every window like `stateChanged`: the directory the
+   * session's shell is in now; without `currentCwd` it is unknown (also once the run ended).
+   */
+  | { kind: "cwdChanged"; sessionId: SessionId; currentCwd?: string }
   /** The core's `session.created`: a session came into the registry, from any client (ADR 0002, 0006). */
   | { kind: "sessionCreated"; session: SessionInfo }
   /** Name, workspace or logging of a session changed (`session.updated`), from any client (#63). */

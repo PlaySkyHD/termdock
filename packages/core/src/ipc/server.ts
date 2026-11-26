@@ -247,6 +247,12 @@ export class CoreServer {
         if (session.warnings !== undefined) data.warnings = session.warnings;
         this.route(viewIds, listers, eventFrame("session.stateChanged", data));
       }),
+      // Protocol 1.8 (#199): state of the session like `session.stateChanged`, so the same receivers.
+      this.registry.onCwdChanged(({ sessionId, currentCwd }) => {
+        const data: EventMap["session.cwdChanged"] =
+          currentCwd === undefined ? { sessionId } : { sessionId, currentCwd };
+        this.route(this.sessionViewIds(sessionId), this.listers(), eventFrame("session.cwdChanged", data));
+      }),
     ];
   }
 

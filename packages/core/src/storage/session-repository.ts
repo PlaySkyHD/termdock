@@ -169,8 +169,8 @@ function compare(a: string, b: string): number {
 
 /** Deep copy without runtime-only fields, so later changes to the caller's object do not leak in. */
 function toStored(session: SessionInfo): SessionInfo {
-  // Writer and warnings (issue #113) are runtime state of the Core that holds the session.
-  const { writerViewId: _writer, warnings: _warnings, ...rest } = session;
+  // Writer, warnings (issue #113) and current directory (issue #199) are runtime state of the Core that holds it.
+  const { writerViewId: _writer, warnings: _warnings, currentCwd: _cwd, ...rest } = session;
   const launch: LaunchSpec = { ...session.launch };
   if (session.launch.command !== undefined) launch.command = [...session.launch.command];
   if (session.launch.env !== undefined) launch.env = { ...session.launch.env };

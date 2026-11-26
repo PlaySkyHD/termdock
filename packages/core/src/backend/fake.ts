@@ -102,6 +102,11 @@ export interface FakeBackendOptions {
    * without it (the reconcile falls back to `exists`) stays covered.
    */
   listLive?: boolean;
+  /**
+   * Offers `currentCwd` (issue #199); it answers what `setCwd` set. Off by default, so the registry of other tests
+   * plans no directory queries.
+   */
+  currentCwd?: boolean;
 }
 
 export class FakeBackend implements Backend {
@@ -150,6 +155,15 @@ export class FakeBackend implements Backend {
   readonly listLive?: (
     sessions: readonly { id: SessionId; spec: LaunchSpec }[],
   ) => Promise<ReadonlySet<SessionId> | undefined>;
+  /** Present only with the option `currentCwd`, like an optional member of `Backend`. */
+  readonly currentCwd?: (id: SessionId, spec: LaunchSpec) => Promise<string | null | undefined>;
+  /** The session id of every `currentCwd` call, in order. */
+  readonly cwdCalls: SessionId[] = [];
+  /** Number of `currentCwd` calls that have not answered yet. */
+  cwdPending = 0;
+  /** When set, every `currentCwd` waits for it before it answers. */
+  cwdGate: Promise<void> | undefined;
+  private readonly cwds = new Map<SessionId, string | null>();
   private readonly ptys = new Map<SessionId, FakePty[]>();
   private readonly alive = new Set<SessionId>();
   private readonly existsOverride = new Map<SessionId, boolean>();
@@ -160,6 +174,28 @@ export class FakeBackend implements Backend {
     this.kind = options.kind ?? "wsl";
     this.killExitCode = options.killExitCode;
     if (options.listLive) this.listLive = (sessions) => this.answerListLive(sessions);
+    if (options.currentCwd) this.currentCwd = (id) => this.answerCurrentCwd(id);
+  }
+
+  /**
+   * Test control: what `currentCwd` answers for a session; `null` means "no directory" (removed), undefined makes it
+   * answer undefined ("cannot tell").
+   */
+  setCwd(id: SessionId, cwd: string | null | undefined): void {
+    if (cwd === undefined) this.cwds.delete(id);
+    else this.cwds.set(id, cwd);
+  }
+
+  private async answerCurrentCwd(id: SessionId): Promise<string | null | undefined> {
+    this.cwdCalls.push(id);
+    this.cwdPending += 1;
+    try {
+      await this.cwdGate;
+      // Read after the gate: the answer is the directory at the time tmux would have been asked.
+      return this.cwds.get(id);
+    } finally {
+      this.cwdPending -= 1;
+    }
   }
 
   /** Latest PTY of a session. Throws when none was created. */

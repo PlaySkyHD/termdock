@@ -119,13 +119,25 @@ Die PTY der Session SHALL Eingaben an das Programm weitergeben, seine Ausgabe li
 
 ### Requirement: Beenden
 
-`kill` SHALL die tmux-Session beenden und erst auflösen, wenn `has-session` sie nicht mehr findet; bleibt sie länger als die Frist bestehen, MUST `kill` mit einem Fehler ablehnen. Danach MUST `exists` `false` liefern.
+`kill` SHALL die tmux-Session beenden und erst auflösen, wenn `has-session` sie nicht mehr findet; bleibt sie länger als die Frist bestehen, MUST `kill` mit einem Fehler ablehnen. Danach MUST `exists` `false` liefern. Als „nicht gefunden“ zählen `can't find session`, `no server running` und `error connecting to`; nur bei `kill` außerdem `no current target` (Server ohne Session, der auf verbundene Clients wartet). `exists`, `listLive` und Pane-Status MUST es als Fehler werten.
 
 #### Scenario: Kill
 
 - **GIVEN** eine laufende Session
 - **WHEN** `kill` aufgelöst hat
 - **THEN** liefert `exists` `false`
+
+#### Scenario: Letzte Session, Server noch nicht beendet
+
+- **GIVEN** die letzte Session des Sockets ist beendet, der Server wartet noch auf verbundene Clients
+- **WHEN** `has-session` mit `no current target` antwortet
+- **THEN** gilt die Session als beendet, und `kill` löst auf
+
+#### Scenario: Unklare Antwort beim Abgleich
+
+- **GIVEN** tmux antwortet auf `list-sessions` oder den Pane-Status mit `no current target`
+- **WHEN** `listLive` oder `exists` aufgerufen wird
+- **THEN** liefert `listLive` `undefined` und `exists` lehnt ab; keine Session gilt dadurch als beendet
 
 ### Requirement: PTY-Ende und Exit-Code
 
@@ -547,3 +559,51 @@ Der Core SHALL die PTYs eines Prozesses nacheinander schließen. Die nächste sc
 - **GIVEN** ein WSL-Backend, dessen PTYs nach 15 s noch nicht alle geschlossen sind
 - **WHEN** es abgebaut wird
 - **THEN** endet der Abbau trotzdem, und eine Logzeile nennt die Zahl der offenen Schließvorgänge
+
+### Requirement: Aktuelles Verzeichnis aus tmux
+
+Das WSL-Backend SHALL `currentCwd(id, spec)` anbieten: ein Aufruf `wsl.exe -d <distro> --cd ~ --exec tmux -L <socket> has-session -t =td-<id> ; display-message -p -t =td-<id>: '#{pane_current_path}'` als Argument-Array mit `WSL_UTF8=1` und höchstens 5 s Laufzeit. Die Terminal-Ausgabe der Session wertet es dafür nicht aus.
+
+#### Scenario: Argumente
+
+- **GIVEN** Session `s1` in Distro `Ubuntu` auf Socket `termdock`
+- **WHEN** `currentCwd` aufgerufen wird
+- **THEN** startet genau ein `wsl.exe` mit `-d Ubuntu --cd ~ --exec tmux -L termdock has-session -t =td-s1 ; display-message -p -t =td-s1: #{pane_current_path}`
+
+#### Scenario: Echte Session
+
+- **GIVEN** `TERMDOCK_WSL_TESTS=1`, ein Core mit eigenem Socket aus `wslTestSocket()` und ein Client mit einer View einer WSL-Session
+- **WHEN** der Client `cd /tmp` eingibt
+- **THEN** erhält er innerhalb von 15 s `session.cwdChanged` mit `/tmp`, und `session.list` nennt `currentCwd: "/tmp"`
+
+### Requirement: Antwort der Verzeichnisabfrage
+
+`currentCwd` SHALL den Pfad ohne den Zeilenumbruch am Ende liefern, wenn er mit `/` beginnt und `isValidCurrentCwd` besteht. Endet er auf ` (deleted)` (entferntes Verzeichnis), SHALL es `null` liefern („kein Verzeichnis“), sonst `undefined`. Fehler, Zeitüberschreitung und eine fehlende Session MUST `undefined` ergeben; die Methode lehnt nie ab.
+
+#### Scenario: Antwort von tmux
+
+- **GIVEN** tmux antwortet `/home/nic/Projekt Ä\n`
+- **WHEN** `currentCwd` endet
+- **THEN** ist das Ergebnis `/home/nic/Projekt Ä`
+
+#### Scenario: Unbrauchbare Antwort
+
+- **GIVEN** tmux antwortet leer, mit einem relativen Pfad, mit einem Pfad über 512 Zeichen oder mit einem Steuerzeichen im Pfad, oder der Aufruf scheitert, läuft in die Zeitüberschreitung oder findet die Session nicht
+- **WHEN** `currentCwd` endet
+- **THEN** ist das Ergebnis `undefined`, ohne Fehler
+
+#### Scenario: Entferntes Verzeichnis
+
+- **GIVEN** tmux antwortet `/tmp/build (deleted)\n`
+- **WHEN** `currentCwd` endet
+- **THEN** ist das Ergebnis `null`
+
+### Requirement: Gleichzeitige Verzeichnisabfragen
+
+Ein WSL-Backend MUST höchstens 4 Aufrufe von `currentCwd` zugleich laufen lassen, über alle Sessions; weitere warten auf einen freien Platz und laufen danach in der Reihenfolge ihres Aufrufs.
+
+#### Scenario: Viele Sessions
+
+- **GIVEN** sechs Sessions, deren Abfragen gleichzeitig beginnen
+- **WHEN** die Antworten von tmux ausstehen
+- **THEN** laufen genau vier `wsl.exe`, und alle sechs liefern ihr Verzeichnis, sobald die vorigen enden

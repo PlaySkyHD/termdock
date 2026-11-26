@@ -3,15 +3,18 @@ import type { LaunchSpec } from "@termdock/protocol";
 import {
   attachArgs,
   checksCwd,
+  currentCwdArgs,
   cwdCheckArgs,
   endKeepalivesArgs,
   hasSessionArgs,
+  isGoneAfterKill,
   isMissingSession,
   keepaliveArgs,
   killSessionArgs,
   listClientsArgs,
   listSessionsArgs,
   parseClientTtys,
+  parseCurrentCwd,
   parseCwdCheck,
   parseDistroList,
   parseLiveSessions,
@@ -314,6 +317,14 @@ describe("parsers", () => {
         stderr: "error connecting to /tmp/tmux-1000/x (No such file)",
       }),
     ).toBe(true);
+    // A server whose last session just ended lives on while clients are connected (measured with tmux 3.6): only the
+    // check after kill-session counts that as gone, never `exists`, `listLive` or the pane status (#199).
+    const emptyServer = { code: 1, stdout: "", stderr: "no current target\n" };
+    expect(isMissingSession(emptyServer)).toBe(false);
+    expect(isGoneAfterKill(emptyServer)).toBe(true);
+    expect(isGoneAfterKill({ code: 1, stdout: "", stderr: "can't find session: td-x\n" })).toBe(true);
+    expect(isGoneAfterKill({ ...emptyServer, timedOut: true })).toBe(false);
+    expect(isGoneAfterKill({ code: 127, stdout: "", stderr: "no current target" })).toBe(false);
     expect(isMissingSession({ code: 127, stdout: "", stderr: "Wsl/Service/WSL_E_DISTRO_NOT_FOUND" })).toBe(
       false,
     );
@@ -410,3 +421,59 @@ describe("check of the working directory", () => {
     expect(parseCwdCheck({ code: 1, stdout: "", stderr: "", timedOut: true })).toBeUndefined();
   });
 });
+
+// Issue #199 (openspec change session-current-cwd): the directory of the pane, from tmux.
+describe("current directory", () => {
+  it("builds the current-directory query as one argument array, has-session first", () => {
+    expect(currentCwdArgs(target, "abc")).toEqual([
+      "-d",
+      "Ubuntu",
+      "--cd",
+      "~",
+      "--exec",
+      "tmux",
+      "-L",
+      "termdock-test",
+      "has-session",
+      "-t",
+      "=td-abc",
+      ";",
+      "display-message",
+      "-p",
+      "-t",
+      "=td-abc:",
+      "#{pane_current_path}",
+    ]);
+    expect(() => currentCwdArgs(target, "a;b")).toThrow(/session id/i);
+  });
+
+  it("parses the current directory and drops what a client would reject", () => {
+    expect(parseCurrentCwd(ok("/home/nic/Projekt Ä\n"))).toBe("/home/nic/Projekt Ä");
+    expect(parseCurrentCwd(ok("/tmp\r\n"))).toBe("/tmp");
+    expect(parseCurrentCwd(ok("/"))).toBe("/");
+    for (const stdout of [
+      "",
+      "\n",
+      "tmp\n",
+      "~/x\n",
+      `/${"a".repeat(512)}\n`,
+      "/a\tb\n",
+      "/a\nb\n",
+      "/a\u001bb",
+    ]) {
+      expect(parseCurrentCwd(ok(stdout)), JSON.stringify(stdout)).toBeUndefined();
+    }
+    // tmux 3.6 reports a removed directory with the suffix of /proc/<pid>/cwd: no directory to show.
+    expect(parseCurrentCwd(ok("/tmp/build (deleted)\n"))).toBeNull();
+    expect(
+      parseCurrentCwd({ code: null, stdout: "/tmp/build (deleted)\n", stderr: "", timedOut: true }),
+    ).toBe(undefined);
+    expect(parseCurrentCwd(ok("/tmp/a\u009bb\n"))).toBeUndefined();
+    expect(parseCurrentCwd({ code: 1, stdout: "", stderr: "can't find session: td-abc\n" })).toBeUndefined();
+    expect(parseCurrentCwd({ code: null, stdout: "/tmp\n", stderr: "", timedOut: true })).toBeUndefined();
+  });
+});
+
+function ok(stdout: string): { code: number; stdout: string; stderr: string } {
+  return { code: 0, stdout, stderr: "" };
+}

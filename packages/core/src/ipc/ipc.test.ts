@@ -138,7 +138,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send(hello);
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.7" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.8" } });
   });
 
   it("accepts a hello with protocol 1.1 from an older minor version (issue #46)", async () => {
@@ -146,7 +146,7 @@ describe("handshake", () => {
     const raw = await rawConnect(pipePath);
     raw.send({ ...hello, params: helloParams("1.1") });
     await waitFor(() => raw.frames.length === 1, "hello response");
-    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.7" } });
+    expect(raw.frames[0]?.header).toEqual({ kind: "response", id: "h", result: { protocolVersion: "1.8" } });
   });
 
   it("rejects a first message that is not hello with bad_request and closes", async () => {
@@ -453,6 +453,48 @@ describe("two clients on one session", () => {
     backend.pty(result.session.id).emitExit(0);
     await waitFor(() => states.length === 3, "Exited");
     expect(states[2]).toEqual({ state: "Exited" });
+  });
+
+  // Issue #199 (openspec change session-current-cwd), protocol 1.8.
+  it("sends session.cwdChanged to the owner of a view and to listers, lists currentCwd, and drops it at the end", async () => {
+    const backend = new FakeBackend({ currentCwd: true });
+    const { pipePath } = await startCore({ registry: new SessionRegistry({ backends: [backend] }) });
+    const viewer = await newClient(pipePath);
+    const lister = await newClient(pipePath);
+    const stranger = await newClient(pipePath);
+    await lister.request("session.list", {});
+    const session = await createSession(viewer);
+    backend.setCwd(session.id, "/tmp");
+    const seen = new Map<CoreClient, string[]>([
+      [viewer, []],
+      [lister, []],
+      [stranger, []],
+    ]);
+    for (const [client, events] of seen) {
+      client.on("session.stateChanged", ({ state }) => events.push(state));
+      client.on("session.cwdChanged", ({ sessionId, currentCwd }) => {
+        expect(sessionId).toBe(session.id);
+        events.push(`cwd ${currentCwd ?? "-"}`);
+      });
+    }
+
+    await attach(viewer, session.id);
+    await waitFor(() => seen.get(lister)!.includes("cwd /tmp"), "session.cwdChanged on the lister");
+    await waitFor(() => seen.get(viewer)!.includes("cwd /tmp"), "session.cwdChanged on the viewer");
+    const { sessions } = (await lister.request("session.list", {})).result;
+    expect(sessions.find((each) => each.id === session.id)?.currentCwd).toBe("/tmp");
+
+    backend.pty(session.id).emitExit(0);
+    await waitFor(() => seen.get(lister)!.includes("cwd -"), "removal on the lister");
+    await waitFor(() => seen.get(viewer)!.includes("cwd -"), "removal on the viewer");
+    for (const client of [lister, viewer]) {
+      const events = seen.get(client)!;
+      expect(events.slice(-3)).toEqual(["cwd /tmp", "Exited", "cwd -"]);
+      expect(events.filter((event) => event.startsWith("cwd "))).toEqual(["cwd /tmp", "cwd -"]);
+    }
+    // Events are written before this answer, so nothing is still on its way.
+    await errorCode(stranger.request("session.kill", { sessionId: "nope" }));
+    expect(seen.get(stranger)).toEqual([]);
   });
 
   it("tells the clients that listed sessions about a created session, once (issue #46)", async () => {
@@ -1032,16 +1074,16 @@ describe("phase 3 (issue #55)", () => {
     expect(seen.get(stranger)).toEqual([]);
   });
 
-  it("accepts clients with protocol 1.2 to 1.6 and answers 1.7 (issues #64, #113, #156, #136)", async () => {
+  it("accepts clients with protocol 1.2 to 1.7 and answers 1.8 (issues #64, #113, #156, #136, #199)", async () => {
     const { pipePath } = await startCore();
-    for (const version of ["1.2", "1.3", "1.4", "1.5", "1.6"]) {
+    for (const version of ["1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]) {
       const raw = await rawConnect(pipePath);
       raw.send({ ...hello, params: helloParams(version) });
       await waitFor(() => raw.frames.length === 1, "hello response");
       expect(raw.frames[0]?.header).toEqual({
         kind: "response",
         id: "h",
-        result: { protocolVersion: "1.7" },
+        result: { protocolVersion: "1.8" },
       });
     }
   });

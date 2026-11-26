@@ -434,6 +434,21 @@ describe("DesktopBridge events", () => {
     expect(b.events).toEqual([expected]);
   });
 
+  it("forwards the current directory of a session to every window, once each (issue #199)", async () => {
+    const { core, bridge, a, b } = setup();
+    await attach(core, bridge, a, "s1", "v1");
+
+    core.emit("session.cwdChanged", { sessionId: "s1", currentCwd: "/tmp" });
+    core.emit("session.cwdChanged", { sessionId: "s1" });
+
+    const expected = [
+      { kind: "cwdChanged", sessionId: "s1", currentCwd: "/tmp" },
+      { kind: "cwdChanged", sessionId: "s1" },
+    ];
+    expect(a.events).toEqual(expected);
+    expect(b.events).toEqual(expected);
+  });
+
   it("stops sending to a removed window and tells the others when the core connection ends", async () => {
     const { core, bridge, a, b } = setup();
     await bridge.removeWindow(a.id);

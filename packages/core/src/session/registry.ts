@@ -19,6 +19,7 @@ import { transition } from "./lifecycle.js";
 import { OutputBuffer } from "./output-buffer.js";
 import { assertNoSecretEnv } from "./secret-env.js";
 import { TerminalModes } from "./terminal-modes.js";
+import { CwdProbe } from "./cwd-probe.js";
 
 /** Raw output kept per session as snapshot fallback (ADR 0003). */
 export const OUTPUT_BUFFER_BYTES = 256 * 1024;
@@ -153,6 +154,15 @@ export interface OutputEvent {
   fromRedraw: boolean;
 }
 
+/**
+ * The current directory of a session changed (issue #199); undefined means unknown, e.g. after its run ended. Like
+ * `StateChangeEvent` without view ids: the server sends it to the owners of the session's views and the listers.
+ */
+export interface CwdChangedEvent {
+  sessionId: SessionId;
+  currentCwd: string | undefined;
+}
+
 /** Default of `SessionRegistryOptions.redrawOutputMaxMs`; a redraw call took about 270 ms when measured. */
 export const DEFAULT_REDRAW_OUTPUT_MAX_MS = 2_000;
 
@@ -254,6 +264,8 @@ interface SessionEntry {
   reattach: { attempts: number; boundAt: number };
   /** Re-attach in progress; kill and archive cancel it. */
   reattachRun: ReattachRun | undefined;
+  /** Directory queries of the bound PTY (issue #199); only when the backend has `currentCwd`, ends with the PTY. */
+  cwd: CwdProbe | undefined;
 }
 
 interface ReattachRun {
@@ -319,6 +331,7 @@ export class SessionRegistry {
   );
   private readonly resizedListeners = new ListenerSet<ResizedEvent>((error) => this.onListenerError(error));
   private readonly outputListeners = new ListenerSet<OutputEvent>((error) => this.onListenerError(error));
+  private readonly cwdListeners = new ListenerSet<CwdChangedEvent>((error) => this.onListenerError(error));
 
   constructor(options: SessionRegistryOptions) {
     this.backends = options.backends;
@@ -362,6 +375,11 @@ export class SessionRegistry {
     return this.outputListeners.add(listener);
   }
 
+  /** Reports every change of `SessionInfo.currentCwd` (issue #199), also its removal when a run ends. */
+  onCwdChanged(listener: Listener<CwdChangedEvent>): Disposable {
+    return this.cwdListeners.add(listener);
+  }
+
   list(): SessionInfo[] {
     return [...this.sessions.values()].map((entry) => snapshotInfo(entry.info));
   }
@@ -393,6 +411,7 @@ export class SessionRegistry {
         entry.reattachRun.wake();
       }
       this.releasePty(entry);
+      this.disposeCwd(entry);
     }
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
@@ -598,6 +617,8 @@ export class SessionRegistry {
     entry.views.clear();
     entry.output.clear();
     entry.modes.reset();
+    // Archived is final: no PTY will be bound again (issue #199).
+    this.disposeCwd(entry);
     this.setState(entry, "Archived");
     return snapshotInfo(entry.info);
   }
@@ -667,6 +688,7 @@ export class SessionRegistry {
     if (info.writerViewId !== undefined) this.setWriter(entry, undefined);
     entry.views.clear();
     entry.output.clear();
+    this.disposeCwd(entry);
     this.sessions.delete(sessionId);
     this.unsaved.delete(sessionId);
   }
@@ -739,6 +761,8 @@ export class SessionRegistry {
     entry.views.add(viewId);
     if (writer) this.setWriter(entry, viewId);
     if (entry.pty && entry.info.state === "Detached") this.setState(entry, "Running");
+    // The directory may have changed while nobody looked (issue #199); throttled like any other query.
+    entry.cwd?.poke();
     // Not awaited: the view gets its snapshot at once.
     if (fromBackend && backend) this.requestRedraw(entry, backend, "attach");
     return { session: snapshotInfo(entry.info), writer, snapshot, outputSeq };
@@ -861,6 +885,8 @@ export class SessionRegistry {
     this.assertView(entry, viewId);
     entry.views.delete(viewId);
     if (entry.info.writerViewId === viewId) this.setWriter(entry, undefined);
+    // Nobody shows the session: no directory queries until a view comes back; the known value stays.
+    if (entry.views.size === 0) entry.cwd?.idle();
     if (entry.pty && entry.views.size === 0 && entry.info.state === "Running")
       this.setState(entry, "Detached");
   }
@@ -878,6 +904,9 @@ export class SessionRegistry {
     this.assertWriter(entry, viewId);
     if (!entry.pty) throw new CoreError("invalid_state", `Session ${sessionId} has no running process`);
     entry.pty.write(data);
+    // A finished command line may be a `cd`: the directory queries leave their back-off (issue #199). Single keys (a
+    // TUI being driven) do not, or the back-off would never take hold.
+    if (endsLine(data)) entry.cwd?.input();
   }
 
   /**
@@ -1107,11 +1136,15 @@ export class SessionRegistry {
     entry.pty = pty;
     // A new stream: a sequence the previous PTY cut off must not continue here; the modes stay (issue #42).
     entry.modes.endOfStream();
+    entry.cwd = this.cwdProbe(entry);
     entry.ptySubscriptions = [
       pty.onData((data) => {
         if (entry.pty !== pty) return;
         // The bytes carry no origin; the repaint arrives before the backend call returns (design, issue #88).
-        this.emitOutput(entry, data, entry.redraw?.pty === pty);
+        const fromRedraw = entry.redraw?.pty === pty;
+        this.emitOutput(entry, data, fromRedraw);
+        // A pause after output is when a `cd` has finished (issue #199); a repaint changes no directory.
+        if (!fromRedraw && entry.views.size > 0) entry.cwd?.activity();
       }),
       pty.onExit(({ exitCode }) => {
         if (entry.pty !== pty) return;
@@ -1128,6 +1161,43 @@ export class SessionRegistry {
         else this.setState(entry, "Exited");
       }),
     ];
+    // Start, restart or re-attach while views look at the session: ask at once.
+    if (entry.views.size > 0) entry.cwd?.poke();
+  }
+
+  /**
+   * The directory queries of the session (issue #199), one probe for the whole entry, or none when the backend cannot
+   * tell. It outlives PTY changes, so a query still running for the old PTY keeps the next one waiting; `releasePty`
+   * unbinds it, which drops that query's answer. Ended with the entry (`disposeCwd`).
+   */
+  private cwdProbe(entry: SessionEntry): CwdProbe | undefined {
+    if (entry.cwd) return entry.cwd;
+    const backend = this.backendFor(entry.info.launch);
+    if (!backend?.currentCwd) return undefined;
+    return new CwdProbe({
+      query: () => backend.currentCwd?.(entry.info.id, entry.info.launch) ?? Promise.resolve(undefined),
+      onResult: (cwd) => this.setCwd(entry, cwd),
+      now: this.monotonicNow,
+    });
+  }
+
+  /** The probe of a session that is archived, deleted or whose registry is disposed. */
+  private disposeCwd(entry: SessionEntry): void {
+    entry.cwd?.dispose();
+    entry.cwd = undefined;
+  }
+
+  /**
+   * Takes what the backend reported: a directory, or `null` for "none to show" (removed), which drops the known one.
+   * Only a change of a running session is reported. Not saved.
+   */
+  private setCwd(entry: SessionEntry, cwd: string | null): void {
+    if (!RUN_STATES.has(entry.info.state)) return;
+    const next = cwd ?? undefined;
+    if (entry.info.currentCwd === next) return;
+    if (next === undefined) delete entry.info.currentCwd;
+    else entry.info.currentCwd = next;
+    this.cwdListeners.emit({ sessionId: entry.info.id, currentCwd: next });
   }
 
   /** Output of the session: into the buffer and the modes, numbered, to the views and the history. */
@@ -1252,6 +1322,8 @@ export class SessionRegistry {
     const pty = entry.pty;
     for (const subscription of entry.ptySubscriptions) subscription.dispose();
     entry.ptySubscriptions = [];
+    // Nothing stays planned for the PTY, and the answer of a query still running for it is dropped (issue #199).
+    entry.cwd?.unbind();
     entry.pty = undefined;
     pty?.dispose();
   }
@@ -1261,9 +1333,13 @@ export class SessionRegistry {
     entry.info.state = transition(from, to);
     // Warnings belong to the run that is alive in Running and Detached (issue #113).
     if (!RUN_STATES.has(to)) delete entry.info.warnings;
+    // So does the current directory (issue #199); its removal is reported after the state change.
+    const lostCwd = !RUN_STATES.has(to) && entry.info.currentCwd !== undefined;
+    if (lostCwd) delete entry.info.currentCwd;
     entry.info.updatedAt = this.now().toISOString();
     this.persist(entry);
     this.stateListeners.emit({ sessionId: entry.info.id, from, to, session: snapshotInfo(entry.info) });
+    if (lostCwd) this.cwdListeners.emit({ sessionId: entry.info.id, currentCwd: undefined });
   }
 
   /**
@@ -1445,7 +1521,14 @@ function newEntry(info: SessionInfo): SessionEntry {
     endedDuringOp: undefined,
     reattach: { attempts: 0, boundAt: Number.NEGATIVE_INFINITY },
     reattachRun: undefined,
+    cwd: undefined,
   };
+}
+
+/** Whether input holds Enter (CR or LF), as typed or pasted. */
+function endsLine(data: Uint8Array | string): boolean {
+  if (typeof data === "string") return data.includes("\r") || data.includes("\n");
+  return data.includes(13) || data.includes(10);
 }
 
 function assertSize(size: TerminalSize): void {

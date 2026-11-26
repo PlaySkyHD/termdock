@@ -80,6 +80,12 @@ export interface SessionInfo {
    * dropped with the next state outside them. Runtime state: the core does not store them.
    */
   warnings?: SessionWarning[];
+  /**
+   * Directory the session's shell is in now (since 1.8, #199): a Linux path for "wsl", from tmux. Only in `Running`
+   * and `Detached`; undefined while unknown. Runtime state: the core does not store it. 1 to MAX_PATH_LENGTH
+   * characters without control characters (`isValidCurrentCwd`).
+   */
+  currentCwd?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -288,5 +294,6 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 1.5: optional `warnings` in `SessionInfo` and `session.stateChanged` (missing working directory, #113).
  * 1.6: method `session.restart` (restart an ended or interrupted session from the app, #156).
  * 1.7: optional settings key `checkForUpdates` (auto-update of the installed app, #136).
+ * 1.8: optional `currentCwd` in `SessionInfo` and event `session.cwdChanged` (current directory, #199).
  */
-export const PROTOCOL_VERSION = "1.7" as const;
+export const PROTOCOL_VERSION = "1.8" as const;
